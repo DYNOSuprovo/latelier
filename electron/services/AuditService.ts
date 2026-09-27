@@ -76,10 +76,13 @@ export class AuditService {
     envelope: Envelope<unknown>,
     startedAt: number,
     durationMs: number,
+    thrown?: unknown,
   ): string | null {
     const rec = auditRecordFor(channel, input, envelope);
     if (!rec) return null;
-    const undoJson = envelope.ok ? this.restorableUndoJson(undoCaptureOf(envelope.data)) : null;
+    // A failure can still carry a capture: an import that stops part-way
+    // attaches one for the batches that fully landed before it.
+    const undoJson = this.restorableUndoJson(undoCaptureOf(envelope.ok ? envelope.data : thrown));
     const id = randomUUID();
     this.repo.insert({
       id,

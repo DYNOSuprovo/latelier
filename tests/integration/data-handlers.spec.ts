@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { MongoClient } from 'mongodb';
+import { Collection, MongoClient, MongoNetworkError } from 'mongodb';
 import type { MongoMemoryServer } from 'mongodb-memory-server';
 import { createRouter } from '../../electron/ipc/router';
 import { registerDataChannels } from '../../electron/ipc/handlers/data';
@@ -272,6 +272,72 @@ describe('data:import via the router', () => {
       expect(env).toMatchObject({ ok: true, data: { inserted: 3 } });
       expect(env.ok && env.data.auditId).toBeUndefined();
       expect(rows()).toMatchObject([{ reversible: false }]);
+    });
+
+    it('stays undoable for the batches that fully landed when a later batch fails outright', async () => {
+      const localHandlers = new Map<string, Handler>();
+      const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+      const router = createRouter(
+        { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
+        testSenderCheck,
+        log,
+        auditSvc,
+      );
+      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }));
+      registerAuditChannels(router, auditSvc);
+      const original = Collection.prototype.insertMany;
+      let calls = 0;
+      const spy = vi.spyOn(Collection.prototype, 'insertMany').mockImplementation(function (
+        this: Collection,
+        ...args: Parameters<Collection['insertMany']>
+      ) {
+        calls++;
+        if (calls === 2) return Promise.reject(new MongoNetworkError('connection reset'));
+        return original.apply(this, args);
+      });
+      const p = await file('drop.jsonl', '{"_id":1}\n{"_id":2}\n{"_id":3}\n{"_id":4}\n{"_id":5}\n');
+      const env = (await localHandlers.get(IPC_CHANNELS.dataImport)!(
+        invokeEvent,
+        { ...target(), path: p },
+      )) as Envelope<ImportReport>;
+      spy.mockRestore();
+      expect(env).toMatchObject({ ok: false, error: { code: 'NETWORK', details: { insertedCount: 2 } } });
+      // The capture never crosses IPC with the error.
+      expect(JSON.stringify(env)).not.toContain('digests');
+
+      const [row] = tmp.db.prepare('SELECT * FROM audit_log').all() as Record<string, unknown>[];
+      expect(row).toMatchObject({ outcome: 'partial', reversible: 1 });
+      const undo = (await localHandlers.get(IPC_CHANNELS.auditUndo)!(
+        invokeEvent,
+        { entryId: row!.id },
+      )) as Envelope<UndoResult>;
+      expect(undo).toMatchObject({ ok: true, data: { restored: 2, skipped: 0 } });
+      expect(await client.db(dbName).collection('people').countDocuments()).toBe(0);
+    });
+
+    it('is not undoable when an import fails before any batch landed', async () => {
+      const localHandlers = new Map<string, Handler>();
+      const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+      const router = createRouter(
+        { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
+        testSenderCheck,
+        log,
+        auditSvc,
+      );
+      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }));
+      const spy = vi
+        .spyOn(Collection.prototype, 'insertMany')
+        .mockImplementation(() => Promise.reject(new MongoNetworkError('connection reset')));
+      const p = await file('drop-first.jsonl', '{"_id":1}\n{"_id":2}\n{"_id":3}\n');
+      const env = (await localHandlers.get(IPC_CHANNELS.dataImport)!(
+        invokeEvent,
+        { ...target(), path: p },
+      )) as Envelope<ImportReport>;
+      spy.mockRestore();
+      expect(env).toMatchObject({ ok: false, error: { code: 'NETWORK' } });
+      expect(rows()).toMatchObject([{ outcome: 'error', reversible: false }]);
     });
 
     it('refuses a second Undo of the same import', async () => {

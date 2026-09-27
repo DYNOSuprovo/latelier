@@ -129,10 +129,11 @@ Recording taps `createRouter`. A **static per-channel table** in main (`electron
 Recording rules:
 
 - The row is written **after** the handler returns, from a capture held in memory. Writing before would leave a phantom entry claiming an Operation that a crash prevented.
-- Failures are recorded, with `outcome = 'error'` and the `IpcError` code in `error_code` — the same code the renderer received. A failed Operation is never reversible.
+- Failures are recorded, with `outcome = 'error'` and the `IpcError` code in `error_code` — the same code the renderer received. A failed Operation is never reversible, with one exception: an `import` that stops part-way (below).
 - A payload that fails its zod schema is not recorded: it never reached a server and has no trustworthy namespace. A service-side refusal after the schema passed (an empty filter, an expired confirm token, a Read-Only Connection) is an attempt, and is recorded as an error.
 - An `updateOne` that matches nothing — a compare-and-set that lost its race — is recorded as `outcome = 'ok'` with `matchedCount: 0`, and is not reversible.
 - `insertMany` runs `ordered: true`, so a mid-batch failure leaves documents inserted. `DocumentService.insertMany` already folds `insertedCount` from the driver error into the error's `details`; a count above zero records `outcome = 'partial'` with the count, and `reversible = 0` — the error path yields the count but never the ids.
+- `import` inserts in unordered batches. A failure that stops it part-way (a dropped connection, a batch the driver can't account for per document) records `outcome = 'partial'` with the landed count, and stays reversible for every batch that **fully** landed before it: those ids and digests were already captured. The failing batch's own landed documents can't be told apart from the ones it never wrote, so they are not captured and Undo leaves them. The capture rides the thrown error inside main, never its `details`, so it never crosses IPC. The renderer gets no `auditId` for an error envelope, so this Undo is offered from the audit log, not a toast.
 - **A failed audit write never blocks, fails, or delays the Operation.** It is logged via `electron/log.ts` and the entry is lost. The write runs outside the router's handler `try`, so it cannot turn a completed Operation into an error envelope.
 
 ## 5. Capture
