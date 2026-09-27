@@ -272,16 +272,19 @@ export interface IpcApi {
 
   /**
    * Bulk data in and out of a collection. `import` takes the path the
-   * renderer got back from `app.pickFile('data-import')`, which is stateless;
-   * main re-validates it (absolute, allowed extension, a regular file) before
-   * reading. It opens no dialog of its own, so a cancelled pick never reaches
-   * this audited channel and records no row.
+   * renderer got back from `app.pickFile('data-import')`. Main remembers
+   * every path that dialog returned and refuses any other, so the renderer
+   * can hand back a file the user picked but never name one; it then
+   * re-validates the path (absolute, allowed extension, a regular file)
+   * before reading. It opens no dialog of its own, so a cancelled pick never
+   * reaches this audited channel and records no row.
    */
   data: {
     import: (input: DataImportInput) => Promise<ImportReport>;
     /**
      * Reads a `.csv` file the renderer got from `app.pickFile('data-import')`
-     * — same re-validation as `import` — and returns its header, first rows
+     * — refused unless that dialog returned it, then re-validated as for
+     * `import` — and returns its header, first rows
      * and an inferred type per column, for the dialog's mapping step.
      */
     previewCsv: (input: { path: string }) => Promise<CsvPreview>;
