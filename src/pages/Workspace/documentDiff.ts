@@ -164,7 +164,7 @@ function lookup(doc: Doc, path: string): { value: unknown } | null {
  */
 
 /** A segment that addresses an array element: `'0'`, `'1'`, … — no leading zeros. */
-function arrayIndexOf(segment: string): number | null {
+export function arrayIndexOf(segment: string): number | null {
   return /^(0|[1-9]\d*)$/.test(segment) ? Number(segment) : null;
 }
 

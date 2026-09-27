@@ -28,6 +28,7 @@
     "src/pages/Workspace/deleteMode.ts",
     "src/pages/Workspace/documentDiff.ts",
     "src/pages/Workspace/documentFieldTypes.ts",
+    "src/pages/Workspace/editorRowKeys.ts",
     "src/pages/Workspace/collectionPatches.ts",
     "src/pages/Workspace/navigatorTreeReducer.ts",
     "src/pages/Workspace/resizeKeyStep.ts",
