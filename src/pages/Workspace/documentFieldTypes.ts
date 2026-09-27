@@ -93,6 +93,7 @@ export function isoOf(d: Date): string {
 const INTEGER = /^-?\d+$/;
 // Zone required: without one, `Date.parse` reads the text as local time and
 // the stored instant silently shifts by the machine's offset.
+// Stryker disable next-line Regex: V8's Date.parse, the only engine this ships on, already refuses every text an unanchored match would let through (probed: prefixes, suffixes, 5-digit years); the anchors keep the regex correct on its own.
 export const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 export const HEX_24 = /^[0-9a-fA-F]{24}$/;
 
@@ -135,7 +136,8 @@ export function textOf(kind: Kind, v: unknown): string {
   switch (kind) {
     case 'date':
       return isoOf(v as Date);
-    case 'int32':
+    // No `int32` case: its canonical EJSON always relaxes to the same plain
+    // integer text `String` gives, so the default below prints it identically.
     case 'double':
     case 'long':
     case 'decimal':
@@ -219,14 +221,14 @@ export function parseAs(kind: Kind, text: string): Parsed {
  */
 export function convertType(from: Kind, to: FieldKind, value: unknown): unknown {
   if (from === to) return value;
-  if (to === 'null') return null;
   if (from === 'null') return zeroValue(to);
   // Object, array and an unrecognized BSON value never round-trip through
   // text the way a scalar does — printing one's structure as a string isn't
   // the conservative "clears when it can't convert" this selector promises,
   // so these clear up front instead of being handed to `parseAs`. Converting
-  // *to* object/array needs no such special case: `parseAs` has no case for
-  // either, so the round trip below already fails and clears on its own.
+  // *to* object/array/null needs no such special case: `parseAs` has no case
+  // for any of them, so the round trip below already fails and clears on its
+  // own — to `zeroValue('null')`, which is `null`, for the last.
   if (from === 'other' || from === 'object' || from === 'array') {
     return zeroValue(to);
   }
