@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'bson';
 import type { Document } from 'mongodb';
 import { SystemError } from '../errors.ts';
-import { ejsonEncodeArrayJson, ejsonStringify } from './ejson.ts';
+import { ByteCapExceededError, ejsonEncodeArrayJson, ejsonStringify } from './ejson.ts';
 
 /**
  * What a write kept so it can be undone. Single-document ops use
@@ -72,8 +72,11 @@ export function boundedCapture(docs: Document[]): Document[] | null {
   if (docs.length > MAX_BULK_CAPTURE_DOCS) return null;
   try {
     ejsonEncodeArrayJson(docs, { maxBytes: MAX_BULK_CAPTURE_BYTES });
-  } catch {
-    return null;
+  } catch (err) {
+    // Over the byte ceiling is an expected outcome; anything else is a real
+    // failure the caller logs (and pays for with the Undo, not the write).
+    if (err instanceof ByteCapExceededError) return null;
+    throw err;
   }
   return docs;
 }

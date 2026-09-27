@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { calculateObjectSize } from 'bson';
+import type { Document, InsertManyResult } from 'mongodb';
 import { DEFAULT_MAX_EJSON_BYTES, ejsonEncode, ejsonStringify, parseEjsonDocument, parseEjsonField } from './ejson.ts';
 import { classifyMongoOpError } from './errors.ts';
 import { ValidationError } from '../errors.ts';
@@ -195,23 +196,11 @@ export class DocumentService {
       throw new ValidationError('docsJson must be an array of documents', { field: 'docsJson' });
     }
     const db = await w.db(input.dbName);
+    let result: InsertManyResult;
     try {
-      const result = await db
+      result = await db
         .collection(input.collection)
         .insertMany(docs as Record<string, unknown>[], { ordered: true, maxTimeMS: QUERY_TIMEOUT_MS });
-      const insertedIds = Object.values(result.insertedIds);
-      const response = {
-        insertedCount: result.insertedCount,
-        insertedIds: insertedIds.map((id) => ejsonEncode(id)),
-      };
-      // The driver mutated `docs` in place, setting `_id` on each document
-      // that lacked one — the same array now holds exactly what was
-      // inserted, no second read needed. Bounded the same way as
-      // deleteMany/updateMany's Pre-images (X13 §5), so Undo can compare
-      // before deleting rather than a blind delete-by-id. Kept in stored form
-      // (`asStored`): the input's JS numbers are not what Undo reads back.
-      const insertedDocs = boundedCapture((docs as Record<string, unknown>[]).map(asStored));
-      return insertedDocs ? attachUndo(response, { insertedDocs }) : response;
     } catch (err) {
       // `ordered:true` stops at the first write error, so a bulk-write
       // failure can still carry a nonzero prefix of documents that landed —
@@ -225,6 +214,28 @@ export class DocumentService {
         insertedCount !== undefined ? { insertedCount } : undefined,
       );
     }
+    const response = {
+      insertedCount: result.insertedCount,
+      insertedIds: Object.values(result.insertedIds).map((id) => ejsonEncode(id)),
+    };
+    // Outside the insert's `try`: the write has landed, so nothing from here
+    // on may turn it into an error — a capture that fails costs the Undo.
+    // The driver mutated `docs` in place, setting `_id` on each document
+    // that lacked one — the same array now holds exactly what was inserted,
+    // no second read needed. Bounded the same way as deleteMany/updateMany's
+    // Pre-images (X13 §5), with the count checked before any document is
+    // converted, and kept in stored form (`asStored`): the input's JS numbers
+    // are not what Undo reads back.
+    let insertedDocs: Document[] | null;
+    try {
+      insertedDocs =
+        docs.length > MAX_BULK_CAPTURE_DOCS
+          ? null
+          : boundedCapture((docs as Record<string, unknown>[]).map(asStored));
+    } catch (err) {
+      insertedDocs = this.captureFailed(err);
+    }
+    return insertedDocs ? attachUndo(response, { insertedDocs }) : response;
   }
 
   async updateOne(input: {
