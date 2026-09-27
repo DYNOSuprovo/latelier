@@ -274,6 +274,24 @@ describe('data:import via the router', () => {
       expect(rows()).toMatchObject([{ reversible: false }]);
     });
 
+    it('keeps a document another client edits between Undo\'s read and its delete', async () => {
+      const auditId = await importAuditId('race.jsonl', '{"_id":1}\n{"_id":2}\n');
+      const original = Collection.prototype.bulkWrite;
+      vi.spyOn(Collection.prototype, 'bulkWrite').mockImplementationOnce(async function (
+        this: Collection,
+        ...args: Parameters<Collection['bulkWrite']>
+      ) {
+        await client.db(dbName).collection('people').updateOne({ _id: 1 } as never, { $set: { edited: true } });
+        return original.apply(this, args);
+      });
+
+      const env = await invokeUndo(auditId);
+      vi.restoreAllMocks();
+      expect(env).toMatchObject({ ok: true, data: { restored: 1, skipped: 1 } });
+      const remaining = await client.db(dbName).collection('people').find().toArray();
+      expect(remaining).toEqual([{ _id: 1, edited: true }]);
+    });
+
     it('stays undoable for the batches that fully landed when a later batch fails outright', async () => {
       const localHandlers = new Map<string, Handler>();
       const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };

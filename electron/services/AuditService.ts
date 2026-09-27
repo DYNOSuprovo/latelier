@@ -10,7 +10,7 @@ import type { Logger } from '../log.ts';
 import { ejsonParse, ejsonStringify } from '../mongo/ejson.ts';
 import { classifyMongoOpError } from '../mongo/errors.ts';
 import { QUERY_TIMEOUT_MS } from '../mongo/timeouts.ts';
-import { assertUndoable, undoCaptureOf, EXACT_BSON, importDigest, type UndoCapture } from '../mongo/undo.ts';
+import { asStored, assertUndoable, undoCaptureOf, EXACT_BSON, importDigest, type UndoCapture } from '../mongo/undo.ts';
 
 /** Ids are chunked into reads/deletes this large — matches `insertBatch`'s write-side batch size. */
 const UNDO_ID_CHUNK = 1000;
@@ -183,26 +183,43 @@ export class AuditService {
     const ids = docs.map((d) => d._id);
     const current = await coll.find({ _id: { $in: ids } } as Document, { ...EXACT_BSON, maxTimeMS: QUERY_TIMEOUT_MS }).toArray();
     const currentById = new Map(current.map((d) => [ejsonStringify(d._id), d]));
-    const toDelete: unknown[] = [];
+    const toDelete: Document[] = [];
     let skipped = 0;
     for (const doc of docs) {
       const cur = currentById.get(ejsonStringify(doc._id));
       // Exact-value match, not just "still present" — an insert that was
       // then edited must survive Undo, not get silently discarded because
-      // its _id is still the one this entry created.
-      // The server stores `_id` first, but the driver appends a generated one
-      // last (and a pasted document can carry it anywhere), so compare with
-      // `_id` moved to the front — canonical EJSON is field-order sensitive.
-      const { _id, ...rest } = doc;
-      if (cur !== undefined && ejsonStringify(cur) === ejsonStringify({ _id, ...rest })) {
-        toDelete.push(doc._id);
+      // its _id is still the one this entry created. The capture is already
+      // in stored form (`asStored`); running it again is a no-op on one that
+      // is, and brings `_id` to the front of one that isn't.
+      if (cur !== undefined && ejsonStringify(cur) === ejsonStringify(asStored(doc))) {
+        toDelete.push(cur);
       } else {
         skipped++;
       }
     }
-    if (toDelete.length === 0) return { restored: 0, skipped };
-    const deleted = await coll.deleteMany({ _id: { $in: toDelete } } as Document, { maxTimeMS: QUERY_TIMEOUT_MS });
-    return { restored: deleted.deletedCount, skipped: skipped + (toDelete.length - deleted.deletedCount) };
+    const deleted = await this.deleteIfUnchanged(coll, toDelete);
+    return { restored: deleted, skipped: skipped + (toDelete.length - deleted) };
+  }
+
+  /**
+   * Deletes each of `docs` only while it still equals what Undo just read:
+   * the comparison is the delete's own filter, so a write that lands after
+   * the read survives rather than being deleted with the rest. The type-exact
+   * check before this call still matters — `$$ROOT` equality lets a
+   * numerically equal type change (1 → 1.0) through. One `deleteOne` per
+   * document, unordered, so the driver splits the batch by size instead of
+   * one `$or` filter growing past a command's limit. Returns how many went.
+   */
+  private async deleteIfUnchanged(coll: Collection, docs: Document[]): Promise<number> {
+    if (docs.length === 0) return 0;
+    const result = await coll.bulkWrite(
+      docs.map((doc) => ({
+        deleteOne: { filter: { _id: doc._id, $expr: { $eq: ['$$ROOT', { $literal: doc }] } } },
+      })),
+      { ordered: false, maxTimeMS: QUERY_TIMEOUT_MS },
+    );
+    return result.deletedCount;
   }
 
   /**
@@ -250,16 +267,15 @@ export class AuditService {
       const current = await coll
         .find({ _id: { $in: idChunk } } as Document, { ...EXACT_BSON, maxTimeMS: QUERY_TIMEOUT_MS })
         .toArray();
-      const toDelete: unknown[] = [];
+      const toDelete: Document[] = [];
       for (const doc of current) {
         const key = ejsonStringify(doc._id);
-        if (importDigest(doc) === digestByKey.get(key)) toDelete.push(doc._id);
+        if (importDigest(doc) === digestByKey.get(key)) toDelete.push(doc);
       }
       skipped += idChunk.length - toDelete.length;
-      if (toDelete.length === 0) continue;
-      const deleted = await coll.deleteMany({ _id: { $in: toDelete } } as Document, { maxTimeMS: QUERY_TIMEOUT_MS });
-      restored += deleted.deletedCount;
-      skipped += toDelete.length - deleted.deletedCount;
+      const deleted = await this.deleteIfUnchanged(coll, toDelete);
+      restored += deleted;
+      skipped += toDelete.length - deleted;
     }
     return { restored, skipped };
   }
