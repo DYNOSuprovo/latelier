@@ -37,6 +37,9 @@ describe('data:import via the router', () => {
   let dir: string;
   let dbName: string;
   let auditRepo: AuditRepo;
+  // What the open dialog would have returned: `file()` adds each path it
+  // writes, as picking it would.
+  let picked: Set<string>;
   const handlers = new Map<string, Handler>();
 
   const invoke = async <T,>(payload: unknown): Promise<Envelope<T>> =>
@@ -67,6 +70,7 @@ describe('data:import via the router', () => {
 
   beforeEach(async () => {
     tmp = createTempDb();
+    picked = new Set();
     const now = new Date().toISOString();
     for (const id of ['c1', 'c-ro']) {
       tmp.db.prepare(
@@ -89,7 +93,7 @@ describe('data:import via the router', () => {
       log,
       auditSvc,
     );
-    registerDataChannels(router, new ImportService(pool));
+    registerDataChannels(router, new ImportService(pool), picked);
     registerAuditChannels(router, auditSvc);
     dbName = `data_${randomUUID().slice(0, 8)}`;
     await client.db(dbName).createCollection('people');
@@ -106,6 +110,7 @@ describe('data:import via the router', () => {
   async function file(name: string, content: string): Promise<string> {
     const p = path.join(dir, name);
     await fs.writeFile(p, content, 'utf8');
+    picked.add(p);
     return p;
   }
 
@@ -194,6 +199,21 @@ describe('data:import via the router', () => {
     expect(rows()).toEqual([]);
   });
 
+  it('reads no file the open dialog did not return — neither to import nor to preview', async () => {
+    const preview = (payload: unknown) => handlers.get(IPC_CHANNELS.dataPreviewCsv)!(invokeEvent, payload) as Promise<Envelope<unknown>>;
+    // Written straight to disk, never "picked": exactly what a renderer
+    // naming an arbitrary path would send.
+    const csv = path.join(dir, 'unpicked.csv');
+    const jsonl = path.join(dir, 'unpicked.jsonl');
+    await fs.writeFile(csv, 'secret,n\nhunter2,1\n', 'utf8');
+    await fs.writeFile(jsonl, '{"_id":1}\n', 'utf8');
+
+    const refused = { ok: false, error: { code: 'VALIDATION', message: 'only a file chosen in the import dialog can be read' } };
+    expect(await preview({ path: csv })).toMatchObject(refused);
+    expect(await invoke({ ...target(), path: jsonl })).toMatchObject(refused);
+    expect(await client.db(dbName).collection('people').countDocuments()).toBe(0);
+  });
+
   it('refuses a payload without a path before reaching the service', async () => {
     const env = await invoke({ ...target() });
     expect(env).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
@@ -223,7 +243,7 @@ describe('data:import via the router', () => {
         void localHandlers.get(IPC_CHANNELS.dataCancelImport)!(invokeEvent, { token: e.cancelToken });
       },
     });
-    registerDataChannels(router, importSvc);
+    registerDataChannels(router, importSvc, picked);
     const lines = Array.from({ length: 12 }, (_, i) => JSON.stringify({ _id: i })).join('\n');
     const p = await file('cancel.jsonl', lines);
     const env = (await localHandlers.get(IPC_CHANNELS.dataImport)!(
@@ -263,7 +283,7 @@ describe('data:import via the router', () => {
         log,
         auditSvc,
       );
-      registerDataChannels(router, new ImportService(pool, { maxUndoCaptureDocs: 2 }));
+      registerDataChannels(router, new ImportService(pool, { maxUndoCaptureDocs: 2 }), picked);
       const p = await file('over-ceiling.jsonl', '{"_id":1}\n{"_id":2}\n{"_id":3}\n');
       const env = (await localHandlers.get(IPC_CHANNELS.dataImport)!(
         invokeEvent,
@@ -302,7 +322,7 @@ describe('data:import via the router', () => {
         log,
         auditSvc,
       );
-      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }));
+      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }), picked);
       registerAuditChannels(router, auditSvc);
       const original = Collection.prototype.insertMany;
       let calls = 0;
@@ -344,7 +364,7 @@ describe('data:import via the router', () => {
         log,
         auditSvc,
       );
-      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }));
+      registerDataChannels(router, new ImportService(pool, { batchSize: 2 }), picked);
       const spy = vi
         .spyOn(Collection.prototype, 'insertMany')
         .mockImplementation(() => Promise.reject(new MongoNetworkError('connection reset')));

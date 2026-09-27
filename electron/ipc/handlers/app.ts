@@ -49,9 +49,16 @@ export function saveFilters(defaultName: string): FileFilter[] {
   return name ? [{ name, extensions: [ext] }, all] : [all];
 }
 
+/**
+ * `pickedImports` collects every path the open dialog returned for
+ * `data-import`: the data channels read a file only when it is in here, so
+ * the renderer can hand back a file the user picked but never name another.
+ * Required, not optional, for the same reason the router's sender check is.
+ */
 export function registerAppChannels(
   router: Router,
   getWindow: () => BrowserWindow | null,
+  pickedImports: Set<string>,
   diagnostic?: DiagnosticService,
 ): void {
   router.register(
@@ -64,7 +71,9 @@ export function registerAppChannels(
         filters: PURPOSE_FILTERS[purpose],
       });
       if (result.canceled || result.filePaths.length === 0) return { path: null };
-      return { path: result.filePaths[0]! };
+      const picked = result.filePaths[0]!;
+      if (purpose === 'data-import') pickedImports.add(picked);
+      return { path: picked };
     },
   );
 

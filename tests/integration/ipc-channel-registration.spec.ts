@@ -108,7 +108,7 @@ describe('IPC channel registration — full router coverage', () => {
     // it's optional, and the handler already treats "no diagnostic service"
     // as a controlled INTERNAL error — that still exercises registration +
     // the envelope path without needing a stub.
-    registerAppChannels(router, () => null);
+    registerAppChannels(router, () => null, new Set());
     registerMongoChannels(
       router,
       stubSvc<Parameters<typeof registerMongoChannels>[1]>(),
@@ -140,7 +140,7 @@ describe('IPC channel registration — full router coverage', () => {
       stubSvc<Parameters<typeof registerRecentChannels>[2]>(),
     );
     registerAuditChannels(router, stubSvc<Parameters<typeof registerAuditChannels>[1]>());
-    registerDataChannels(router, stubSvc<Parameters<typeof registerDataChannels>[1]>());
+    registerDataChannels(router, stubSvc<Parameters<typeof registerDataChannels>[1]>(), new Set());
     registerAggChannels(router, stubSvc<Parameters<typeof registerAggChannels>[1]>());
     registerShellChannels(router);
     registerMshellChannels(router, stubSvc<Parameters<typeof registerMshellChannels>[1]>());
