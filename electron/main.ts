@@ -64,7 +64,7 @@ import { AuditService } from './services/AuditService.ts';
 import { registerAuditChannels } from './ipc/handlers/audit.ts';
 import { registerDataChannels, makeDataEmitter } from './ipc/handlers/data.ts';
 import { ImportService } from './mongo/ImportService.ts';
-import { QueryService } from './mongo/QueryService.ts';
+import { DEFAULT_EXPORT_CAP, QueryService } from './mongo/QueryService.ts';
 import { DocumentService } from './mongo/DocumentService.ts';
 import { createLogger, type Logger } from './log.ts';
 import { createRouter } from './ipc/router.ts';
@@ -556,7 +556,7 @@ app.whenReady().then(() => {
   const recentSvc = new RecentQueryService(recentRepo);
   const recentFieldValueRepo = new RecentFieldValueRepo(db);
   const recentFieldValueSvc = new RecentFieldValueService(recentFieldValueRepo);
-  const querySvc = new QueryService(pool, recentSvc);
+  const querySvc = new QueryService(pool, recentSvc, DEFAULT_EXPORT_CAP, log);
   docSvc = new DocumentService(pool, { log });
   const aggSvc = new AggregationService(pool, recentSvc);
   const metaSvc = new MetaService(pool);
