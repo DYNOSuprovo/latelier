@@ -55,11 +55,13 @@ export function flattenVisibleFieldRows(
       const expandable = dv.type === 'object' || dv.type === 'array';
       out.push({ path, expandable, fieldPath, value });
       if (!expandable || !expandedPaths.has(path)) continue;
+      // Stryker disable LogicalOperator,ConditionalExpression: dv comes from toDisplayValue(value), whose only 'array' case is `Array.isArray(v)` and whose only 'object' case is inside its own `isRecord(v)` branch — for this value, dv.type === 'array' always agrees with Array.isArray(value), and reaching the else-if means dv.type === 'object', which already guarantees isRecord(value). Verified against displayValue.ts's source and a throwaway probe over array/non-array/record/non-record shapes.
       if (dv.type === 'array' && Array.isArray(value)) {
         visit(value.map((v, i): [string, unknown] => [String(i), v]), path, fieldPath);
       } else if (isRecord(value)) {
         visit(Object.entries(value), path, fieldPath);
       }
+      // Stryker restore LogicalOperator,ConditionalExpression
     }
   };
   visit(Object.entries(doc), null, '');
