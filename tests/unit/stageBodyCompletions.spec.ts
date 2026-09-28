@@ -119,4 +119,39 @@ describe('stageBodyCompletionSource', () => {
     const result = await source(fakeCtx('{ █ }'));
     expect(result).toBeNull();
   });
+
+  it('returns null on a fieldRef grammar hit ($-prefixed string value)', async () => {
+    // `detectAggGrammar` returns a truthy hit here (kind: 'fieldRef', not
+    // 'fieldName') — distinct from the "no hit at all" case above. Only the
+    // `hit.kind !== 'fieldName'` half of the guard rejects it.
+    const source = stageBodyCompletionSource({
+      getContext: () => ({ connectionId: 'c1', dbName: 'db', collection: 'users' }),
+      getStageOp: () => '$match',
+    });
+
+    const result = await source(fakeCtx('{ status: "$█" }'));
+    expect(result).toBeNull();
+  });
+
+  it('uses the quote-safe validFor when completing an already-quoted key', async () => {
+    const source = stageBodyCompletionSource({
+      getContext: () => ({ connectionId: 'c1', dbName: 'db', collection: 'users' }),
+      getStageOp: () => '$match',
+    });
+
+    const result = (await source(fakeCtx('{ "na█" }'))) as CompletionResult | null;
+    expect(result).not.toBeNull();
+    expect(result!.validFor).toEqual(/^[^"'\n]*$/);
+  });
+
+  it('uses the bare-identifier validFor when completing an unquoted key', async () => {
+    const source = stageBodyCompletionSource({
+      getContext: () => ({ connectionId: 'c1', dbName: 'db', collection: 'users' }),
+      getStageOp: () => '$match',
+    });
+
+    const result = (await source(fakeCtx('{ █ }'))) as CompletionResult | null;
+    expect(result).not.toBeNull();
+    expect(result!.validFor).toEqual(/^[\w$.]*$/);
+  });
 });

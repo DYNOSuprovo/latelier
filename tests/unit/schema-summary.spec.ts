@@ -112,6 +112,70 @@ describe('summarizeSchema', () => {
     const out = summarizeSchema(docs);
     expect(out.find((e) => e.path === 'a')!.types).toEqual({ object: 1 });
   });
+
+  it('sorts _id first, then by descending frequency, then alphabetically', () => {
+    const docs = [
+      { _id: 1, z: 1, a: 1, b: 1 },
+      { _id: 1, a: 1, b: 1 },
+      { _id: 1, a: 1 },
+      { _id: 1 },
+    ];
+    const out = summarizeSchema(docs);
+    expect(out.map((e) => e.path)).toEqual(['_id', 'a', 'b', 'z']);
+  });
+
+  it('puts _id first even when its own frequency is the lowest field present', () => {
+    // _id only appears in one of three docs; z appears in all three. A
+    // frequency-only sort would put z first — only the explicit "_id
+    // always wins" rule gets this right.
+    const docs = [{ _id: 1, z: 1 }, { z: 1 }, { z: 1 }];
+    const out = summarizeSchema(docs);
+    expect(out.map((e) => e.path)).toEqual(['_id', 'z']);
+  });
+
+  it('puts _id first when it is discovered after another, higher-frequency field', () => {
+    // 'z' is inserted into the schema map before '_id' (first doc has no
+    // _id), which puts _id second going into the sort — this exercises the
+    // comparator's other argument order than the test above.
+    const docs = [{ z: 1 }, { _id: 1, z: 1 }, { z: 1 }];
+    const out = summarizeSchema(docs);
+    expect(out.map((e) => e.path)).toEqual(['_id', 'z']);
+  });
+
+  it('sorts by descending frequency even when that contradicts alphabetical order', () => {
+    // 'a' is alphabetically first but has the lowest frequency; 'z' is
+    // alphabetically last but has the highest. Only a real frequency sort
+    // (not an alphabetical-only fallback) recovers the z, m, a order.
+    const docs = [
+      { z: 1, m: 1, a: 1 },
+      { z: 1, m: 1 },
+      { z: 1 },
+      {},
+    ];
+    const out = summarizeSchema(docs);
+    expect(out.map((e) => e.path)).toEqual(['z', 'm', 'a']);
+  });
+
+  it('breaks a frequency tie alphabetically, not by insertion order', () => {
+    // Both fields appear in every doc (frequency 1), and 'charlie' is
+    // inserted into the Map before 'alpha' — only a real localeCompare
+    // sort recovers alphabetical order here.
+    const docs = [{ _id: 1, charlie: 1, alpha: 1 }];
+    const out = summarizeSchema(docs);
+    expect(out.map((e) => e.path)).toEqual(['_id', 'alpha', 'charlie']);
+  });
+
+  it('does not recurse into an empty array', () => {
+    const docs = [{ items: [] }];
+    const out = summarizeSchema(docs);
+    expect(out.some((e) => e.path.startsWith('items.'))).toBe(false);
+  });
+
+  it('does not recurse into an EJSON-wrapper array element', () => {
+    const docs = [{ tags: [{ $oid: '507f1f77bcf86cd799439011' }] }];
+    const out = summarizeSchema(docs);
+    expect(out.some((e) => e.path.startsWith('tags.'))).toBe(false);
+  });
 });
 
 /**
@@ -168,6 +232,21 @@ describe('checkFieldType', () => {
     expect(checkFieldType(entries, 'edge', 'string')).toBeNull();
   });
 
+  it('warns at exactly the 90% cutoff — the threshold is inclusive', () => {
+    const entries = byPath([entry('exact', { number: 9, string: 1 })]);
+    expect(checkFieldType(entries, 'exact', 'string')).toEqual({
+      field: 'exact',
+      expectedType: 'number',
+      actualType: 'string',
+      percent: 90,
+    });
+  });
+
+  it('returns null for a sampled field with an empty type histogram', () => {
+    const entries = byPath([entry('empty', {})]);
+    expect(checkFieldType(entries, 'empty', 'string')).toBeNull();
+  });
+
   it('shares one type vocabulary with inferType, sentinels included', () => {
     // The regression this guards: the W17 warning must read {"$oid": …} as
     // `objectid`, not as `object`, or a correct edit warns.
@@ -193,5 +272,42 @@ describe('checkFieldType', () => {
       actualType: 'object',
       percent: 100,
     });
+  });
+});
+
+describe('inferType', () => {
+  it('tags the JS primitives', () => {
+    expect(inferType(null)).toBe('null');
+    expect(inferType(undefined)).toBe('undefined');
+    expect(inferType([1, 2])).toBe('array');
+    expect(inferType('a')).toBe('string');
+    expect(inferType(1)).toBe('number');
+    expect(inferType(true)).toBe('boolean');
+  });
+
+  it('falls through to the raw typeof tag for a non-object, non-primitive value', () => {
+    // A function isn't null/undefined/array/string/number/boolean, and
+    // `typeof` for it isn't 'object' either — it must reach the final
+    // `return t;` fallback, not get swept into the sentinel-object branch.
+    expect(inferType(() => {})).toBe('function');
+  });
+
+  it('tags every canonical-EJSON numeric/binary/timestamp sentinel', () => {
+    expect(inferType({ $numberInt: '1' })).toBe('number');
+    expect(inferType({ $numberDouble: '1.5' })).toBe('number');
+    expect(inferType({ $numberLong: '9999' })).toBe('long');
+    expect(inferType({ $numberDecimal: '1.5' })).toBe('decimal');
+    expect(inferType({ $regularExpression: { pattern: 'a', options: '' } })).toBe('regex');
+    expect(inferType({ $binary: { base64: 'AA==', subType: '00' } })).toBe('binary');
+    expect(inferType({ $timestamp: { t: 1, i: 1 } })).toBe('timestamp');
+  });
+
+  it('falls back to object for a sentinel-shaped value none of the checks name', () => {
+    // $minKey is a recognised single-key sentinel (isExactSentinel says
+    // yes) but inferType has no dedicated branch for it — the fallback at
+    // the end of the sentinel chain must catch it.
+    expect(inferType({ $minKey: 1 })).toBe('object');
+    // CodeWithScope: the other isExactSentinel shape (two keys), same gap.
+    expect(inferType({ $code: 'function(){}', $scope: {} })).toBe('object');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { rankCommands, groupRows } from '../../src/commands/rank';
+import { rankCommands, groupRows, RECENT_LABEL } from '../../src/commands/rank';
 import type { Command, PaletteContext } from '../../src/commands/types';
 
 const ctx: PaletteContext = { pathname: '/connections', connectionId: null };
@@ -36,8 +36,33 @@ describe('rankCommands', () => {
     ];
     const ranked = rankCommands(all, '', ctx, []);
     expect(ranked.map((r) => r.cmd.id)).toEqual(['ok']);
-    expect(warn).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[commandRegistry] when() threw for "broken":', expect.any(Error));
     warn.mockRestore();
+  });
+
+  it('treats a throwing when() as false without warning in a production build', () => {
+    vi.stubEnv('DEV', false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const broken = make({
+        id: 'broken',
+        title: 'Broken',
+        when: () => {
+          throw new Error('boom');
+        },
+      });
+      expect(rankCommands([broken], '', ctx, [])).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('trims and lowercases the query before matching', () => {
+    const all = [make({ id: 'a', title: 'Save Query' })];
+    const ranked = rankCommands(all, '  SAVE  ', ctx, []);
+    expect(ranked.map((r) => r.cmd.id)).toEqual(['a']);
   });
 
   it('with empty query: surfaces recents first then registration order', () => {
@@ -48,6 +73,16 @@ describe('rankCommands', () => {
     ];
     const ranked = rankCommands(all, '', ctx, ['c']);
     expect(ranked.map((r) => r.cmd.id)).toEqual(['c', 'a', 'b']);
+    expect(ranked.map((r) => r.bucket)).toEqual(['recent', 'substring', 'substring']);
+  });
+
+  it('with empty query: ignores a stale recent id that is not visible', () => {
+    const all = [make({ id: 'a', title: 'Alpha' })];
+    // 'ghost' is a recent id from a command that no longer exists (or is
+    // hidden by when()) — it must not produce a row with an undefined cmd.
+    const ranked = rankCommands(all, '', ctx, ['ghost', 'a']);
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]!.cmd.id).toBe('a');
     expect(ranked[0]!.bucket).toBe('recent');
   });
 
@@ -74,6 +109,35 @@ describe('rankCommands', () => {
     ];
     const ranked = rankCommands(all, 'bar', ctx, []);
     expect(ranked.map((r) => r.cmd.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('excludes a command that matches nothing, instead of ranking it anyway', () => {
+    const all = [make({ id: 'a', title: 'Alpha', subtitle: 'first letter', keywords: ['abc'] })];
+    const ranked = rankCommands(all, 'zzz', ctx, []);
+    expect(ranked).toEqual([]);
+  });
+
+  it('does not read a keyword match out of a defaulted, blank subtitle', () => {
+    // A command with no subtitle falls back to '' — querying for a
+    // substring of the mutation-testing sentinel text catches a wrong
+    // non-empty default, since '' never contains any non-empty substring.
+    const all = [make({ id: 'a', title: 'Alpha', keywords: ['abc'] })];
+    const ranked = rankCommands(all, 'here', ctx, []);
+    expect(ranked).toEqual([]);
+  });
+
+  it('does not read a keyword match out of a defaulted, empty keyword list', () => {
+    const all = [make({ id: 'a', title: 'Alpha', subtitle: 'first letter' })];
+    const ranked = rankCommands(all, 'here', ctx, []);
+    expect(ranked).toEqual([]);
+  });
+
+  it('joins multiple keywords with a space, not concatenated', () => {
+    // 'foo bar' does not contain 'oobar' as a substring — it would if the
+    // keywords were joined without a separator ('foobar').
+    const all = [make({ id: 'a', title: 'Alpha', keywords: ['foo', 'bar'] })];
+    const ranked = rankCommands(all, 'oobar', ctx, []);
+    expect(ranked).toEqual([]);
   });
 });
 
@@ -104,6 +168,28 @@ describe('groupRows', () => {
     const grouped = groupRows(ranked);
     expect(grouped).toHaveLength(1);
     expect(grouped[0]!.key).toBe('recent');
+  });
+
+  it('labels the recent header "Recent"', () => {
+    const ranked = rankCommands([make({ id: 'a', title: 'Alpha' })], '', ctx, ['a']);
+    const grouped = groupRows(ranked);
+    expect(grouped[0]!.label).toBe('Recent');
+    expect(RECENT_LABEL).toBe('Recent');
+  });
+
+  it('keeps multiple commands in the same group together, not overwritten', () => {
+    const ranked = rankCommands(
+      [
+        make({ id: 'a', title: 'Alpha', group: 'workspace' }),
+        make({ id: 'b', title: 'Beta', group: 'workspace' }),
+      ],
+      '',
+      ctx,
+      [],
+    );
+    const grouped = groupRows(ranked);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.rows.map((r) => r.cmd.id)).toEqual(['a', 'b']);
   });
 
   it('orders groups by GROUP_ORDER', () => {
