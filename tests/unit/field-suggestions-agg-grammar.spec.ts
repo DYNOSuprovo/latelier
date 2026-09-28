@@ -196,6 +196,15 @@ describe('detectAggGrammar', () => {
       const r = hit('{ byStatus: [{ $match: { stat| } }] }', '$facet');
       if (r?.kind === 'fieldName') expect(r.operatorContext).toBeUndefined();
     });
+
+    // MUTATION TARGET — a stageOp not covered by any of the earlier branches
+    // (not $facet/$match/$group/$project/$set/$addFields) must fall all the
+    // way through to the final `return undefined`, not stop early on the
+    // (unrelated) addFieldsValue check.
+    it('resolves to no context for an unrecognized stageOp at depth ≥ 2', () => {
+      const r = hit('{ x: { $c| } }', '$unwind');
+      if (r?.kind === 'fieldName') expect(r.operatorContext).toBeUndefined();
+    });
   });
 
   describe('replace range', () => {
@@ -212,6 +221,161 @@ describe('detectAggGrammar', () => {
       if (r?.kind === 'fieldRef') {
         expect(value.substring(r.replaceStart, r.replaceEnd)).toBe('stat');
       }
+    });
+  });
+
+  describe('escape handling inside strings', () => {
+    // MUTATION TARGET — an empty string closes on its very first character
+    // (the closing quote). If the `escape` flag were initialized `true`, that
+    // first character would be wrongly swallowed as "escaped", leaving the
+    // string open past its actual close.
+    it('closes an empty string correctly (escape starts false)', () => {
+      // Top-level: both a correctly-closed and a wrongly-stuck-open empty
+      // string end up returning null (no enclosing scope either way), so use
+      // an empty *key* inside an object, where a wrongly-stuck-open string
+      // swallows the closing quote as content and returns a non-null
+      // fieldName hit instead of null.
+      expect(hit('{ ""|')).toBeNull();
+    });
+
+    // MUTATION TARGET — an escaped quote (\") inside a string must not close
+    // it; disabling the escape-consumption logic (either the `if (escape)`
+    // check that resets the flag, or the `if (c === '\\')` check that sets
+    // it) makes the escaped quote look like a real close, cutting the string
+    // short and changing the result from `valueFor` to `null`.
+    it('treats an escaped quote as literal content, not a close', () => {
+      const r = hit('{ status: "a\\"b|" }');
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') {
+        expect(r.field).toBe('status');
+        expect(r.token).toBe('a\\"b');
+      }
+    });
+
+    // MUTATION TARGET — after consuming an escaped character, the `escape`
+    // flag must reset to false (`escape = false`), not stay/become true. If
+    // the reset itself were broken (assigning `true` instead), `escape`
+    // would latch permanently true after the first backslash, and every
+    // later character — including the string's real closing quote and any
+    // following syntax — would be wrongly swallowed as "escaped" for the
+    // rest of the input.
+    it('resumes normal parsing after the escaped character (escape flag actually resets)', () => {
+      const r = hit('{ status: "a\\"b" , |');
+      expect(r?.kind).toBe('fieldName');
+      if (r?.kind === 'fieldName') expect(r.token).toBe('');
+    });
+  });
+
+  describe('scope bookkeeping (brackets, quote-close key capture)', () => {
+    it('opens a string with a single quote, not just double quotes', () => {
+      const r = hit("{ a: 'hel|");
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') expect(r.field).toBe('a');
+    });
+
+    // MUTATION TARGET — without a real array scope, the bracket's content
+    // would inherit the *object's* mode/lastKey ('value' / '$concat'),
+    // wrongly producing a valueFor hit for a bare (non-$) array element.
+    it('does not produce a valueFor hit for a bare string inside an array', () => {
+      expect(hit('{ $concat: ["fir|"] }')).toBeNull();
+    });
+
+    // MUTATION TARGET — the optional-chaining `s?.type` guards against `s`
+    // being undefined at the top level (no enclosing object/array). Without
+    // it, closing a top-level string throws instead of returning null.
+    it('does not throw on a top-level string with no enclosing scope', () => {
+      expect(() => hit('"done"|')).not.toThrow();
+      expect(hit('"done"|')).toBeNull();
+    });
+
+    // Exercises the top-level (no enclosing scope) open-string bookkeeping
+    // directly, including the `s?.lastKey` optional chaining on open.
+    it('does not throw when opening an unterminated top-level string', () => {
+      expect(() => hit('"abc|')).not.toThrow();
+      expect(hit('"abc|')).toBeNull();
+    });
+
+    // MUTATION TARGET — a closing `]` must pop the array scope, or the
+    // subsequent bare key `c` is still (wrongly) evaluated against the
+    // array scope (not type 'obj'), returning null instead of a fieldName.
+    it('pops the array scope on a closing bracket', () => {
+      const r = hit('{ a: [1, 2], c|');
+      expect(r?.kind).toBe('fieldName');
+      if (r?.kind === 'fieldName') expect(r.token).toBe('c');
+    });
+
+    // MUTATION TARGET — a closing `}` must pop the object scope, or the
+    // array element string that follows is wrongly evaluated against the
+    // leftover object scope (which the errant comma resets to 'key' mode),
+    // returning a fieldName hit instead of null (array elements aren't keys).
+    it('pops the object scope on a closing brace', () => {
+      expect(hit('{ $concat: [{ a: 1 }, "fir|')).toBeNull();
+    });
+
+    // MUTATION TARGET — the `s?.type === 'obj'` guards in the colon and
+    // comma handlers protect against `s` being undefined at the top level
+    // (no enclosing object/array yet). Dropping the optional chaining, or
+    // forcing the guard true, makes `s.mode = ...` throw on undefined.
+    it('does not throw on a colon at the top level, with no enclosing scope', () => {
+      expect(() => hit(':|')).not.toThrow();
+      expect(hit(':|')).toBeNull();
+    });
+
+    it('does not throw on a comma at the top level, with no enclosing scope', () => {
+      expect(() => hit(',|')).not.toThrow();
+      expect(hit(',|')).toBeNull();
+    });
+
+    // MUTATION TARGET — the colon handler only re-derives the bare-key
+    // lookback when `s.lastKey === null`. Forcing that guard true makes a
+    // *second* colon (e.g. a malformed `a: b:`) overwrite the already-known
+    // key ('a') with whatever bare word precedes the second colon ('b').
+    it('does not re-derive the key on a second colon once one is already known', () => {
+      const r = hit('{ a: b: "val|');
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') expect(r.field).toBe('a');
+    });
+
+    // MUTATION TARGET — the bare-key lookback first trims trailing
+    // whitespace before the colon; breaking that trim (e.g. replacing the
+    // whitespace char with an empty string before testing it) makes the
+    // lookback start mid-whitespace, where the IDENT scan immediately stops,
+    // so no key is captured at all.
+    it('trims whitespace between a bare key and its colon', () => {
+      const r = hit('{ field : "val|');
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') expect(r.field).toBe('field');
+    });
+
+    // MUTATION TARGET — when there is no identifier text immediately before
+    // the colon (`end > start` false), `lastKey` must stay `null`, not
+    // become `''`. `''` is falsy too, but it's not `null`: a later colon's
+    // `s.lastKey === null` re-derivation check would then wrongly treat the
+    // key as "already known" and skip deriving the real one.
+    it('leaves lastKey null (not empty-string) when a colon has no key text before it', () => {
+      const r = hit('{ : a: "val|');
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') expect(r.field).toBe('a');
+    });
+
+    // MUTATION TARGET — the `if (prevModeAtStringStart === 'value' ||
+    // prevModeAtStringStart === 'arr')` guard is only reachable with 'value'
+    // or 'arr' (a 'key' string returns earlier, and this is the only other
+    // caller); forcing it true would also let a top-level string ('top'
+    // mode, no enclosing scope) that starts with `$` return a fieldRef hit.
+    it('does not resolve a fieldRef for a top-level $-prefixed string', () => {
+      expect(hit('"$foo|')).toBeNull();
+    });
+
+    // MUTATION TARGET — a quoted key must only be recorded when the
+    // enclosing scope is genuinely an object in 'key' mode; closing a
+    // *value* string must not overwrite the key that's already recorded for
+    // this object (a `&&` weakened to `||`, or the whole guard forced true,
+    // would treat every closing quote as a key capture).
+    it('does not treat a closed value-string as a key capture', () => {
+      const r = hit('{ a: "x" "y|');
+      expect(r?.kind).toBe('valueFor');
+      if (r?.kind === 'valueFor') expect(r.field).toBe('a');
     });
   });
 });
