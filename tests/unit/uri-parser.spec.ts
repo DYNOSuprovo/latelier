@@ -310,4 +310,39 @@ describe('parseConnectionUri', () => {
     const { input } = parseConnectionUri('mongodb://localhost/?maxPoolSize=25.6');
     expect(input.advanced?.maxPoolSize).toBe(26);
   });
+
+  it('an SRV host with a non-numeric suffix after the colon is rejected, not silently truncated', () => {
+    // The port-strip regex is anchored with `$` so it only matches a colon
+    // followed by digits-to-end-of-string. Without that anchor, a host like
+    // `cluster.mongodb.net:1234abc` would partially match `:1234` and the
+    // `abc` suffix would be silently dropped, producing a valid-looking host
+    // instead of surfacing the malformed input.
+    expect(() =>
+      parseConnectionUri('mongodb+srv://cluster.mongodb.net:1234abc/mydb'),
+    ).toThrow(ValidationError);
+  });
+
+  it('rejects an SRV URI with multiple comma-separated hosts (the port-strip rejoins with a comma)', () => {
+    // Each host segment has its port stripped independently, then rejoined
+    // with `,` before being handed to ConnectionString. Rejoining with `''`
+    // instead would silently glue two distinct hostnames into one
+    // (`a.example.comb.example.com`), which ConnectionString happily accepts
+    // as a single SRV host — hiding the fact that the user pasted a
+    // multi-host list SRV doesn't support.
+    expect(() =>
+      parseConnectionUri(
+        'mongodb+srv://a.example.com:27017,b.example.com:27018/mydb',
+      ),
+    ).toThrow(/multiple service names/);
+  });
+
+  it('a numeric-only host with no port is not misread as a bare port number', () => {
+    // firstHost.lastIndexOf(':') is -1 here (no colon at all). If the port
+    // split ran unconditionally, `firstHost.slice(idx + 1)` with idx === -1
+    // would re-parse the whole host string as a port number and truncate the
+    // last character off the host via `slice(0, idx)`.
+    const { input } = parseConnectionUri('mongodb://12345/db');
+    expect(input.host).toBe('12345');
+    expect(input.port).toBe(27017);
+  });
 });
