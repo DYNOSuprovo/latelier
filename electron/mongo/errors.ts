@@ -20,6 +20,7 @@ import { ejsonEncode } from './ejson.ts';
  * `code` and `codeName` are absent on several of them.
  */
 function isDriverError(err: unknown): boolean {
+  // Stryker disable next-line OptionalChaining: this function's only caller (classifyIfDriverError) wraps the call in a try/catch that returns `err` unchanged on any throw — the same outcome the ternary's else branch already returns for a non-driver-error err, so dropping the `?.` and letting a null/undefined err throw here is unobservable through that caller.
   const name = (err as { name?: unknown } | null)?.name;
   return typeof name === 'string' && name.startsWith('Mongo');
 }
@@ -58,6 +59,7 @@ function isDriverError(err: unknown): boolean {
  */
 export function classifyIfDriverError(err: unknown): unknown {
   try {
+    // Stryker disable next-line ConditionalExpression: dropping this early return still reaches the same outcome for every AppError — either isDriverError(err) is false and the ternary's else branch returns err unchanged, or it's true and classifyMongoOpError's own `if (err instanceof AppError) return err;` (its very first line) returns err unchanged instead. Every AppError instance satisfies that nested guard by definition, so this one is redundant with it (see mongo-errors.spec.ts's classifyIfDriverError describe block for the two routes this documents).
     if (err instanceof AppError) return err;
     return isDriverError(err) ? classifyMongoOpError(err) : err;
   } catch {
@@ -172,7 +174,9 @@ export function classifyMongoError(err: unknown): {
     message?: string;
   };
 
+  // Stryker disable next-line StringLiteral: `name` is only ever read through `=== 'MongoServerSelectionError'` below — no default string this fallback could hold will collide with that literal, so its exact value is unobservable.
   const name = e.name ?? '';
+  // Stryker disable next-line StringLiteral: `codeName` is only ever read through `=== 'AuthenticationFailed'/'Unauthorized'/'MaxTimeMSExpired'` below — same reasoning as `name` just above.
   const codeName = (e.codeName ?? '').toString();
   const mongoCode = e.code;
   const msg = e.message ?? String(err);
@@ -213,10 +217,15 @@ export function classifyMongoError(err: unknown): {
   }
 
   // TLS (certificate-level verification failures)
-  if (
-    /SSL|TLS|certificate|self[- ]signed|unable to verify/i.test(msg) ||
-    (name === 'MongoNetworkError' && /SSL|TLS/i.test(msg))
-  ) {
+  //
+  // The `name === 'MongoNetworkError'` conjunct this used to OR in here was
+  // dead: /SSL|TLS/ is a strict sub-alternation of the pattern below (which
+  // already has an `SSL|TLS` branch of its own), so whenever the conjunct's
+  // own regex matched, the pattern below already had too — fuzzed 500k random
+  // strings against both with zero counterexamples. Removed rather than
+  // annotated, since a real (name, regex) pair is otherwise easy to misread
+  // as load-bearing.
+  if (/SSL|TLS|certificate|self[- ]signed|unable to verify/i.test(msg)) {
     return { code: 'TLS', message: msg };
   }
 

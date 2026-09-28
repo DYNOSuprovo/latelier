@@ -57,6 +57,70 @@ describe('classifyMongoOpError', () => {
     });
   }
 
+  // Every case above that has both `code` and `codeName` set together can't
+  // tell which one actually decided the branch — mutating either disjunct
+  // away still leaves the other true. Isolate the codeName-only side for
+  // each of those, with no `code` field at all.
+  const codeNameOnlyCases: Array<{ what: string; codeName: string; code: string }> = [
+    { what: 'Unauthorized (codeName alone)', codeName: 'Unauthorized', code: 'UNAUTHORIZED' },
+    { what: 'BadValue (codeName alone)', codeName: 'BadValue', code: 'VALIDATION' },
+    { what: 'IndexOptionsConflict (codeName alone)', codeName: 'IndexOptionsConflict', code: 'CONFLICT' },
+    { what: 'IndexKeySpecsConflict (codeName alone)', codeName: 'IndexKeySpecsConflict', code: 'CONFLICT' },
+    { what: 'IndexNotFound (codeName alone)', codeName: 'IndexNotFound', code: 'NOT_FOUND' },
+    { what: 'UserNotFound (codeName alone)', codeName: 'UserNotFound', code: 'NOT_FOUND' },
+    { what: 'UserAlreadyExists (codeName alone)', codeName: 'UserAlreadyExists', code: 'CONFLICT' },
+    { what: 'RoleNotFound (codeName alone)', codeName: 'RoleNotFound', code: 'VALIDATION' },
+    { what: 'DocumentValidationFailure (codeName alone)', codeName: 'DocumentValidationFailure', code: 'VALIDATION' },
+    { what: 'NamespaceExists (codeName alone)', codeName: 'NamespaceExists', code: 'CONFLICT' },
+    { what: 'NamespaceNotFound (codeName alone)', codeName: 'NamespaceNotFound', code: 'NOT_FOUND' },
+  ];
+  for (const c of codeNameOnlyCases) {
+    it(`maps ${c.what} to ${c.code}`, () => {
+      const out = classifyMongoOpError({ codeName: c.codeName, message: 'boom' });
+      expect(out.code).toBe(c.code);
+    });
+  }
+
+  // The reverse isolation for the branches whose table entry above sets
+  // `codeName` and `code` together (Unauthorized, BadValue, IndexNotFound):
+  // a `code`-only input, with no `codeName` at all.
+  const codeOnlyCases: Array<{ what: string; code: number; expected: string }> = [
+    { what: 'Unauthorized (code alone)', code: 13, expected: 'UNAUTHORIZED' },
+    { what: 'BadValue (code alone)', code: 2, expected: 'VALIDATION' },
+    { what: 'IndexNotFound (code alone)', code: 27, expected: 'NOT_FOUND' },
+  ];
+  for (const c of codeOnlyCases) {
+    it(`maps ${c.what} to ${c.expected}`, () => {
+      const out = classifyMongoOpError({ code: c.code, message: 'boom' });
+      expect(out.code).toBe(c.expected);
+    });
+  }
+
+  // The `mongoMessage` detail these four branches attach is never asserted
+  // by the table above, so a mutant collapsing it to `{}` still passes.
+  it('attaches mongoMessage to details for BadValue/RoleNotFound/NamespaceExists/NamespaceNotFound', () => {
+    expect(classifyMongoOpError({ code: 2, message: 'bad value here' }).details).toMatchObject({
+      mongoMessage: 'bad value here',
+    });
+    expect(classifyMongoOpError({ code: 31, message: 'no such role' }).details).toMatchObject({
+      mongoMessage: 'no such role',
+    });
+    expect(classifyMongoOpError({ code: 48, message: 'target exists' }).details).toMatchObject({
+      mongoMessage: 'target exists',
+    });
+    expect(classifyMongoOpError({ code: 26, message: 'no such namespace' }).details).toMatchObject({
+      mongoMessage: 'no such namespace',
+    });
+  });
+
+  // `??`, not `&&`: a message of `undefined` must fall back to `String(err)`,
+  // not to `undefined` itself.
+  it('falls back to String(err) when the driver error carries no message at all', () => {
+    const err = { code: 999999 };
+    const out = classifyMongoOpError(err);
+    expect(out.message).toBe(String(err));
+  });
+
   it('classifies a validator rejection by its numeric code, which is all mongod sends', () => {
     // The regression this guards: mongod reports code 121 with no codeName, so
     // a branch keyed only on the name never ran and every schema violation
@@ -176,6 +240,23 @@ describe('classifyIfDriverError', () => {
   it('leaves a non-object throw alone', () => {
     expect(classifyIfDriverError('boom')).toBe('boom');
     expect(classifyIfDriverError(undefined)).toBe(undefined);
+    expect(classifyIfDriverError(null)).toBe(null);
+  });
+
+  // The docstring's own claim: classification must never cost the envelope,
+  // so a hostile thrown value whose `instanceof` check itself throws (a Proxy
+  // with a throwing `getPrototypeOf` trap) still gets handed back, via the
+  // outer try/catch, rather than rejecting the caller.
+  it('hands back a hostile value whose own instanceof check throws, rather than rejecting', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('trap sprung');
+        },
+      },
+    );
+    expect(classifyIfDriverError(hostile)).toBe(hostile);
   });
 
   it('keys off the driver name prefix, not on having a mongo-shaped code', () => {
@@ -183,6 +264,19 @@ describe('classifyIfDriverError', () => {
     // `Mongo…` class names are common to every error the driver exports.
     const impostor = Object.assign(new Error('dup'), { code: 11000 });
     expect(classifyIfDriverError(impostor)).toBe(impostor);
+  });
+
+  // `isDriverError`'s `typeof name === 'string'` guard is not just belt-and-
+  // suspenders against a throw: a boxed `String` has `typeof !== 'string'`
+  // but still inherits `startsWith`, so without the guard a `new
+  // String('MongoFoo')` name would slip past the `typeof` check, pass the
+  // prefix test, and get handed to `classifyMongoOpError` — whose own field
+  // reads (`e.name === 'MongoNetworkError'`, `===` against a boxed String)
+  // all fail, landing it as a fabricated `MONGO_ERROR` instead of passing
+  // the original error through untouched.
+  it('does not treat a boxed String name as a driver name, even though it has startsWith', () => {
+    const err = { name: new String('MongoServerError'), message: 'x' };
+    expect(classifyIfDriverError(err)).toBe(err);
   });
 });
 
