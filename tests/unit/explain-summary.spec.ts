@@ -175,4 +175,117 @@ describe('summarizeExplain', () => {
     expect(summarizeExplain('foo')).toBeNull();
     expect(summarizeExplain([1, 2, 3])).toBeNull();
   });
+
+  it('(i) inputStages[] fallback is only used when inputStage is absent, and only its first element is read', () => {
+    // No `inputStage`, so nextStage must fall through to the `inputStages`
+    // array branch — and it must actually return element 0, not skip it.
+    const plan = {
+      queryPlanner: {
+        winningPlan: { stage: 'A', inputStages: [{ stage: 'B' }] },
+      },
+    };
+    expect(summarizeExplain(plan)?.stages).toEqual(['A', 'B']);
+  });
+
+  it('(j) a stage node with no `stage` string of its own contributes nothing to the chain', () => {
+    const plan = {
+      queryPlanner: {
+        winningPlan: { stage: 'A', inputStage: { indexName: 'no-stage-field' } },
+      },
+    };
+    // The inner node has no `.stage` string, so it must not appear (not even
+    // as `undefined`) in the collected chain.
+    expect(summarizeExplain(plan)?.stages).toEqual(['A']);
+  });
+
+  it('(k) IXSCAN indexName is only read when it is actually a string', () => {
+    const plan = {
+      queryPlanner: {
+        winningPlan: { stage: 'IXSCAN', indexName: 42, keyPattern: { a: 1 } },
+      },
+    };
+    const summary = summarizeExplain(plan);
+    expect(summary?.indexName).toBeUndefined();
+    expect(summary?.keyPattern).toEqual({ a: 1 });
+  });
+
+  it('(l) the aggregation $cursor lookup skips a non-cursor entry ahead of the real one', () => {
+    const plan = {
+      stages: [
+        { tag: 'noise' },
+        { $cursor: { queryPlanner: { winningPlan: { stage: 'COLLSCAN' } } } },
+      ],
+    };
+    const summary = summarizeExplain(plan);
+    expect(summary).not.toBeNull();
+    expect(summary?.stages).toEqual(['COLLSCAN']);
+  });
+
+  it('(m) an aggregation stages[] with no $cursor entry at all → null, not a crash', () => {
+    expect(summarizeExplain({ stages: [{ tag: 'noise' }] })).toBeNull();
+  });
+
+  it('(n) a non-record queryPlanner (e.g. carrying its own stray winningPlan property) is rejected, not read through', () => {
+    const fakeQueryPlanner = (() => undefined) as unknown as Record<string, unknown> & {
+      winningPlan?: unknown;
+    };
+    fakeQueryPlanner.winningPlan = { stage: 'IXSCAN', indexName: 'ghost_1' };
+    expect(summarizeExplain({ queryPlanner: fakeQueryPlanner })).toBeNull();
+  });
+
+  it('(o) a winning plan with no recognizable `stage` anywhere in its chain → null', () => {
+    expect(summarizeExplain({ queryPlanner: { winningPlan: { foo: 1 } } })).toBeNull();
+  });
+
+  it('(p) executionStats fields are only copied when they are actually numbers', () => {
+    const plan = {
+      queryPlanner: { winningPlan: { stage: 'COLLSCAN' } },
+      executionStats: {
+        nReturned: 'five',
+        totalDocsExamined: 'lots',
+        totalKeysExamined: 'none',
+        executionTimeMillis: 'slow',
+      },
+    };
+    const summary = summarizeExplain(plan);
+    expect(summary?.nReturned).toBeUndefined();
+    expect(summary?.docsExamined).toBeUndefined();
+    expect(summary?.keysExamined).toBeUndefined();
+    expect(summary?.executionTimeMillis).toBeUndefined();
+  });
+
+  it('(q) a sharded winningPlan with a non-array shards holder is not treated as shards[]', () => {
+    // `shards` here is array-*like* (has a numeric '0' key) but is not a real
+    // array, so `Array.isArray` must reject it — isolates that guard from the
+    // `isRecord(shard0) && isRecord(shard0.winningPlan)` check just below it.
+    const winningPlan: Record<string, unknown> = { stage: 'FETCH' };
+    (winningPlan as Record<string, unknown>).shards = {
+      0: { winningPlan: { stage: 'IXSCAN', indexName: 'z_1' } },
+    };
+    const summary = summarizeExplain({ queryPlanner: { winningPlan } });
+    expect(summary?.stages).toEqual(['FETCH']);
+    expect(summary?.usesIndex).toBe(false);
+  });
+
+  it('(q2) a non-record winningPlan (e.g. carrying its own stray queryPlan property) is rejected before the SBE-nesting check ever sees it', () => {
+    const rootPlan = (() => undefined) as unknown as Record<string, unknown> & {
+      queryPlan?: unknown;
+    };
+    rootPlan.queryPlan = { stage: 'IXSCAN', indexName: 'y_1' };
+    expect(summarizeExplain({ queryPlanner: { winningPlan: rootPlan } })).toBeNull();
+  });
+
+  it('(r) shards[0] is only followed when it is a record whose own winningPlan is also a record', () => {
+    const plan = {
+      queryPlanner: {
+        winningPlan: {
+          stage: 'FETCH',
+          shards: [{ shardName: 'shard0', winningPlan: 'not-a-record' }],
+        },
+      },
+    };
+    // shard0.winningPlan fails isRecord, so the outer winningPlan must be left
+    // alone — not replaced by the string.
+    expect(summarizeExplain(plan)?.stages).toEqual(['FETCH']);
+  });
 });
