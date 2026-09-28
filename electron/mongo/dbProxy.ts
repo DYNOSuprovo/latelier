@@ -416,17 +416,10 @@ function mergeSignalOptions(
   }
   // User passed options — merge without clobbering an explicit `signal`.
   const userOpts = out[positional];
-  // Stryker disable next-line BlockStatement: emptying the else block below still falls through
-  // to the identical final `return out;` at the end of this function with `out` unmutated in
-  // between — verified with a node probe across 6 representative combinations, zero observable
-  // differences.
+  // Something non-object in the options slot is left alone; the driver will validate.
   if (userOpts && typeof userOpts === 'object') {
     const userObj = userOpts as Record<string, unknown>;
     out[positional] = 'signal' in userObj ? userObj : { ...userObj, signal };
-  } else {
-    // User passed something non-object in the options slot — leave it
-    // alone; the driver will validate.
-    return out;
   }
   return out;
 }
