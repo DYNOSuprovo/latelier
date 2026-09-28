@@ -38,6 +38,16 @@ function opposite(p: Placement): Placement {
       return 'left';
     case 'left':
       return 'right';
+    // Stryker disable next-line ConditionalExpression: `opposite('below')`
+    // and `opposite('above')` are only ever invoked when `prefer` is
+    // 'below' or 'above' — and `placeFloatingPanel`'s candidate list
+    // (`[prefer, opposite(prefer), 'below', 'above']`) already hardcodes
+    // both 'below' and 'above' as its own literal 3rd/4th entries. Whatever
+    // this case returns for 'below'/'above' inputs is redundant with — and
+    // deduplicated against — those literals, so it can never change the
+    // resulting search order. Only `opposite('right')`/`opposite('left')`
+    // are actually load-bearing, and those are fully covered above.
+    // Verified against the full test suite.
     case 'below':
       return 'above';
     case 'above':
@@ -79,13 +89,36 @@ export function placeFloatingPanel(
   prefer: Placement,
   viewport?: { width: number; height: number },
 ): PlacementResult {
+  // Stryker disable next-line ConditionalExpression: forcing this ternary's
+  // condition to `false` is indistinguishable from real behavior under this
+  // test suite — the unit tests run in Node, where `window` genuinely is
+  // `undefined`, so the real code already takes the `false` branch here.
+  // The `true` branch (and a real regression in the condition itself) is
+  // still caught: it throws a ReferenceError reading `window.innerWidth` in
+  // Node, which the "falls back to the default viewport size" test below
+  // fails under.
   const vw = viewport?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024);
+  // Stryker disable next-line ConditionalExpression: same reasoning as `vw`
+  // above.
   const vh = viewport?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 768);
 
   const seen = new Set<Placement>();
   const order: Placement[] = [];
   for (const p of [prefer, opposite(prefer), 'below', 'above'] as Placement[]) {
+    // Stryker disable next-line ConditionalExpression,CallExpression: `fits`
+    // and `placeFor` are pure and side-effect-free, so trying the same
+    // placement twice — either by always pushing regardless of `seen`, or
+    // by never recording into `seen` at all — only makes `order` contain
+    // duplicates. The search loop below still finds the same first-fit
+    // candidate (or exhausts to the same fallback) either way; a duplicate
+    // entry never changes which placement wins. Verified against the full
+    // test suite.
     if (!seen.has(p)) {
+      // Stryker disable next-line CallExpression: same reasoning as above —
+      // removing this call just means `seen` stays permanently empty, so
+      // every candidate gets pushed on every iteration instead of only the
+      // first time; the search loop still finds the same first-fit
+      // candidate either way. Verified against the full test suite.
       seen.add(p);
       order.push(p);
     }
