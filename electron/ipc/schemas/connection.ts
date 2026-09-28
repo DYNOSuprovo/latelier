@@ -199,6 +199,12 @@ export const ConnectionTestInputSchema: z.ZodType<ConnectionInput> = z
   .object(BaseInputShape)
   .superRefine((data, ctx) => {
     if (data.authMech === 'x509') {
+      // Stryker disable next-line OptionalChaining: `tls` is a required (non-.optional())
+      // field of BaseInputShape here (unlike the partial ConnectionUpdateSchema), and zod's
+      // superRefine never runs when a required field failed its own shape check — verified
+      // with a node probe: a `tls`-omitting input never reaches this callback at all, it
+      // fails on the base "expected object, received undefined" issue first. So `data.tls`
+      // is always a real object whenever this line executes; `?.` and `.` are equivalent here.
       if (!data.tls?.enabled) {
         ctx.addIssue({
           code: 'custom',
@@ -226,6 +232,7 @@ export const ConnectionUpdateSchema: z.ZodType<ConnectionUpdate> = z
     clearSshPassphrase: z.boolean().optional(),
   })
   .partial()
+  // Stryker disable next-line ObjectLiteral,StringLiteral: `opts.mode` is only ever read via `opts.mode === 'create'` inside applyCrossFieldRules — verified with a node probe that `{ mode: 'update' }`, `{}`, and `{ mode: '' }` all evaluate that comparison to `false` identically, so which literal is passed here doesn't change behavior.
   .superRefine((data, ctx) => applyCrossFieldRules(data as Partial<ConnectionInput>, ctx, { mode: 'update' }));
 
 export const ParseUriInputSchema = z.object({
