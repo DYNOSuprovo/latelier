@@ -51,7 +51,7 @@ describe('normalizeConnectionInput', () => {
         appName: 123 as unknown as string,
       },
     });
-    expect(out.advanced?.appName).toBe(123);
+    expect(out.advanced?.appName as unknown).toBe(123);
   });
 
   it('leaves `tls` untouched (not even set to `{}`) when absent', () => {
@@ -76,7 +76,7 @@ describe('normalizeConnectionInput', () => {
     const out = normalizeConnectionInput({
       tls: { enabled: true, verify: true, clientCertPath: 42 as unknown as string },
     });
-    expect(out.tls?.clientCertPath).toBe(42);
+    expect(out.tls?.clientCertPath as unknown).toBe(42);
   });
 
   it('leaves `ssh` untouched (not even set to `{}`) when absent', () => {
@@ -109,8 +109,8 @@ describe('normalizeConnectionInput', () => {
         privateKeyPath: null as unknown as string,
       },
     });
-    expect(out.ssh?.host).toBe(7);
-    expect(out.ssh?.username).toBe(false);
+    expect(out.ssh?.host as unknown).toBe(7);
+    expect(out.ssh?.username as unknown).toBe(false);
     expect(out.ssh?.privateKeyPath).toBeNull();
   });
 
