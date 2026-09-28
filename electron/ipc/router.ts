@@ -21,6 +21,8 @@ export interface AuditSink {
     envelope: Envelope<unknown>,
     startedAt: number,
     durationMs: number,
+    /** What the handler threw, when the envelope is an error — the only place an Undo capture riding a failure can be read. */
+    thrown?: unknown,
   ): string | null;
 }
 
@@ -132,6 +134,7 @@ export function createRouter(
         let validated: { input: I } | null = null;
         let envelope: Envelope<O>;
         let durationMs: number;
+        let thrown: unknown;
         try {
           const input = validate(raw);
           validated = { input };
@@ -144,6 +147,7 @@ export function createRouter(
           envelope = success<O>(data);
         } catch (err) {
           durationMs = Date.now() - t0;
+          thrown = err;
           // Services classify their own driver errors, and the envelope only
           // knows `AppError`. A service that forgets leaves `toIpcError` with
           // a bare driver error to label `INTERNAL`, which is a wrong code
@@ -165,7 +169,7 @@ export function createRouter(
         // lost and the Operation's result stands (ADR 0002).
         if (audit && validated) {
           try {
-            const auditId = audit.record(channel, validated.input, envelope, t0, durationMs);
+            const auditId = audit.record(channel, validated.input, envelope, t0, durationMs, thrown);
             // Handing back the entry id is what lets the renderer offer Undo.
             // Only a Reversible entry has one, and every audited channel
             // resolves to an object.

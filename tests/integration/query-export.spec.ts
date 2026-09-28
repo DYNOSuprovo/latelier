@@ -11,6 +11,7 @@ import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo'
 import { registerQueryChannels } from '../../electron/ipc/handlers/query';
 import { createRouter } from '../../electron/ipc/router';
 import type { Envelope } from '../../shared/ipc';
+import type { Logger } from '../../electron/log';
 import { createTempDb, type TempDb } from '../helpers/db';
 import { getSharedServer, makeConnection, makeReader } from '../helpers/mongo';
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
@@ -239,6 +240,60 @@ describe('QueryService.exportToFile', () => {
     expect((caught as { code?: string }).code).toBe('MONGO_ERROR');
 
     await expect(fs.access(file)).rejects.toThrow();
+  });
+
+  it('fails, and removes the file, when closing it after the last write fails', async () => {
+    await seed(2);
+    const file = outPath('close-fails.jsonl');
+    const realOpen = fs.open;
+    const spy = vi.spyOn(fs, 'open').mockImplementationOnce(async (...args: Parameters<typeof fs.open>) => {
+      const handle = await realOpen(...args);
+      const realClose = handle.close.bind(handle);
+      handle.close = async () => {
+        await realClose();
+        throw new Error('EIO: flush failed');
+      };
+      return handle;
+    });
+
+    let caught: unknown;
+    try {
+      await svc.exportToFile({ connectionId: connId, dbName, collection: collName, filter: '{}', format: 'jsonl' }, file);
+    } catch (err) {
+      caught = err;
+    }
+    spy.mockRestore();
+    expect((caught as { code?: string }).code).toBe('INTERNAL');
+    expect((caught as Error).message).toMatch(/failed to close export file: EIO: flush failed/);
+    await expect(fs.access(file)).rejects.toThrow();
+  });
+
+  it('logs, rather than drops, a partial file it could not remove after a failure', async () => {
+    await seed(1);
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(collName).insertOne({ n: -1, tag: 'not-a-number' });
+    const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logged = new QueryService(pool, new RecentQueryService(new RecentQueryRepo(tmp.db)), 5, log);
+    const spy = vi.spyOn(fs, 'unlink').mockRejectedValueOnce(new Error('EBUSY: locked'));
+
+    await expect(
+      logged.exportToFile(
+        {
+          connectionId: connId,
+          dbName,
+          collection: collName,
+          filter: '{}',
+          sort: '{"n":1}',
+          projection: '{"r":{"$toInt":"$tag"}}',
+          format: 'jsonl',
+        },
+        outPath('stuck.jsonl'),
+      ),
+    ).rejects.toMatchObject({ code: 'MONGO_ERROR' });
+    spy.mockRestore();
+    expect(log.warn).toHaveBeenCalledWith('query.export', 'removing the partial export file failed', {
+      message: 'EBUSY: locked',
+    });
   });
 
   it('leaves a pre-existing file untouched when opening the target itself fails, and labels the failure a filesystem error, not a Mongo one', async () => {

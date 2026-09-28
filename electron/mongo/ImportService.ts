@@ -222,8 +222,14 @@ export class ImportService {
       } catch (err) {
         // `insertBatch` has already classified its own errors; what is left is
         // the JSONL stream failing to read part-way.
-        if (err instanceof AppError) throw err;
-        throw fileError('read', err, { insertedCount: report.inserted });
+        const failure = err instanceof AppError ? err : fileError('read', err, { insertedCount: report.inserted });
+        // The batches that fully landed before the failure stay undoable. The
+        // failing batch's own landed documents can't be told apart from the
+        // ones it never wrote, so they are not captured and Undo leaves them.
+        // The capture rides the error object in main (a WeakMap), never its
+        // `details`, which are what cross IPC.
+        if (!captureOverflowed && importedIds.length > 0) attachUndo(failure, { importedIds, digests });
+        throw failure;
       }
       return finish();
     } finally {

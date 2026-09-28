@@ -5,6 +5,7 @@ import type { Router } from '../router.ts';
 import { CollectionTargetSchema, NonEmpty, zodValidator } from '../validators.ts';
 import type { ImportService } from '../../mongo/ImportService.ts';
 import type { DataImportProgressEvent } from '@shared/types';
+import { ValidationError } from '../../errors.ts';
 
 const CsvColumnSchema = z.object({
   header: z.string(),
@@ -12,8 +13,9 @@ const CsvColumnSchema = z.object({
   emptyAsNull: z.boolean(),
 });
 
-// The path is only shape-checked here; `ImportService` re-validates it
-// (absolute, allowed extension, a regular file) before reading, and checks
+// The path is only shape-checked by the schema; the handler then refuses any
+// path main's own open dialog didn't return, and `ImportService` re-validates
+// it (absolute, allowed extension, a regular file) before reading, and checks
 // the column mapping against the file's own header row.
 const ImportSchema = CollectionTargetSchema.extend({
   path: NonEmpty,
@@ -29,17 +31,35 @@ const CancelInputSchema = z.object({
   token: NonEmpty,
 });
 
-export function registerDataChannels(router: Router, svc: ImportService): void {
+/**
+ * `pickedImports` is the set `registerAppChannels` fills from the open
+ * dialog. A renderer is trusted to hand back a file the user picked, never to
+ * choose one: without this, any `.json`/`.csv` path on disk could be read
+ * into a collection or back out through the CSV preview.
+ */
+export function registerDataChannels(router: Router, svc: ImportService, pickedImports: ReadonlySet<string>): void {
+  const assertPicked = (path: string): void => {
+    if (!pickedImports.has(path)) {
+      throw new ValidationError('only a file chosen in the import dialog can be read', { field: 'path' });
+    }
+  };
+
   router.register(
     IPC_CHANNELS.dataImport,
     zodValidator(ImportSchema),
-    (input) => svc.importFile(input),
+    (input) => {
+      assertPicked(input.path);
+      return svc.importFile(input);
+    },
   );
 
   router.register(
     IPC_CHANNELS.dataPreviewCsv,
     zodValidator(PreviewCsvSchema),
-    ({ path }) => svc.previewCsv(path),
+    ({ path }) => {
+      assertPicked(path);
+      return svc.previewCsv(path);
+    },
   );
 
   router.register(

@@ -818,6 +818,27 @@ describe('audit log via the router', () => {
       expect(await orders().countDocuments()).toBe(0);
     });
 
+    it('insertMany undo keeps a document another client edits between its read and its delete', async () => {
+      const res = await ok<{ insertedCount: number; auditId?: string }>(IPC_CHANNELS.docInsertMany, {
+        ...target('orders'),
+        docsJson: JSON.stringify([{ _id: 1, v: 'original' }, { _id: 2, v: 'original' }]),
+      });
+      // Undo has already read both documents and found them unchanged when
+      // this edit lands, just before its delete goes out.
+      const original = Collection.prototype.bulkWrite;
+      vi.spyOn(Collection.prototype, 'bulkWrite').mockImplementationOnce(async function (
+        this: Collection,
+        ...args: Parameters<Collection['bulkWrite']>
+      ) {
+        await orders().updateOne({ _id: 1 }, { $set: { v: 'edited-mid-undo' } });
+        return original.apply(this, args);
+      });
+
+      expect(await undo(res.auditId!)).toEqual({ ok: true, data: { restored: 1, skipped: 1 } });
+      expect(await orders().findOne({ _id: 1 })).toEqual({ _id: 1, v: 'edited-mid-undo' });
+      expect(await orders().findOne({ _id: 2 })).toBeNull();
+    });
+
     it('insertMany over the bulk capture ceiling is not reversible', async () => {
       const docs = Array.from({ length: 1001 }, (_, i) => ({ _id: i }));
       const res = await ok<{ insertedCount: number; auditId?: string }>(IPC_CHANNELS.docInsertMany, {

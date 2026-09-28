@@ -10,6 +10,7 @@ import {
   undoCaptureOf,
 } from '../../electron/mongo/undo';
 import { AppError } from '../../electron/errors';
+import { ByteCapExceededError } from '../../electron/mongo/ejson';
 import { undoFailureMessage, undoneMessage } from '../../src/utils/auditUndo';
 
 function refusal(row: { reversible: number; undone_at: string | null; undo_json: string | null }): string | null {
@@ -80,6 +81,13 @@ describe('boundedCapture — X13 §5\'s bulk Pre-image ceiling', () => {
   it('refuses one document over the doc ceiling', () => {
     const docs = Array.from({ length: MAX_BULK_CAPTURE_DOCS + 1 }, (_, i) => ({ i }));
     expect(boundedCapture(docs)).toBeNull();
+  });
+
+  it('passes on a failure that is not the byte ceiling, rather than reading it as one', () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    expect(() => boundedCapture([circular])).toThrow();
+    expect(() => boundedCapture([circular])).not.toThrow(ByteCapExceededError);
   });
 
   it('refuses documents whose encoded size is over the byte ceiling', () => {

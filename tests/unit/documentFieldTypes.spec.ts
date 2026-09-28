@@ -99,6 +99,10 @@ describe('textOf', () => {
   it('renders every kind\'s own text exactly', () => {
     expect(textOf('string', 'hi')).toBe('hi');
     expect(textOf('int32', new Int32(-3))).toBe('-3');
+    expect(textOf('int32', new Int32(-2147483648))).toBe('-2147483648');
+    // A bare JS number prints as JS does, not as its EJSON sentinel.
+    expect(textOf('number', Number.NaN)).toBe('NaN');
+    expect(textOf('number', Infinity)).toBe('Infinity');
     expect(textOf('double', new Double(1.5))).toBe('1.5');
     expect(textOf('long', Long.fromString('9007199254740993'))).toBe('9007199254740993');
     expect(textOf('decimal', Decimal128.fromString('1.10'))).toBe('1.10');

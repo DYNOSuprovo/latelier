@@ -164,7 +164,7 @@ function lookup(doc: Doc, path: string): { value: unknown } | null {
  */
 
 /** A segment that addresses an array element: `'0'`, `'1'`, … — no leading zeros. */
-function arrayIndexOf(segment: string): number | null {
+export function arrayIndexOf(segment: string): number | null {
   return /^(0|[1-9]\d*)$/.test(segment) ? Number(segment) : null;
 }
 
@@ -234,15 +234,18 @@ export function deleteAtSegments(doc: Doc, path: readonly string[]): Doc {
   let node: unknown = out;
   for (const part of parts) {
     if (Array.isArray(node)) {
-      const idx = arrayIndexOf(part);
-      node = idx !== null && idx < node.length ? node[idx] : undefined;
+      // Past the end reads `undefined` on its own; `-1` does the same for a
+      // segment that isn't an index at all.
+      node = node[arrayIndexOf(part) ?? -1];
     } else {
       node = isPlainDocument(node) ? (node as Doc)[part] : undefined;
     }
   }
   if (Array.isArray(node)) {
+    // `splice` past the end is already a no-op, but `splice(null, 1)` would
+    // remove element 0 — so only the not-an-index case needs refusing.
     const idx = arrayIndexOf(leaf);
-    if (idx !== null && idx < node.length) node.splice(idx, 1);
+    if (idx !== null) node.splice(idx, 1);
   } else if (isPlainDocument(node)) {
     delete (node as Doc)[leaf];
   }
@@ -304,7 +307,9 @@ export function parseJsonDraft(text: string, originalId: unknown): JsonDraftResu
   const doc = parsed as Doc;
   const hadId = originalId !== undefined;
   const hasId = has(doc, '_id');
-  const idChanged = hadId !== hasId || (hadId && hasId && !same(originalId, doc._id));
+  // Both absent compares equal (`undefined` both sides), so only a present,
+  // differing `_id` or one side missing it counts as a change.
+  const idChanged = hadId !== hasId || !same(originalId, doc._id);
   if (idChanged) return { ok: false, error: 'The _id field cannot be changed here' };
   return { ok: true, doc };
 }

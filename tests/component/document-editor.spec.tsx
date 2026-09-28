@@ -607,17 +607,35 @@ describe('DocumentEditor — arrays', () => {
     expect(JSON.parse(lastCall(updateOne).updateJson)).toEqual({ $set: { tags: ['b', 'c'] } });
   });
 
-  it('purges pending text under the whole array on remove, so a reused index never inherits stale text', () => {
+  it('on remove, a later element keeps its pending text as it shifts down, and a reused index starts fresh', () => {
     setup({ doc: { ...DOC, tags: [1, 2] } });
     // An invalid edit at index 1 lives only in `texts`, keyed by that index,
     // never reaching the draft.
     fireEvent.change(field('tags.1'), { target: { value: 'oops' } });
     fireEvent.click(within(row('tags.0')).getByRole('button', { name: 'Remove tags.0' }));
-    // Add item re-appends at index 1 — without purging the array's whole
-    // state on remove, that slot would inherit the dead 'oops' text instead
-    // of the fresh default.
+    expect(field('tags.0').value).toBe('oops');
+    // Add item re-appends at index 1 — that slot must not inherit the text
+    // that used to live at index 1.
     fireEvent.click(within(within(editor()).getByTestId('add-item-tags')).getByRole('button', { name: 'Add item' }));
     expect(field('tags.1').value).toBe('');
+  });
+
+  it("removing an element never discards another element's unparseable edit, so Save stays blocked", () => {
+    setup({ doc: { ...DOC, tags: [{ $numberInt: '1' }, { $numberInt: '2' }, { $numberInt: '3' }] } });
+    fireEvent.change(field('tags.2'), { target: { value: '12x' } });
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(row('tags.0')).getByRole('button', { name: 'Remove tags.0' }));
+    expect(field('tags.1').value).toBe('12x');
+    expect(within(row('tags.1')).getByText(/whole number/)).toBeTruthy();
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('removing an element keeps a later element collapsed as it shifts down', () => {
+    setup({ doc: { ...DOC, cast: [{ a: 1 }, { b: 2 }] } });
+    fireEvent.click(within(row('cast.1')).getByRole('button', { name: 'Collapse cast.1' }));
+    fireEvent.click(within(row('cast.0')).getByRole('button', { name: 'Remove cast.0' }));
+    expect(within(row('cast.0')).getByRole('button', { name: 'Expand cast.0' })).toBeTruthy();
+    expect(row('cast.0.b')).toBeNull();
   });
 
   it('an array of objects recurses: an element is an expandable row of its own', () => {

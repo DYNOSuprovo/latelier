@@ -207,6 +207,47 @@ describe('getAtSegments / setAtSegments / deleteAtSegments', () => {
     const out = deleteAtSegments({ cast: [{ name: 'x', extra: 1 }] }, ['cast', '0', 'extra']);
     expect(plain(out)).toEqual({ cast: [{ name: 'x' }] });
   });
+
+  describe('array index segments', () => {
+    const eleven = { arr: Array.from({ length: 11 }, (_, i) => i) };
+
+    it('reads a multi-digit index', () => {
+      expect(getAtSegments(eleven, ['arr', '10'])).toEqual({ value: 10 });
+    });
+
+    it('never reads a segment with anything around the digits as an index', () => {
+      for (const seg of ['a1', '1a', '-1', ' 1', '1.0', '']) {
+        expect(getAtSegments({ arr: [0, 1] }, ['arr', seg])).toBeNull();
+      }
+    });
+
+    it('refuses to write through an intermediate index at or past the length, naming it', () => {
+      expect(() => setAtSegments({ arr: [{}] }, ['arr', '1', 'k'], 'v')).toThrow(
+        'setAtSegments: array index "1" out of range',
+      );
+      expect(() => setAtSegments({ arr: [{}] }, ['arr', '5', 'k'], 'v')).toThrow(/"5" out of range/);
+    });
+
+    it('refuses to write through, or at, a segment of an array that is not an index', () => {
+      expect(() => setAtSegments({ arr: [{}] }, ['arr', 'x', 'k'], 'v')).toThrow(/"x" out of range/);
+      expect(() => setAtSegments({ arr: [1] }, ['arr', 'x'], 'v')).toThrow(/"x" out of range/);
+    });
+
+    it('writes through a multi-digit intermediate index', () => {
+      const out = setAtSegments({ arr: [...eleven.arr.map(() => ({}))] }, ['arr', '10', 'k'], 'v');
+      expect(getAtSegments(out, ['arr', '10', 'k'])).toEqual({ value: 'v' });
+    });
+
+    it('deletes through an element past the first, and not through a non-index segment', () => {
+      const cast = { cast: [{ name: 'a' }, { name: 'b' }] };
+      expect(plain(deleteAtSegments(cast, ['cast', '1', 'name']))).toEqual({ cast: [{ name: 'a' }, {}] });
+      expect(plain(deleteAtSegments(cast, ['cast', 'x', 'name']))).toEqual(cast);
+    });
+
+    it('never splices on a leaf segment that is not an index', () => {
+      expect(plain(deleteAtSegments({ tags: ['a', 'b'] }, ['tags', 'x']))).toEqual({ tags: ['a', 'b'] });
+    });
+  });
 });
 
 describe('isUnsafeFieldName', () => {
@@ -371,5 +412,12 @@ describe('parseJsonDraft', () => {
   it('accepts staying without an _id', () => {
     const res = parseJsonDraft('{"a":1}', undefined);
     expect(res.ok).toBe(true);
+  });
+
+  it('tells a null _id apart from a missing one, in both directions', () => {
+    const refused = { ok: false, error: 'The _id field cannot be changed here' };
+    expect(parseJsonDraft('{"_id":null}', undefined)).toEqual(refused);
+    expect(parseJsonDraft('{"a":1}', null)).toEqual(refused);
+    expect(parseJsonDraft('{"_id":null}', null).ok).toBe(true);
   });
 });

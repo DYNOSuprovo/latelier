@@ -7,6 +7,7 @@ import { DEFAULT_MAX_EJSON_BYTES, ejsonEncode, ejsonEncodeArrayJson, parseEjsonD
 import { classifyMongoOpError } from './errors.ts';
 import { SystemError, ValidationError } from '../errors.ts';
 import type { MongoPool } from './MongoPool.ts';
+import type { Logger } from '../log.ts';
 import type { RecentQueryService } from '../services/RecentQueryService.ts';
 import { ADMIN_LONG_TIMEOUT_MS, PROBE_TIMEOUT_MS, QUERY_TIMEOUT_MS } from './timeouts.ts';
 // The main process has no `src/` precedent, but `exportFormat.ts` is a pure
@@ -46,11 +47,13 @@ export class QueryService {
   private recent: RecentQueryService;
   private active = new Map<string, AbortController>();
   private exportCap: number;
+  private log: Logger | undefined;
 
-  constructor(pool: MongoPool, recent: RecentQueryService, exportCap = DEFAULT_EXPORT_CAP) {
+  constructor(pool: MongoPool, recent: RecentQueryService, exportCap = DEFAULT_EXPORT_CAP, log?: Logger) {
     this.pool = pool;
     this.recent = recent;
     this.exportCap = exportCap;
+    this.log = log;
   }
 
   // every EJSON string off the wire is parsed with `parseEjsonDocument`,
@@ -286,16 +289,36 @@ export class QueryService {
       if (input.format === 'json') {
         await write(jsonArrayStarted ? '\n]' : '[]');
       }
-    } catch (err) {
-      if (handle) await handle.close().catch(() => {});
+      // Closed here rather than in `finally`: a close that fails can mean the
+      // last writes never reached disk, which is a failed export, not a
+      // finished one — so it goes through the catch below like any write.
+      const finished = handle;
       handle = undefined;
-      if (opened) await fs.unlink(filePath).catch(() => {});
+      try {
+        await finished.close();
+      } catch (err) {
+        throw fsError('close', err);
+      }
+    } catch (err) {
+      // The export has already failed; a cleanup step failing too can't
+      // change that, but it is what leaves a partial file behind, so it is
+      // logged rather than dropped.
+      if (handle) {
+        await handle.close().catch((e: unknown) => this.logCleanup('closing the export file', e));
+      }
+      handle = undefined;
+      if (opened) {
+        await fs.unlink(filePath).catch((e: unknown) => this.logCleanup('removing the partial export file', e));
+      }
       throw classifyMongoOpError(err);
     } finally {
-      await cursor.close().catch(() => {});
-      if (handle) await handle.close().catch(() => {});
+      await cursor.close().catch((e: unknown) => this.logCleanup('closing the export cursor', e));
     }
     return { path: filePath, written, truncated };
+  }
+
+  private logCleanup(step: string, err: unknown): void {
+    this.log?.warn('query.export', `${step} failed`, { message: err instanceof Error ? err.message : String(err) });
   }
 
   cancel(token: string): void {

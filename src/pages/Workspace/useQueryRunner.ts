@@ -181,7 +181,7 @@ export function useQueryRunner({
       // itself as stale and skips patching state once the abort settles.
       runTokenRef.current.set(target.id, (runTokenRef.current.get(target.id) ?? 0) + 1);
       clearRunning(target.id);
-      void api.query.cancel({ token }).catch(() => {});
+      void api.query.cancel({ token }).catch((err: unknown) => console.warn('[query] cancel failed', err));
     },
     [clearRunning],
   );
@@ -195,7 +195,9 @@ export function useQueryRunner({
       // is discarded rather than clobbering this run's result.
       if (runningIdsRef.current.has(target.id)) {
         const staleToken = cancelTokensRef.current.get(target.id);
-        if (staleToken) void api.query.cancel({ token: staleToken }).catch(() => {});
+        if (staleToken) {
+          void api.query.cancel({ token: staleToken }).catch((err: unknown) => console.warn('[query] cancel failed', err));
+        }
       }
       const runToken = (runTokenRef.current.get(target.id) ?? 0) + 1;
       runTokenRef.current.set(target.id, runToken);
@@ -339,7 +341,9 @@ export function useQueryRunner({
             .then(() => {
               invalidateRecentValuesCache(target.connectionId, target.dbName, target.collection);
             })
-            .catch(() => {});
+            // Value history is a convenience: a failed write must not fail
+            // the run, but it is reported rather than dropped.
+            .catch((err: unknown) => console.warn('[recent] recordFieldValues failed', err));
         }
         recordEvent?.(
           'queryRun',

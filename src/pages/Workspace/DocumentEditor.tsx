@@ -36,6 +36,15 @@ import {
   typeLabel,
   type FieldKind,
 } from './documentFieldTypes';
+import {
+  decodeKey,
+  editAddress,
+  keyOf,
+  purgeCollapsedUnder,
+  purgeUnder,
+  rekeyMapAfterRemoval,
+  rekeySetAfterRemoval,
+} from './editorRowKeys';
 import type { SchemaSampleEntry } from '@shared/types';
 
 type Doc = Record<string, unknown>;
@@ -123,74 +132,6 @@ function reviveInsertSeed(json: string | undefined): Doc {
   } catch {
     return {};
   }
-}
-
-/** One field row's identity, and the map key `texts`/`collapsed` are keyed by. */
-const keyOf = (segments: readonly string[]): string => JSON.stringify(segments);
-
-function decodeKey(key: string): string[] | null {
-  try {
-    const segments = JSON.parse(key) as unknown;
-    return Array.isArray(segments) && segments.every((s) => typeof s === 'string') ? (segments as string[]) : null;
-  } catch {
-    return null;
-  }
-}
-
-function isUnderSegments(key: string, prefix: readonly string[]): boolean {
-  const segments = decodeKey(key);
-  if (!segments || segments.length < prefix.length) return false;
-  return prefix.every((p, i) => segments[i] === p);
-}
-
-/** Drops any entry addressing `segments` or anything nested under it. */
-function purgeUnder(m: ReadonlyMap<string, string>, segments: readonly string[]): Map<string, string> {
-  const next = new Map(m);
-  for (const key of next.keys()) if (isUnderSegments(key, segments)) next.delete(key);
-  return next;
-}
-
-/** Same as `purgeUnder`, for the collapsed-row `Set` rather than the texts `Map`. */
-function purgeCollapsedUnder(s: ReadonlySet<string>, segments: readonly string[]): Set<string> {
-  const next = new Set(s);
-  for (const key of next) if (isUnderSegments(key, segments)) next.delete(key);
-  return next;
-}
-
-/**
- * The first position in `segments` that indexes into an array in `draft`, or
- * -1 if none does. `diff` (§5a) always sends an array whole, never by
- * element, so an edited marker below that point would never match anything
- * the diff actually contains.
- */
-function firstArraySegment(draft: Doc, segments: readonly string[]): number {
-  let node: unknown = draft;
-  for (let i = 0; i < segments.length; i++) {
-    if (Array.isArray(node)) return i;
-    if (!isPlainDocument(node)) break;
-    node = (node as Doc)[segments[i]!];
-  }
-  return -1;
-}
-
-/**
- * The dotted path to check with `isEdited` (and the W17 warning) for a row at
- * `segments`. A field name with a `.` or a leading `$` can't be its own
- * update path — `diff` (§5a) falls back to resending the nearest ancestor
- * whose own path is safe, so that's what has to be checked here too. A
- * top-level unsafe name has no such ancestor; the row is locked read-only in
- * that case (see `locked` below), so its address is never actually used to
- * decide anything save-relevant. The same fallback applies to an element
- * under an array: the array itself (and its ancestors) carry the "edited"
- * marker, never one of its elements individually.
- */
-function editAddress(draft: Doc, segments: readonly string[]): string {
-  const unsafeCut = segments.findIndex((s) => isUnsafeFieldName(s));
-  const arrayCut = firstArraySegment(draft, segments);
-  const cuts = [unsafeCut, arrayCut].filter((c) => c !== -1);
-  const cut = cuts.length > 0 ? Math.min(...cuts) : -1;
-  const safe = cut === -1 ? segments : segments.slice(0, cut);
-  return (safe.length > 0 ? safe : segments).join('.');
 }
 
 interface RowCtx {
@@ -291,16 +232,20 @@ function FieldRow({ ctx, segments }: { ctx: RowCtx; segments: string[] }) {
     ctx.setErr(null);
   };
 
-  // Removing an array *element* shifts every later index down, so any
-  // pending text/collapsed state keyed by index would now point at the
-  // wrong element — purge the whole array's state, not just this row's.
-  // Removing an object field never reindexes anything, so purging its own
-  // segments is enough there.
-  const purgeSegments = isArrayElement ? parentSegments : segments;
+  // Removing an array *element* shifts every later index down, so pending
+  // text/collapsed state keyed by a later index moves down with it — a
+  // half-typed value stays on the element it was typed into. Removing an
+  // object field never reindexes anything, so purging its own segments is
+  // enough there.
   const onRemove = () => {
     ctx.patchDraft((d) => deleteAtSegments(d, segments));
-    ctx.patchTexts((m) => purgeUnder(m, purgeSegments));
-    ctx.patchCollapsed((s) => purgeCollapsedUnder(s, purgeSegments));
+    if (isArrayElement) {
+      ctx.patchTexts((m) => rekeyMapAfterRemoval(m, segments));
+      ctx.patchCollapsed((s) => rekeySetAfterRemoval(s, segments));
+    } else {
+      ctx.patchTexts((m) => purgeUnder(m, segments));
+      ctx.patchCollapsed((s) => purgeCollapsedUnder(s, segments));
+    }
     ctx.setErr(null);
   };
 
