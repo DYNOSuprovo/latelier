@@ -118,6 +118,7 @@ export function createLogger(userDataDir: string, opts: {
       level: lvl,
       tag,
       msg,
+      // Stryker disable next-line ConditionalExpression: redactSecrets(undefined) returns undefined unchanged (walk's `typeof !== 'object'` guard), and JSON.stringify drops an undefined-valued key entirely, so `{ data: undefined }` and no `data` key at all serialize byte-identically — verified with a node probe.
       ...(data !== undefined ? { data: redactSecrets(data) } : {}),
     };
     const serialized = JSON.stringify(line) + '\n';
