@@ -554,6 +554,18 @@ describe('repairToCanonicalEjson — exact refusal reasons', () => {
     expect(mustFail('{a: NumberLong(-"x")}').reason).toBe('This value takes a quoted string or a number.');
   });
 
+  it('refuses a binary-expression argument cleanly, not just a unary one', () => {
+    // The negative-number escape hatch first confirms `arg.type ===
+    // 'UnaryExpression'` before reading `arg.operator`/`arg.argument` — a
+    // BinaryExpression like `5 - 3` also has an `operator` of '-' but no
+    // `.argument` (it has `.left`/`.right` instead), so skipping that type
+    // check would read `.type` off `undefined` and crash instead of
+    // returning a clean refusal.
+    expect(mustFail('{a: NumberLong(5 - 3)}').reason).toBe(
+      'This value takes a quoted string or a number.',
+    );
+  });
+
   it('refuses an unknown value constructor by name', () => {
     expect(mustFail('{a: Foo(1)}').reason).toBe('"Foo" is not a MongoDB value this application knows.');
   });
