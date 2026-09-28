@@ -231,6 +231,7 @@ export function parseEjsonField<T = unknown>(json: string, field: string): T {
   try {
     return ejsonParse<T>(json);
   } catch (err) {
+    // Stryker disable next-line StringLiteral: every throw reachable through `ejsonParse` (grepped across this file) constructs `new Error`/`new SystemError`/`new ValidationError`, and `JSON.parse`/bson's `EJSON.parse` both throw real `Error` instances too, so the `: 'invalid EJSON'` fallback is unreachable for any input today; kept in case a future dependency throws a bare string or object.
     const reason = err instanceof Error ? err.message : 'invalid EJSON';
     throw new ValidationError(`invalid ${field}: ${reason}`, { field });
   }
