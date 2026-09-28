@@ -79,6 +79,23 @@ class FakeCollection {
   // off a plain `s` bag — set by FakeDb.collection() below.
   s: { db: FakeDb } = { db: undefined as unknown as FakeDb };
   collectionName = 'fake';
+  // writable:false but configurable:true — distinct from both a plain
+  // enumerable field (writable+configurable) and a frozen one
+  // (non-writable+non-configurable, via Object.freeze). Nothing else in
+  // this fake produces this exact combination, and it's the one shape that
+  // distinguishes guardedDescriptor's `d.configurable === false &&
+  // d.writable === false` frozen-check from `d.writable === false` alone.
+  roConfigurableRef!: { tag: string };
+
+  constructor() {
+    const ref = { tag: 'ro-configurable' };
+    Object.defineProperty(this, 'roConfigurableRef', {
+      value: ref,
+      writable: false,
+      configurable: true,
+      enumerable: true,
+    });
+  }
 
   find(...args: unknown[]): FakeCursor {
     log('find', ...args);
@@ -164,6 +181,59 @@ class FakeBulkBuilder {
   }
 }
 
+/**
+ * A synchronous builder-style step reached off a captured Admin handle —
+ * mirrors FakeBulkBuilder's role for collections, but for guardCapturedHandle
+ * itself (the Admin's own guard implementation), which re-wraps chained
+ * results independently of wrapCollection's bulk-builder handling.
+ */
+class FakeAdminChainStep {
+  // Returns a NEW step each call — exercises guardCapturedHandle's
+  // `out !== t` branch (recursive re-wrap of a different object).
+  next(...args: unknown[]): FakeAdminChainStep {
+    log('adminChain.next', ...args);
+    return new FakeAdminChainStep();
+  }
+  // A plain (non-function) nested object property — reaches guardPlainProperty
+  // via guardCapturedHandle's own `read`, which builds the `what` string as
+  // `${what}.${String(prop)}` (line 369) before guarding it recursively.
+  nested = {
+    write(...args: unknown[]): unknown {
+      log('adminChain.nested.write', ...args);
+      return { ok: 1 };
+    },
+  };
+  finish(...args: unknown[]): Promise<unknown> {
+    log('adminChain.finish', ...args);
+    return Promise.resolve({ ok: 1 });
+  }
+  // Synchronous, non-promise, non-receiver returns — exercise
+  // guardCapturedHandle's own passthrough/wrap checks directly (its `value`
+  // parameter is one of these on the recursive `guardCapturedHandle(out, ...)`
+  // call, not routed back through guardPlainProperty first).
+  returnsNull(...args: unknown[]): null {
+    log('adminChain.returnsNull', ...args);
+    return null;
+  }
+  returnsNumber(...args: unknown[]): number {
+    log('adminChain.returnsNumber', ...args);
+    return 42;
+  }
+  // A synchronous function-typed return, itself carrying a nested "write"
+  // method — distinguishes guardCapturedHandle's own value-type guard from a
+  // raw passthrough: if the returned function isn't wrapped, `.grab()` below
+  // never re-checks `ctx.isReadOnly`.
+  returnsFunction(...args: unknown[]): (() => unknown) & { grab: () => unknown } {
+    log('adminChain.returnsFunction', ...args);
+    const fn = (() => 'called') as (() => unknown) & { grab: () => unknown };
+    fn.grab = () => {
+      log('adminChain.returnsFunction.grab');
+      return 'grabbed';
+    };
+    return fn;
+  }
+}
+
 class FakeAdmin {
   listDatabases(...args: unknown[]): Promise<{ databases: unknown[] }> {
     log('admin.listDatabases', ...args);
@@ -172,6 +242,16 @@ class FakeAdmin {
   command(...args: unknown[]): Promise<unknown> {
     log('admin.command', ...args);
     return Promise.resolve({ ok: 1 });
+  }
+  // Returns `this` (the SAME raw receiver) — exercises guardCapturedHandle's
+  // `out === t` branch (return the cached `guard`, not a fresh wrapper).
+  chainSame(...args: unknown[]): this {
+    log('admin.chainSame', ...args);
+    return this;
+  }
+  chainStep(...args: unknown[]): FakeAdminChainStep {
+    log('admin.chainStep', ...args);
+    return new FakeAdminChainStep();
   }
 }
 
@@ -614,6 +694,46 @@ describe('makeDbProxy — getOwnPropertyDescriptor guard', () => {
       ReadOnlyConnectionError,
     );
   });
+
+  it('Object.freeze does NOT deny a descriptor read for an untouched (non-substituted) property', () => {
+    // `collectionName` is a primitive the guard never substitutes (guarded
+    // === d.value), so the early `Object.is` return at line 300 should fire
+    // before the frozen-check at line 301 is ever reached — freezing the
+    // handle must not turn every descriptor read into a denial, only the
+    // ones that actually needed a substituted (guarded) value.
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => true })) as unknown as {
+      things: { collectionName: string };
+    };
+    Object.freeze(proxy.things);
+    expect(() => Object.getOwnPropertyDescriptor(proxy.things, 'collectionName')).not.toThrow();
+    expect(Object.getOwnPropertyDescriptor(proxy.things, 'collectionName')?.value).toBe('fake');
+  });
+
+  it('a writable:false, configurable:true property (readonly but not frozen) is reported with its guarded value, not denied', () => {
+    // Distinguishes the frozen-check's `d.configurable === false &&
+    // d.writable === false` from `d.writable === false` alone: this
+    // property is only non-writable, not non-configurable, so it is not
+    // "frozen" in the sense the guard cares about (Object.freeze always
+    // sets configurable:false too — this shape can't arise from seal or
+    // freeze, only from defineProperty directly).
+    const client = new FakeMongoClient();
+    const rawColl = client.db('testdb').collection('things');
+    const rawRef = rawColl.roConfigurableRef;
+    const proxy = makeDbProxy({ currentDb: 'testdb', client: client as never, isReadOnly: () => true }) as unknown as {
+      things: { roConfigurableRef: { tag: string } };
+    };
+    let desc: PropertyDescriptor | undefined;
+    expect(() => {
+      desc = Object.getOwnPropertyDescriptor(proxy.things, 'roConfigurableRef');
+    }).not.toThrow();
+    expect(desc).toBeDefined();
+    expect((desc!.value as { tag: string }).tag).toBe('ro-configurable');
+    // The value is guarded (substituted with a wrapper), not the raw ref —
+    // confirms we actually reached the substitution path (guarded !==
+    // d.value), not an early untouched-value passthrough that would have
+    // skipped the frozen-check entirely regardless of this test's point.
+    expect(desc!.value).not.toBe(rawRef);
+  });
 });
 
 describe('makeDbProxy — the proxy target itself (db-name identity)', () => {
@@ -943,6 +1063,73 @@ describe('makeDbProxy — guardCapturedHandle: guarded-but-currently-writable an
   });
 });
 
+describe('makeDbProxy — guardCapturedHandle chains a builder-style captured handle (line 361)', () => {
+  it('a method returning the same receiver (out === t) hands back the identical cached guard', () => {
+    const readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => { chainSame: (...a: unknown[]) => unknown; command: (...a: unknown[]) => unknown };
+    };
+    const admin = proxy.admin();
+    const chained = admin.chainSame();
+    // Reference equality: guardCapturedHandle's `out === t ? guard : ...`
+    // returns the SAME Proxy object when the method returns its own
+    // receiver, rather than building a fresh wrapper around it.
+    expect(chained).toBe(admin);
+  });
+
+  it('a method returning a NEW object (out !== t) is independently wrapped, not the same guard', () => {
+    const readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => { chainStep: (...a: unknown[]) => unknown };
+    };
+    const admin = proxy.admin();
+    const step = admin.chainStep();
+    expect(step).not.toBe(admin);
+  });
+
+  it('chaining works normally while writable: a multi-step chain resolves without throwing', async () => {
+    const readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => { chainStep: (...a: unknown[]) => { next: (...a: unknown[]) => { finish: (...a: unknown[]) => Promise<unknown> } } };
+    };
+    const admin = proxy.admin();
+    await expect(admin.chainStep().next().finish()).resolves.toEqual({ ok: 1 });
+  });
+
+  it('the out === t branch stays guarded after a flip: a write method on the chained same-receiver still refuses, zero calls', () => {
+    let readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => { chainSame: (...a: unknown[]) => { command: (...a: unknown[]) => unknown } };
+    };
+    const admin = proxy.admin();
+    const chainedSame = admin.chainSame(); // captured while writable
+    readOnly = true;
+    calls = [];
+    expect(() => chainedSame.command()).toThrow(ReadOnlyConnectionError);
+    expect(calls).toEqual([]);
+  });
+
+  it('the out !== t branch stays guarded after a flip: the recursively-wrapped step still refuses, zero calls', () => {
+    let readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => {
+        chainStep: (...a: unknown[]) => {
+          finish: (...a: unknown[]) => unknown;
+          next: (...a: unknown[]) => unknown;
+        };
+      };
+    };
+    const admin = proxy.admin();
+    const step = admin.chainStep(); // captured while writable — a genuinely different, recursively-wrapped object
+    readOnly = true;
+    calls = [];
+    expect(() => step.finish()).toThrow(ReadOnlyConnectionError);
+    expect(calls).toEqual([]);
+    expect(() => step.next()).toThrow(ReadOnlyConnectionError);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('makeDbProxy — aggregate is itself a CURSOR_RETURNING_METHOD', () => {
   it('aggregate() is wrapped so its terminal methods inherit the signal too', () => {
     const controller = new AbortController();
@@ -975,5 +1162,222 @@ describe('mergeSignalOptions — explicit non-object value at the options slot',
     };
     proxy.things.find({ a: 1 }, 'not-an-options-object' as unknown as object);
     expect(calls).toEqual(['find {"a":1} not-an-options-object']);
+  });
+});
+
+describe('makeDbProxy — aggregate write-stage check does not misfire for a non-aggregate method (line 231)', () => {
+  it('find() with an array-shaped first arg containing a write-stage-looking object is not treated as an aggregate pipeline', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => true })) as unknown as {
+      things: { find: (...a: unknown[]) => unknown };
+    };
+    expect(() => proxy.things.find([{ $out: 'x' }])).not.toThrow();
+  });
+});
+
+describe('makeDbProxy — callArgs signal-merge condition (line 238)', () => {
+  it('a guarded-but-writable ctx with no ctx.signal calls the driver with the caller-supplied args unchanged, even though positional is defined', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => false })) as unknown as {
+      things: { find: (...a: unknown[]) => unknown };
+    };
+    calls = [];
+    proxy.things.find();
+    // Original: `ctx.signal && positional !== undefined` is falsy (no ctx.signal) → callArgs=args=[].
+    // Forcing the whole condition to `true`, or `&&`→`||`, both make positional!==undefined (true
+    // for find, positional=1) win the merge, padding a `{signal: undefined}` onto the call —
+    // observably different from the plain 'find' call below.
+    expect(calls).toEqual(['find']);
+  });
+});
+
+describe('makeDbProxy — guardCapturedHandle wraps a non-promise write-method return (line 246)', () => {
+  it('a captured bulk builder (synchronous, non-promise return) stays guarded after a flip', () => {
+    let readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      things: {
+        initializeUnorderedBulkOp: (...a: unknown[]) => { insert: (...a: unknown[]) => unknown };
+      };
+    };
+    const builder = proxy.things.initializeUnorderedBulkOp();
+    readOnly = true;
+    calls = [];
+    expect(() => builder.insert({ a: 1 })).toThrow(ReadOnlyConnectionError);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('guardPlainProperty — unguarded ctx never wraps a plain object property (line 325)', () => {
+  it('an unguarded ctx (ctx.isReadOnly entirely undefined) returns the raw object, not a guarded copy', () => {
+    const client = new FakeMongoClient();
+    const rawColl = client.db('testdb').collection('things');
+    const proxy = makeDbProxy({ currentDb: 'testdb', client: client as never }) as unknown as {
+      things: { s: unknown };
+    };
+    expect(proxy.things.s).toBe(rawColl.s);
+  });
+});
+
+describe('guardCapturedHandle — its own value-type guard (line ~364)', () => {
+  it('a chained method returning null passes straight through without throwing', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => false })) as unknown as {
+      admin: () => { chainStep: (...a: unknown[]) => { returnsNull: (...a: unknown[]) => unknown } };
+    };
+    expect(proxy.admin().chainStep().returnsNull()).toBeNull();
+  });
+
+  it('a chained method returning a truthy primitive (a number) passes straight through without throwing', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => false })) as unknown as {
+      admin: () => { chainStep: (...a: unknown[]) => { returnsNumber: (...a: unknown[]) => unknown } };
+    };
+    expect(proxy.admin().chainStep().returnsNumber()).toBe(42);
+  });
+});
+
+describe('guardCapturedHandle — property-path `what` string carries the property name (line 369)', () => {
+  it('a denied method reached through a nested guarded plain property names that property in the error, not an empty string', () => {
+    let readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => {
+        chainStep: (...a: unknown[]) => { nested: { write: (...a: unknown[]) => unknown } };
+      };
+    };
+    const nested = proxy.admin().chainStep().nested;
+    readOnly = true;
+    expect(() => nested.write()).toThrowError(/nested/);
+  });
+});
+
+describe('wrapCursor — value-type guard mirrors guardCapturedHandle (line 444)', () => {
+  it('a function-typed cursor return value is still wrapped, not passed through raw', () => {
+    const client = new FakeMongoClient();
+    const coll = client.db('testdb').collection('things') as unknown as { find: () => unknown };
+    const rawFn = () => 'called';
+    coll.find = () => rawFn;
+    const proxy = makeDbProxy({
+      currentDb: 'testdb',
+      client: client as never,
+      isReadOnly: () => false,
+    }) as unknown as { things: { find: () => unknown } };
+    const result = proxy.things.find();
+    expect(result).not.toBe(rawFn);
+    expect(typeof result).toBe('function');
+  });
+});
+
+describe('wrapCursor — a plain (non-function) property is guarded, not treated as callable (line 457)', () => {
+  it('cursorClient stays an object through the wrapper, not converted into a function', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => false })) as unknown as {
+      things: { find: (...a: unknown[]) => { cursorClient: unknown } };
+    };
+    const client = proxy.things.find().cursorClient;
+    expect(typeof client).toBe('object');
+    expect(client).not.toBeNull();
+  });
+});
+
+describe('mergeSignalOptions — the object-options merge branch actually runs (line 414 if-block)', () => {
+  it('a plain options object without an explicit signal key gets the ctx signal merged in', () => {
+    const controller = new AbortController();
+    const proxy = makeDbProxy(makeCtx({ signal: controller.signal })) as unknown as {
+      things: { find: (...a: unknown[]) => unknown };
+    };
+    proxy.things.find({ a: 1 }, { extra: 1 });
+    expect(calls).toEqual(['find {"a":1} {"extra":1,"signal":{}}']);
+  });
+});
+
+describe('wrapCursor — chained cursor-shaping call returns the SAME wrapper when out === target (line 482)', () => {
+  it('a chaining method that returns the receiver itself hands back the cached wrapper, not a fresh one', () => {
+    const client = new FakeMongoClient();
+    const coll = client.db('testdb').collection('things') as unknown as {
+      find: () => { sort: (...a: unknown[]) => unknown; toArray: () => Promise<unknown[]> };
+    };
+    coll.find = () => {
+      const inner = new FakeCursor('self-chain');
+      const self: { sort: (...a: unknown[]) => unknown; toArray: () => Promise<unknown[]> } = {
+        sort: () => self,
+        toArray: inner.toArray.bind(inner),
+      };
+      return self;
+    };
+    const proxy = makeDbProxy({
+      currentDb: 'testdb',
+      client: client as never,
+      isReadOnly: () => false,
+    }) as unknown as {
+      things: { find: () => { sort: (...a: unknown[]) => { sort: (...a: unknown[]) => unknown } } };
+    };
+    const cursor = proxy.things.find();
+    const sorted = cursor.sort({ a: 1 });
+    expect(sorted).toBe(cursor);
+  });
+});
+
+describe('guardCapturedHandle — a function-typed captured return is still wrapped (line 364, function branch)', () => {
+  it('a nested method on a captured function-typed return stays guarded after a flip', () => {
+    let readOnly = false;
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => readOnly })) as unknown as {
+      admin: () => {
+        chainStep: (...a: unknown[]) => { returnsFunction: (...a: unknown[]) => { grab: () => unknown } };
+      };
+    };
+    const resultFn = proxy.admin().chainStep().returnsFunction();
+    readOnly = true;
+    calls = [];
+    expect(() => resultFn.grab()).toThrow(ReadOnlyConnectionError);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('wrapCursor — an unguarded ctx (no signal, no isReadOnly) never wraps the cursor (line 455)', () => {
+  it('the raw cursor reference is returned unchanged', () => {
+    const client = new FakeMongoClient();
+    const coll = client.db('testdb').collection('things') as unknown as { find: () => unknown };
+    const rawCursor = new FakeCursor('raw');
+    coll.find = () => rawCursor;
+    const proxy = makeDbProxy({ currentDb: 'testdb', client: client as never }) as unknown as {
+      things: { find: () => unknown };
+    };
+    expect(proxy.things.find()).toBe(rawCursor);
+  });
+});
+
+describe('wrapCursor — the async-iterator symbol key is bound and returned raw, not re-wrapped (lines 474-475)', () => {
+  it('Symbol.asyncIterator produces the exact raw iterator object, not a re-wrapped Proxy of it', () => {
+    const client = new FakeMongoClient();
+    const rawIter = { next: () => Promise.resolve({ done: true, value: undefined }) };
+    const coll = client.db('testdb').collection('things') as unknown as { find: () => unknown };
+    coll.find = () => ({
+      [Symbol.asyncIterator]: () => rawIter,
+    });
+    const proxy = makeDbProxy(
+      makeCtx({ isReadOnly: () => false, currentDb: 'testdb', client: client as never }),
+    ) as unknown as { things: { find: () => { [Symbol.asyncIterator]: () => unknown } } };
+    const cursor = proxy.things.find();
+    const iter = cursor[Symbol.asyncIterator]();
+    expect(iter).toBe(rawIter);
+  });
+});
+
+describe('wrapCursor — guardedDescriptor is tagged "cursor", not an empty string (line 495)', () => {
+  it('a frozen guarded cursor descriptor read names "cursor" in its error message', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => true })) as unknown as {
+      things: { find: (...a: unknown[]) => object };
+    };
+    const cursor = proxy.things.find();
+    Object.freeze(cursor);
+    expect(() => Object.getOwnPropertyDescriptor(cursor, 'cursorClient')).toThrow(
+      'This connection is read-only — "cursor.cursorClient (frozen)" is not permitted.',
+    );
+  });
+});
+
+describe('wrapCursor — the signal check on line 476 gates the merge branch, not just membership', () => {
+  it('a guarded-but-signal-less ctx calls a terminal method with the caller-supplied args unchanged (no signal merged)', () => {
+    const proxy = makeDbProxy(makeCtx({ isReadOnly: () => false })) as unknown as {
+      things: { find: (...a: unknown[]) => { toArray: (...a: unknown[]) => unknown } };
+    };
+    calls = [];
+    proxy.things.find().toArray();
+    expect(calls).toEqual(['find', 'find toArray']);
   });
 });
