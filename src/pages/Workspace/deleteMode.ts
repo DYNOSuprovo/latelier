@@ -17,6 +17,7 @@ export function resolveDeleteDialog(input: {
   const deleteSelectedFilterJson = deleteSelected
     ? buildDeleteSelectedFilterJson(deleteSelected)
     : null;
+  // Stryker disable next-line ConditionalExpression: deleteSelectedFilterJson can only be non-null when the ternary above saw deleteSelected truthy (arrays are always truthy, so the only falsy value of this `unknown[] | null` type is null itself) — deleteSelectedFilterJson !== null already implies deleteSelected !== null, so the left conjunct is redundant by construction of the ternary two lines up.
   const deleteSelectedActive = deleteSelected !== null && deleteSelectedFilterJson !== null;
 
   // Same hazard: null filter must not fall through to '{}' (delete-the-whole-collection).
