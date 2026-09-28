@@ -22,6 +22,7 @@ import {
   opForValType,
   mergeOrReplaceDragged,
   valTypeFromDisplayType,
+  DRAGGED_FIELD_MIME,
 } from '../../src/pages/Workspace/builder';
 import { DEFAULT_COLLECTION_TAB_STATE } from '@shared/defaults';
 import type { BuilderState, CollectionTabState } from '@shared/types';
@@ -102,6 +103,12 @@ describe('compileFindOptions', () => {
 
   it('a limit with no leading digits at all (parseInt → NaN) is null', () => {
     expect(compileFindOptions(makeState({ limit: 'abc' })).limit).toBeNull();
+  });
+
+  it('a limit so large it parses to Infinity is treated as no limit, not "positive"', () => {
+    // Number.parseInt('9'.repeat(400), 10) overflows to Infinity — finite
+    // must be checked, not just "> 0", or this would compile to Infinity.
+    expect(compileFindOptions(makeState({ limit: '9'.repeat(400) })).limit).toBeNull();
   });
 });
 
@@ -328,6 +335,21 @@ describe('condFromDragged', () => {
     const cond = condFromDragged({ field: 'meta', value: { nested: 1 } });
     expect(cond.value).toBe('{"nested":1}');
   });
+
+  it('$date sentinel → date cond with the ISO display string', () => {
+    const cond = condFromDragged({ field: 'createdAt', value: { $date: '2024-01-15T00:00:00.000Z' } });
+    expect(cond.valType).toBe('date');
+    expect(cond.value).toBe('2024-01-15T00:00:00.000Z');
+  });
+
+  it('a $regex-shaped value whose pattern is not a string never reaches the regex branch', () => {
+    // toDisplayValue only assigns 'regex' when $regex is itself a string, so a
+    // { $regex: 123 } object falls through to the generic-object fallback
+    // (JSON-stringified), not the regex branch's `r` extraction.
+    const cond = condFromDragged({ field: 'name', value: { $regex: 123 } });
+    expect(cond.valType).not.toBe('regex');
+    expect(cond.value).toBe('{"$regex":123}');
+  });
 });
 
 describe('mergeOrReplaceDragged', () => {
@@ -400,6 +422,26 @@ describe('mergeOrReplaceDragged', () => {
     expect(result.op).toBe('$eq');
     expect(result.value).toBe('5');
   });
+
+  it('an objectid $in row coerces a bare unwrapped string element to $oid on merge', () => {
+    // A bare "abc" (not yet { $oid: "abc" }) is what an older/hand-edited row
+    // can hold; coerceArrayElementWire must wrap it before appending.
+    const target: FilterNode = { kind: 'cond', field: '_id', op: '$in', valType: 'objectid', value: '["abc"]' };
+    const result = mergeOrReplaceDragged(target, {
+      field: '_id',
+      value: { $oid: '507f1f77bcf86cd799439011' },
+    });
+    expect(JSON.parse(result.value) as unknown[]).toEqual([
+      { $oid: 'abc' },
+      { $oid: '507f1f77bcf86cd799439011' },
+    ]);
+  });
+});
+
+describe('DRAGGED_FIELD_MIME', () => {
+  it('is the fixed MIME type drag payloads are tagged with', () => {
+    expect(DRAGGED_FIELD_MIME).toBe('application/x-atelier-field');
+  });
 });
 
 describe('effectivePageLimit', () => {
@@ -429,6 +471,26 @@ describe('parseSortString', () => {
   it('returns empty for empty/whitespace input', () => {
     expect(parseSortString('')).toEqual({});
     expect(parseSortString('   ')).toEqual({});
+  });
+
+  it('trims NBSP padding before parsing a real sort document', () => {
+    // Plain spaces around valid JSON parse fine even without .trim() (JSON's
+    // own whitespace grammar tolerates them), so that padding can't catch a
+    // missing .trim(). NBSP (U+00A0) is whitespace to .trim() but NOT to
+    // JSON's grammar, so only a real .trim() call lets this parse.
+    expect(parseSortString(' {"name":1} ')).toEqual({ name: 1 });
+  });
+
+  it('treats NBSP-only input as blank too (broader than JSON.parse\'s own whitespace grammar)', () => {
+    // NBSP (U+00A0) is whitespace under String.prototype.trim() but not
+    // under JSON's own whitespace grammar, so the untrimmed string would
+    // otherwise reach JSON.parse and throw instead of short-circuiting to {}.
+    expect(parseSortString('\u00A0')).toEqual({});
+  });
+
+  it('a bare JSON scalar (not an object) is rejected, not treated as a sort map', () => {
+    expect(parseSortString('"1"')).toEqual({});
+    expect(parseSortString('42')).toEqual({});
   });
 
   it('returns empty for unparseable input', () => {
