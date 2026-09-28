@@ -89,17 +89,7 @@ export function placeFloatingPanel(
   prefer: Placement,
   viewport?: { width: number; height: number },
 ): PlacementResult {
-  // Stryker disable next-line ConditionalExpression: forcing this ternary's
-  // condition to `false` is indistinguishable from real behavior under this
-  // test suite — the unit tests run in Node, where `window` genuinely is
-  // `undefined`, so the real code already takes the `false` branch here.
-  // The `true` branch (and a real regression in the condition itself) is
-  // still caught: it throws a ReferenceError reading `window.innerWidth` in
-  // Node, which the "falls back to the default viewport size" test below
-  // fails under.
   const vw = viewport?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024);
-  // Stryker disable next-line ConditionalExpression: same reasoning as `vw`
-  // above.
   const vh = viewport?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 768);
 
   const seen = new Set<Placement>();

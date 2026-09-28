@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { placeFloatingPanel, OPERATOR_PANEL_SIZE } from '../../src/features/fieldSuggestions/placement';
 
 const VIEWPORT = { width: 1200, height: 800 };
@@ -112,6 +112,24 @@ describe('placeFloatingPanel', () => {
     expect(r.placement).toBe('left');
     expect(r.left).toBe(900 - 340 - 8);
     expect(r.top).toBe(100);
+  });
+
+  it("reads the window's size when no `viewport` is passed and a window exists", () => {
+    // The renderer always has a window; the default above only covers Node.
+    const anchor = { top: 100, left: 900, width: 50, height: 40 };
+    const panel = { width: 340, height: 300 };
+    try {
+      vi.stubGlobal('window', { innerWidth: 2000, innerHeight: 1000 });
+      // 'right' fits a 2000-wide window, where a 1024 default flips it to 'left'.
+      expect(placeFloatingPanel(anchor, panel, 'right').placement).toBe('right');
+      vi.stubGlobal('window', { innerWidth: 2000, innerHeight: 350 });
+      // 'below' overflows a 350-high window (148+300 > 342), where a 768
+      // default would place it at 148; with 'above' off-screen too, the
+      // preferred placement is clamped to 350-8-300.
+      expect(placeFloatingPanel(anchor, panel, 'below').top).toBe(42);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('treats the fits() bounds as inclusive at the left edge', () => {

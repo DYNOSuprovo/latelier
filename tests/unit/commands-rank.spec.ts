@@ -40,6 +40,25 @@ describe('rankCommands', () => {
     warn.mockRestore();
   });
 
+  it('treats a throwing when() as false without warning in a production build', () => {
+    vi.stubEnv('DEV', false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const broken = make({
+        id: 'broken',
+        title: 'Broken',
+        when: () => {
+          throw new Error('boom');
+        },
+      });
+      expect(rankCommands([broken], '', ctx, [])).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('trims and lowercases the query before matching', () => {
     const all = [make({ id: 'a', title: 'Save Query' })];
     const ranked = rankCommands(all, '  SAVE  ', ctx, []);

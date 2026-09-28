@@ -24,12 +24,6 @@ function isVisible(cmd: Command, ctx: PaletteContext): boolean {
   try {
     return cmd.when(ctx);
   } catch (e) {
-    // Stryker disable next-line ConditionalExpression: `import.meta.env.DEV`
-    // is true under the vitest unit project itself, so forcing this
-    // condition to `true` is indistinguishable from real behavior here —
-    // the real code already takes the `true` branch under test. A
-    // regression in the condition's own logic is still caught: the warning
-    // message is asserted below.
     if (import.meta.env.DEV) {
       console.warn(`[commandRegistry] when() threw for "${cmd.id}":`, e);
     }
