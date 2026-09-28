@@ -97,6 +97,11 @@ export function buildUri(c: Connection, password?: string): string {
   }
 
   const qs = params.toString();
+  // The `qs ? ... : ''` empty-query fallback is unreachable today — the TLS
+  // block above unconditionally calls `params.set('tls', ...)` on every code
+  // path, so `qs` is never empty. A `// Stryker disable` here would also
+  // exempt an already-killed StringLiteral mutant on this same line, so this
+  // stays prose rather than a directive.
   return `${scheme}://${userinfo}${hostport}${pathPart}${qs ? '?' + qs : ''}`;
 }
 
@@ -136,6 +141,7 @@ function sanitizeHost(raw: string): string {
     // manual stripping, still cutting `/?#` before splitting on the LAST
     // `@` so we never emit an embedded separator into the output.
     const noScheme = trimmed.replace(/^mongodb(\+srv)?:\/\//, '');
+    // Stryker disable next-line StringLiteral: `String#split` with a `limit` always returns an array of at least `limit` elements (padding with '' as needed) for any input, including an empty string, so `[0]` is never undefined and the `?? ''` fallback is unreachable.
     const authority = noScheme.split(/[/?#]/, 1)[0] ?? '';
     const atIdx = authority.lastIndexOf('@');
     // Stryker disable next-line ConditionalExpression: when atIdx is genuinely -1, `authority.slice(atIdx + 1)` is `authority.slice(0)`, which is `authority` itself — so forcing this ternary to always take the slice branch is unobservable; it only changes which literal expression computes the same string.
