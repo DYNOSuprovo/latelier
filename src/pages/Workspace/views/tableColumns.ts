@@ -112,6 +112,7 @@ export function reorder<T>(list: T[], from: number, to: number): T[] {
     from >= list.length ||
     to < 0 ||
     to >= list.length ||
+    // Stryker disable next-line ConditionalExpression: splice(i, 1) then splice(i, 0, moved) is an identity for any i — verified with a node probe across every index of a 5-element array
     from === to
   ) {
     return list.slice();
@@ -159,6 +160,7 @@ export function getValueAtPath(doc: unknown, path: string): unknown {
       // into a valid index.
       if (!ARRAY_INDEX_RE.test(segment)) return undefined;
       const index = Number(segment);
+      // Stryker disable next-line EqualityOperator,ConditionalExpression: JS array indexing never throws on an out-of-range index — current[index] is undefined whether index equals or exceeds current.length, verified with a node probe, so >= vs > and the guard itself all produce the same final undefined
       if (index >= current.length) return undefined;
       current = current[index];
       continue;
