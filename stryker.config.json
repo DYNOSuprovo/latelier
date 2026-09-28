@@ -49,6 +49,13 @@
     "src/utils/auditUndo.ts",
     "electron/ipc/senderGuard.ts",
     "electron/security/appLocation.ts",
-    "electron/mongo/uri.ts"
+    "electron/mongo/uri.ts",
+    "electron/mongo/errors.ts",
+    "electron/mongo/normalize.ts",
+    "src/utils/jsonHighlight.ts",
+    "src/utils/explainSummary.ts",
+    "src/utils/insertPayload.ts",
+    "src/utils/queryRunKey.ts",
+    "src/pages/Workspace/views/docId.ts"
   ]
 }

@@ -64,7 +64,12 @@ describe('auditRecordFor', () => {
       { ...T, filterJson: '{"_id":1}' },
       errEnv({ code: 'UNAUTHORIZED', message: 'nope', details: { deletedCount: 5, insertedCount: 2 } }),
     );
-    expect(rec).toEqual({
+    // `toStrictEqual`, not `toEqual`: deleteOne is neither insertMany nor
+    // import, so the insertedCount branch must never run for it even though
+    // `details.insertedCount` is present — `toEqual` treats a key present as
+    // `undefined` the same as a key absent, which would hide an
+    // `insertedCount: undefined` the branch adds to `summary` if it ran.
+    expect(rec).toStrictEqual({
       ...T,
       op: 'deleteOne',
       summary: { op: 'deleteOne', filter: '{"_id":1}', deletedCount: undefined },

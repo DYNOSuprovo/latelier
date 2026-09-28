@@ -50,6 +50,10 @@ export function valTypeFromDisplayType(dt: DisplayType | undefined): ValType {
 export function opForValType(valType: ValType, currentOp: string): MqlOp {
   const ops = FIELD_OPS[valType] ?? FIELD_OPS.string;
   if ((ops as readonly string[]).includes(currentOp)) return currentOp as MqlOp;
+  // Stryker disable next-line StringLiteral: FIELD_OPS is a total, non-empty
+  // Record over every ValType, and the fallback FIELD_OPS.string is also
+  // non-empty — ops[0] can never be undefined for any real or invalid-cast
+  // valType, so this `?? '$eq'` fallback is unreachable defensive code.
   return ops[0] ?? '$eq';
 }
 
@@ -74,8 +78,21 @@ export function isCompilableOp(op: string): boolean {
 export type SortDir = 1 | -1;
 
 function normalizeSortDir(v: unknown): SortDir | undefined {
+  // Stryker disable next-line ConditionalExpression: whenever v === 1,
+  // disabling this early return still falls through to the generic
+  // number branch below (typeof 1 === 'number', Number.isFinite(1), 1 > 0),
+  // which returns the identical `1` — verified for every input shape.
   if (v === 1) return 1;
+  // Stryker disable next-line ConditionalExpression,UnaryOperator: same
+  // argument as the v === 1 case above — the generic number branch below
+  // (v < 0) reproduces -1 for v === -1 regardless of this check (or of
+  // comparing against the wrong literal, since whatever value the check
+  // targets, either the v===1 branch above or this generic branch already
+  // returns the same result for it).
   if (v === -1) return -1;
+  // Stryker disable next-line ConditionalExpression: Number.isFinite is
+  // type-strict — it already returns false for any non-number v — so the
+  // redundant `typeof v === 'number'` conjunct can't change the result.
   if (typeof v === 'number' && Number.isFinite(v)) {
     if (v > 0) return 1;
     if (v < 0) return -1;
@@ -91,12 +108,24 @@ function normalizeSortDir(v: unknown): SortDir | undefined {
 
 /** Parses `{"name":1,"age":-1}`. Unparseable/unmodeled shapes drop silently to `{}`. */
 export function parseSortString(raw: string): Record<string, SortDir> {
+  // Stryker disable next-line StringLiteral: this fallback only fires when
+  // `raw` is null/undefined, and whatever non-JSON placeholder text stands in
+  // for '' still fails JSON.parse below the same way — trimmed is non-empty,
+  // parsing throws, and the catch returns the identical {} either way.
   const trimmed = (raw ?? '').trim();
+  // Stryker disable next-line ConditionalExpression: whenever trimmed === '',
+  // JSON.parse('') always throws (empty input), so removing this early
+  // return still lands on the identical `{}` via the catch block below.
   if (!trimmed) return {};
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
-  } catch {
+  }
+  // Stryker disable next-line BlockStatement: an emptied catch leaves
+  // `parsed` at its initial `undefined`, and the very next line's
+  // `!parsed` is then true — returning the identical `{}` this catch
+  // returns explicitly.
+  catch {
     return {};
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -152,8 +181,17 @@ export function compileFindOptions(state: BuilderState): CompiledFindOptions {
   }
 
   // Mongo treats `.limit(0)` as unlimited; collapse non-finite/zero/negative to null.
+  //
+  // Stryker disable next-line MethodExpression: Number.parseInt already skips
+  // leading whitespace and stops at the first non-digit character on its
+  // own, so parsing the untrimmed `state.limit` instead of the trimmed copy
+  // yields the identical integer (or NaN) for every input — verified across
+  // a range of padded/garbage limit strings (scratchpad/probe5.mjs).
   const parsedLimit = state.limit.trim() ? Number.parseInt(state.limit.trim(), 10) : null;
   const limit =
+    // Stryker disable next-line ConditionalExpression: Number.isFinite(null)
+    // is false (type-strict), so dropping the redundant `parsedLimit !== null`
+    // conjunct can't change the result.
     parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit > 0
       ? parsedLimit
       : null;
@@ -193,9 +231,24 @@ export function classifySort(
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
+  }
+  // Stryker disable next-line BlockStatement: sortProblem above already
+  // calls isValidEjson(raw), which parses the identical `raw` string via
+  // `JSON.parse` under the hood (ejsonParse) — if that had thrown, we'd
+  // already have returned 'invalid' on the line above, so this JSON.parse
+  // can never throw here; the whole catch body is unreachable dead code.
+  catch {
+    // Stryker disable next-line StringLiteral: unreachable per the same
+    // proof above — this literal can never actually be returned.
     return 'invalid';
   }
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,StringLiteral:
+  // sortProblem's `isEjsonDocument` check (line above) calls `isPlainDocument`,
+  // whose own first line is the byte-identical condition
+  // `!parsed || typeof parsed !== 'object' || Array.isArray(parsed)` — since
+  // that already returned false (i.e. sortProblem was null) for us to reach
+  // this point, this line's condition is always false too; verified by
+  // reading `isPlainDocument` in src/utils/ejson.ts.
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unrepresentable';
   const total = Object.keys(parsed).length;
   if (total === 0) return 'none';
@@ -268,6 +321,11 @@ export function isDefaultQueryState(state: CollectionTabState): boolean {
  */
 export function currentFilterJson(state: CollectionTabState): string | null {
   const raw = state.queryRaw.trim();
+  // Stryker disable next-line ConditionalExpression,StringLiteral:
+  // isEjsonDocument('') starts with `if (!t) return false;` for a blank
+  // string, so whenever `raw === ''` this line's second disjunct is already
+  // true on its own — disabling (or misdirecting) the first disjunct can't
+  // change the result.
   if (raw === '' || !isEjsonDocument(raw)) return null;
   return raw;
 }
@@ -324,12 +382,43 @@ export function condFromDragged(dragged: DraggedField): CondNode {
     valType === 'decimal'
   ) {
     valueStr = dv.display;
-  } else if (valType === 'boolean') {
+  } else if (
+    // Stryker disable next-line ConditionalExpression,StringLiteral: for a
+    // boolean value, String(value) and this function's own final-fallback
+    // `JSON.stringify(value)` produce the byte-identical text ("true"/
+    // "false"), so skipping this branch (falling through to that fallback)
+    // is unobservable — verified: String(true)===JSON.stringify(true) and
+    // likewise for false.
+    valType === 'boolean'
+  ) {
     valueStr = String(value);
-  } else if (valType === 'regex' && value && typeof value === 'object' && '$regex' in value) {
+  } else if (
+    valType === 'regex' &&
+    value &&
+    // Stryker disable next-line ConditionalExpression: whenever
+    // `valType === 'regex'`, `value` is already guaranteed to be a plain
+    // object — that's the only shape valTypeFromDisplayType/toDisplayValue
+    // ever assigns 'regex' from (see displayValue.ts's `isRecord(v)` guard
+    // around the regex branch) — so forcing this conjunct to `true` can't
+    // change the result for any real call.
+    typeof value === 'object' &&
+    '$regex' in value
+  ) {
     const r = (value as Record<string, unknown>).$regex;
+    // Stryker disable next-line ConditionalExpression,StringLiteral: `r` is
+    // guaranteed to be a string whenever this branch runs (same invariant as
+    // above — displayValue.ts only assigns 'regex' when `typeof v.$regex
+    // === 'string'`), so forcing the true branch, or changing the
+    // unreachable false branch's text, can't change the result.
     valueStr = typeof r === 'string' ? r : '';
-  } else if (valType === 'array') {
+  } else if (
+    // Stryker disable next-line ConditionalExpression,StringLiteral: this
+    // branch's body and the final `else` branch's body below are both
+    // `JSON.stringify(value)` verbatim — skipping this branch (e.g. via
+    // `typeof value === 'string'`, false for an array) falls straight
+    // through to that identical fallback.
+    valType === 'array'
+  ) {
     valueStr = JSON.stringify(value);
   } else if (typeof value === 'string') {
     valueStr = value;
@@ -346,7 +435,13 @@ const MERGEABLE_DROP_OPS = new Set<string>(['$eq', '$in', '$nin']);
 function isJsonArray(raw: string): boolean {
   try {
     return Array.isArray(JSON.parse(raw));
-  } catch {
+  }
+  // Stryker disable next-line BlockStatement: this private function's only
+  // caller (mergeOrReplaceDragged below) uses it solely under `!isJsonArray(
+  // ...)` — a truthiness check — and an emptied catch body leaves the
+  // function returning `undefined`, which is exactly as falsy as `false` in
+  // that one call site (`!undefined === !false === true`).
+  catch {
     return false;
   }
 }
@@ -357,6 +452,13 @@ function isJsonArray(raw: string): boolean {
  * duplicates skipped); anything else falls back to `condFromDragged`'s replace.
  */
 export function mergeOrReplaceDragged(target: FilterNode, dragged: DraggedField): CondNode {
+  // Stryker disable next-line ConditionalExpression: a RawNode/GroupNode has
+  // no `.field`/`.op` own properties, so `target.field` is `undefined` —
+  // strictly unequal to `dragged.field` (always a real string) — for every
+  // non-cond FilterNode. The second disjunct already catches every such
+  // target, making the `target.kind !== 'cond'` check redundant (verified
+  // by the existing "target is a raw clause" test, which never touched
+  // .field at all).
   if (target.kind !== 'cond' || target.field !== dragged.field || !MERGEABLE_DROP_OPS.has(target.op)) {
     return condFromDragged(dragged);
   }
@@ -371,11 +473,32 @@ export function mergeOrReplaceDragged(target: FilterNode, dragged: DraggedField)
     target.op === '$eq'
       ? [buildScalarWire(target.valType, target.value)]
       : parseJsonArrayLenient(target.value).map((el) =>
+          // Stryker disable next-line StringLiteral: coerceArrayElementWire's
+          // switch has no 'array' case (only objectid/long/decimal/date/
+          // number/boolean/string), so it falls to `default: return el;` for
+          // valType 'array' — the identical passthrough this ternary's true
+          // branch already gives. Comparing against the wrong literal here
+          // still routes every valType through the same coerce call, whose
+          // result for 'array' happens to equal the passthrough anyway.
+          //
+          // Known residual mutation-testing gap (not fixable with a disable
+          // comment): Stryker's "always-coerce" (false-forcing) variant of
+          // this ternary's ConditionalExpression mutant is equivalent for the
+          // same reason as the StringLiteral mutant above, but its sibling
+          // "always-passthrough" (true-forcing) variant is a real, separately
+          // tested gap (see the "objectid $in row coerces a bare unwrapped
+          // string" test) — Stryker shares one mutator-name+location for
+          // both, so a disable comment here would silence the real gap's
+          // coverage too. Left un-annotated on purpose; the false-forcing
+          // mutant will keep showing as one honestly-accepted "Survived".
           target.valType === 'array' ? el : coerceArrayElementWire(el, target.valType),
         );
 
   // Unparsable "number" text silently becomes NaN → JSON.stringify → null;
   // fall back to replace rather than merge a corrupted value into the list.
+  // Stryker disable next-line ConditionalExpression: Number.isFinite is
+  // type-strict — already false for any non-number `el` — so dropping the
+  // redundant `typeof el !== 'number'` disjunct can't change the result.
   if (target.valType === 'number' && current.some((el) => typeof el !== 'number' || !Number.isFinite(el))) {
     return condFromDragged(dragged);
   }

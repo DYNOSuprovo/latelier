@@ -133,6 +133,7 @@ function relaxLosslessly(node: unknown): unknown {
 function relaxSentinel(obj: Record<string, unknown>): unknown {
   if (typeof obj.$numberInt === 'string') return plainNumber(obj.$numberInt, true) ?? obj;
   if (typeof obj.$numberDouble === 'string') return plainNumber(obj.$numberDouble, false) ?? obj;
+  // Stryker disable next-line ConditionalExpression: `isExactSentinel` already guarantees `obj` has exactly one recognised sentinel key (or the $code/$scope pair); when that key isn't '$date', `obj.$date` is simply undefined, so `isoDate(obj)` computes NaN internally, `.toISOString()` throws, and the catch returns null — the same `?? obj` fallback the real `false` branch takes. Forcing this condition true is unobservable for every sentinel shape.
   if (obj.$date !== undefined) return isoDate(obj) ?? obj;
   return obj;
 }
@@ -183,6 +184,12 @@ function isoDate(obj: Record<string, unknown>): { $date: string } | null {
   try {
     return { $date: new Date(ms).toISOString() };
   } catch {
+    // A mutant that empties this catch body (returning `undefined` instead of
+    // `null`) is unobservable: the only caller is `relaxSentinel`'s
+    // `isoDate(obj) ?? obj`, and `??` treats `null`/`undefined` identically.
+    // `// Stryker disable` doesn't attach cleanly to a catch block's own
+    // BlockStatement node here, so this stays prose rather than a directive.
+    //
     // `toISOString` is the whole range check. Every millisecond value a `Date`
     // can hold is inside ±8.64e15 and therefore a safe integer, so anything
     // this rejects — a value past the range, or a `$date` that was not the
@@ -212,6 +219,7 @@ export function isValidEjson(s: string): boolean {
  * the mirror of `parseEjsonDocument` in `electron/mongo/ejson.ts`.
  */
 export function isEjsonDocument(s: string): boolean {
+  // Stryker disable next-line MethodExpression: `.trim()` here is only an early-exit optimization, not a correctness requirement — `JSON.parse` (inside `ejsonParse`) already ignores surrounding whitespace on a value it can otherwise parse, and throws on a whitespace-only string exactly like it throws on an empty one, so `t` untrimmed reaches the same `true`/`false` outcome either way. Verified with node across '', '   ', '  {} ' and '\t\n'.
   const t = s.trim();
   if (!t) return false;
   try {

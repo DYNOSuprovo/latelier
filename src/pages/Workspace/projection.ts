@@ -48,6 +48,7 @@ export function parseProjection(text: string): ProjectionParse {
   } catch {
     // Fall through to lenient parsing.
   }
+  // Stryker disable next-line MethodExpression: dropping this .trim() is unobservable — `t` is already outer-trimmed, so the only string shaped "{" + whitespace + "}" is valid empty-object JSON handled above, and every per-field token gets its own .trim() in the split loop below (fuzzed 200k random {}/whitespace/field strings against both versions with zero diffs)
   const stripped = t.replace(/^\{|\}$/g, '').trim();
   if (!stripped) return { ok: true, fields: [] };
   const fields: string[] = [];
@@ -97,6 +98,7 @@ function isExclusion(v: unknown): boolean {
 function isSliceOnly(v: unknown): boolean {
   // A primitive has no own keys, so only `null` needs keeping away from
   // `Object.keys`, which throws on it.
+  // Stryker disable next-line ArrayDeclaration: the null branch's array content only matters through `keys[0] === '$slice'` below, and no mutant literal is ever the string '$slice'
   const keys = v === null ? [] : Object.keys(v as object);
   return keys.length === 1 && keys[0] === '$slice';
 }

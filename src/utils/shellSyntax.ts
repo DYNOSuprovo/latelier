@@ -29,10 +29,16 @@ class UnsupportedSyntax extends Error {
   }
 }
 
-/** mongosh value constructors that map to a single EJSON sentinel. */
+/**
+ * mongosh value constructors that map to a single EJSON sentinel.
+ *
+ * No `ISODate` (or `Date`) entry: `sentinelText` special-cases both names
+ * before this map is ever consulted (its own `$date` branch, allowNumber:
+ * false), so an entry here would be dead — never read, and its removal
+ * changes nothing about how `new Date(...)`/`ISODate(...)` are handled.
+ */
 const SENTINELS: Record<string, { key: string; numericArg: boolean }> = {
   ObjectId: { key: '$oid', numericArg: false },
-  ISODate: { key: '$date', numericArg: false },
   NumberLong: { key: '$numberLong', numericArg: true },
   NumberDecimal: { key: '$numberDecimal', numericArg: true },
   NumberInt: { key: '$numberInt', numericArg: true },
@@ -95,11 +101,13 @@ export function repairToCanonicalEjson(text: string): RepairOutcome {
 
   let root: Expression;
   try {
+    // Stryker disable next-line ObjectLiteral: the installed acorn version defaults to ecmaVersion 2020 when the option is omitted (verified with node: parseExpressionAt(text, 0, {}) throws/parses identically to passing `{ ecmaVersion: 2020 }` explicitly) — acorn only warns that omitting it will stop being allowed in a future release, it does not yet parse differently.
     root = parseExpressionAt(text, 0, { ecmaVersion: 2020 });
   } catch (e) {
     const err = e as { message?: string; pos?: number };
     return {
       kind: 'failed',
+      // Stryker disable next-line StringLiteral: acorn always throws with a message for a real parse failure, so `stripAcornPosition` never returns undefined here in practice; the `?? '...'` fallback only guards against a malformed thrown value that isn't a real acorn error.
       reason: stripAcornPosition(err.message) ?? 'The text could not be read.',
       index: err.pos,
     };
@@ -115,6 +123,7 @@ export function repairToCanonicalEjson(text: string): RepairOutcome {
   try {
     walk(root, text, edits);
   } catch (e) {
+    // Stryker disable next-line ConditionalExpression: every `throw` reachable from `walk` (grepped across this file) constructs `UnsupportedSyntax`, so the `throw e` rethrow below is unreachable for any input today; it is kept so a future bug elsewhere in `walk` surfaces as a real crash instead of being mislabeled as a clean parse failure.
     if (e instanceof UnsupportedSyntax) return { kind: 'failed', reason: e.message, index: e.index };
     throw e;
   }
@@ -287,7 +296,9 @@ const MONGO_REGEX_FLAGS = new Set(['i', 'm', 's', 'u']);
 const REGEX_FLAG_NAMES: Record<string, string> = {
   g: 'global',
   y: 'sticky',
+  // Stryker disable next-line StringLiteral: unreachable today per the MONGO_REGEX_FLAGS comment above — acorn at ecmaVersion 2020 cannot even parse a `d` flag, so this entry is intentionally forward-compatible dead weight, not a mistake to delete.
   d: 'indices',
+  // Stryker disable next-line StringLiteral: same as `d` above — unreachable until acorn parses the `v` flag, kept for when it does.
   v: 'unicode sets',
 };
 
@@ -322,6 +333,7 @@ function regexText(regex: { pattern: string; flags: string }, start: number): st
   // Code-unit order, not `localeCompare`: these flags go out as canonical
   // EJSON, and a locale-dependent order would make the same regex serialize
   // differently on different machines.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: a valid regex never repeats a flag, so every pair compared here is guaranteed unequal — `<=`/`>=` collapsing to `<`/`>`, or forcing the second ternary branch to a fixed `true`/`false`, is unobservable. Verified exhaustively over every permutation of every subset of MONGO_REGEX_FLAGS (the only flags that ever reach this comparator): the real comparator and all four mutants sort every one identically.
   const options = [...regex.flags].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join('');
   return `{"$regularExpression":{"pattern":${JSON.stringify(regex.pattern)},"options":${JSON.stringify(options)}}}`;
 }

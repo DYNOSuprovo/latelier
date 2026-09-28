@@ -18,6 +18,7 @@ import {
   isExactSentinel,
   isValidEjson as isValidEjsonRenderer,
   isPlainDocument as isPlainDocumentRenderer,
+  isEjsonDocument as isEjsonDocumentRenderer,
   ejsonStringifyReadable,
 } from '../../src/utils/ejson';
 
@@ -386,6 +387,15 @@ describe('renderer isValidEjson / isPlainDocument', () => {
 
   it('isPlainDocument treats an ordinary Object.prototype object as plain', () => {
     expect(isPlainDocumentRenderer({})).toBe(true);
+  });
+
+  it('isPlainDocument rejects null without crashing on Object.getPrototypeOf', () => {
+    // `typeof null === 'object'`, so `!parsed` has to short-circuit the
+    // whole check on its own — if it were ANDed instead of ORed with the
+    // next clause, `null` would fall through to `Object.getPrototypeOf(null)`,
+    // which throws.
+    expect(isPlainDocumentRenderer(null)).toBe(false);
+    expect(isEjsonDocumentRenderer('null')).toBe(false);
   });
 });
 

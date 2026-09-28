@@ -144,6 +144,7 @@ export function stripIdForDuplicate(doc: unknown): string {
   if (!isRecord(doc)) return '{}';
   try {
     const revived = ejsonParse<Record<string, unknown>>(ejsonStringify(doc, 2));
+    // Stryker disable next-line ConditionalExpression: of every BSON sentinel walkRevive recognizes, only `{ $undefined: true }` ever revives to a non-record top-level value (`null` — every other single-key sentinel, e.g. $oid/$code/$symbol/$minKey/$maxKey, revives to a live BSON class instance, which is still `isRecord`-true) — verified against bson directly. `delete null._id` right below always throws, so skipping this guard still lands in the outer `catch` and returns the identical `'{}'`.
     if (!isRecord(revived)) return '{}';
     delete revived._id;
     // the drawer this feeds is something a person reads and edits, so

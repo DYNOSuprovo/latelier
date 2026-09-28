@@ -206,16 +206,20 @@ export function useRovingFocus({
   // literal is the same value on every render, so it never trips the
   // "changed" branch any differently than `[]` does. Same reasoning applies
   // to `handleFocus`/`handleBlur` a little further down.
+  // Stryker disable ArrayDeclaration: closes over only stable refs, so any literal dep array is equivalent to []
   const cancelPendingSettle = React.useCallback(() => {
+    // Stryker disable next-line ConditionalExpression: cancelAnimationFrame on a stale/nonexistent handle is a documented no-op (confirmed against jsdom), never a throw
     if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current);
     pendingFrame.current = null;
   }, []);
+  // Stryker restore ArrayDeclaration
   // `cancelPendingSettle`'s own deps are `[]`, so its identity is stable for
   // the component's lifetime (React's `useCallback([])` contract) — this
   // effect's `[cancelPendingSettle]` dep therefore never actually changes
   // across renders, making it equivalent to `[]` here specifically. Kept
   // for the normal reason to list a dep an effect closes over, not because
   // this instance can behave differently.
+  // Stryker disable next-line ArrayDeclaration: cancelPendingSettle's identity is stable ([] deps), so [cancelPendingSettle] never differs from []
   React.useEffect(() => cancelPendingSettle, [cancelPendingSettle]);
 
   const scrollThenSettle = React.useCallback(
@@ -256,6 +260,7 @@ export function useRovingFocus({
   // a nested row control (an expand button, a whole nested `DocFieldTree`)
   // taking focus would light up this container too.
   const [focused, setFocused] = React.useState(false);
+  // Stryker disable ArrayDeclaration: closes over only the stable setFocused setter, so any literal dep array is equivalent to []
   const handleFocus = React.useCallback((e: React.FocusEvent) => {
     if (e.target !== e.currentTarget) return;
     setFocused(true);
@@ -264,6 +269,7 @@ export function useRovingFocus({
     if (e.target !== e.currentTarget) return;
     setFocused(false);
   }, []);
+  // Stryker restore ArrayDeclaration
 
   const onKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
@@ -291,6 +297,7 @@ export function useRovingFocus({
           // via `Math.min(raw, count - 1)`, so `setIndex(count + 1)` and
           // `setIndex(count - 1)` land on the identical clamped index —
           // confirmed by reading that clamp, not assumed.
+          // Stryker disable next-line ArithmeticOperator: clampedIndex's Math.min(raw, count - 1) lands count+1 and count-1 on the same clamped index
           setIndex(count - 1);
           scrollThenSettle(count - 1);
           return;
@@ -298,6 +305,7 @@ export function useRovingFocus({
         // switch's last case and nothing follows the switch in this
         // callback, so falling out of the switch and hitting `return` do
         // the same thing.
+        // Stryker disable next-line ConditionalExpression: last switch case, nothing follows — falling out and returning are identical
         default:
           return;
       }
