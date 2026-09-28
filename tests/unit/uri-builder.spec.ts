@@ -285,6 +285,15 @@ describe('buildUri', () => {
         const uri = buildUri(mk({ host: 'x@a:1b:22[::12' }));
         expect(uri).toMatch(/^mongodb:\/\/a:1b:22\[::27017\//);
       });
+
+      it('an embedded scheme literal that is not at the start of a malformed host is not stripped from the middle', () => {
+        // The scheme-strip regex here is anchored with `^`, so it only
+        // strips a scheme prefix that is actually at position 0. Without
+        // the anchor, the literal 'mongodb://' embedded later in the
+        // string would also be stripped, silently rewriting the host.
+        const uri = buildUri(mk({ host: '[mongodb://x' }));
+        expect(uri).toMatch(/^mongodb:\/\/\[mongodb::27017\//);
+      });
     });
   });
 

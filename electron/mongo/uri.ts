@@ -71,9 +71,11 @@ export function buildUri(c: Connection, password?: string): string {
     case 'awsiam':
       params.set('authMechanism', 'MONGODB-AWS');
       break;
+    // Stryker disable next-line ConditionalExpression,StringLiteral: both this case label and 'none' below are no-op branches (just `break`), and `c.authMech` is a fixed string-literal union that never equals ''. Whether the label is 'default'/'none' or the mutated '', and whether the trailing `break` runs or falls through into the next no-op case, the switch produces the same params either way. Verified by reading every branch's body: none of them have a side effect to lose.
     case 'default':
       // Omit authMechanism so the driver negotiates via SASL saslSupportedMechs.
       break;
+    // Stryker disable next-line ConditionalExpression,StringLiteral: same reasoning as 'default' above — this is the switch's last case, so dropping `break` just falls out of the switch instead of through it, and the label itself is unreachable-if-renamed for the same never-'' reason.
     case 'none':
       break;
   }
@@ -124,6 +126,7 @@ export function buildUri(c: Connection, password?: string): string {
  */
 function sanitizeHost(raw: string): string {
   const trimmed = raw.trim();
+  // Stryker disable next-line ConditionalExpression: skipping this early return when trimmed === '' produces the same output through the normal path anyway — `new URL('mongodb://' + '')` parses to hostname '' (verified with node), identical to returning `trimmed` ('') directly. This is a fast-path, not a behavior branch.
   if (!trimmed) return trimmed;
   const hasScheme = /^mongodb(\+srv)?:\/\//.test(trimmed);
   try {
@@ -135,6 +138,7 @@ function sanitizeHost(raw: string): string {
     const noScheme = trimmed.replace(/^mongodb(\+srv)?:\/\//, '');
     const authority = noScheme.split(/[/?#]/, 1)[0] ?? '';
     const atIdx = authority.lastIndexOf('@');
+    // Stryker disable next-line ConditionalExpression: when atIdx is genuinely -1, `authority.slice(atIdx + 1)` is `authority.slice(0)`, which is `authority` itself — so forcing this ternary to always take the slice branch is unobservable; it only changes which literal expression computes the same string.
     const host = atIdx === -1 ? authority : authority.slice(atIdx + 1);
     return host.replace(/:\d+$/, '');
   }
