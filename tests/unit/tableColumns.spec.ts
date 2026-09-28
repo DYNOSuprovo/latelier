@@ -233,6 +233,11 @@ describe('getValueAtPath', () => {
     expect(getValueAtPath(undefined, 'a.b')).toBeUndefined();
   });
 
+  it('reads own keys only, never an inherited property', () => {
+    expect(getValueAtPath({ a: {} }, 'a.constructor')).toBeUndefined();
+    expect(getValueAtPath({ tags: ['x'] }, 'tags.length')).toBeUndefined();
+  });
+
   // Reviewer-bot finding: `Number(segment)` + `Number.isInteger` coerces
   // non-canonical strings into valid array indices (" " and "" → 0, "1e0" and
   // "0x1" → 1). Only a strict canonical-integer segment should resolve.

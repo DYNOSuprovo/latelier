@@ -104,6 +104,25 @@ describe('ResultBar — Export', () => {
     expect(screen.queryByRole('dialog', { name: 'Export documents' })).not.toBeNull();
   });
 
+  it('keeps the button focusable while exporting, and ignores a second click', async () => {
+    let finish: (v: { path: string | null }) => void = () => {};
+    const saveFile = vi.fn(() => new Promise<{ path: string | null }>((resolve) => (finish = resolve)));
+    installAtelierMock({ app: { saveFile } as never });
+    renderBar({}, { collection: 'orders' });
+
+    await openExportDialog();
+    fireEvent.click(screen.getByRole('button', { name: /^Export…$/ }));
+    const busy = (await screen.findByRole('button', { name: /^Exporting…$/ })) as HTMLButtonElement;
+    // A real `disabled` gets Chromium to blur the focused button out of the dialog.
+    expect(busy.disabled).toBe(false);
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(busy);
+    expect(saveFile).toHaveBeenCalledTimes(1);
+
+    finish({ path: null });
+    await screen.findByRole('button', { name: /^Export…$/ });
+  });
+
   it('reports a failed write instead of swallowing it, and stays open', async () => {
     const saveFile = vi.fn(async () => {
       throw new Error('EACCES: permission denied');

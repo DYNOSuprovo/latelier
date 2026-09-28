@@ -10,12 +10,12 @@ import { docKey, isRecord } from '../../../utils/displayValue';
 import { tokenizeJson, type Token, type TokenKind } from '../../../utils/jsonHighlight';
 import { copyToClipboard } from '../../../utils/clipboard';
 import { anchorFromRect, isEditKey } from '../../../utils/contextMenuKey';
-import { useMenuFocus } from '../../../hooks/useMenuFocus';
 import { useCollectionWorkspace } from '../context';
 import { useResultSelection } from '../resultSelection';
 import { getDocId } from './docId';
 import { SelectToggle } from './SelectToggle';
-import { RowActionsMenu } from './RowActionsMenu';
+import { DocActionsPopup } from './RowActionsMenu';
+import { useDocMenu } from './useDocMenu';
 
 interface JsonViewProps {
   documents: unknown[];
@@ -488,26 +488,7 @@ export function JsonView({ documents }: JsonViewProps) {
 
   // "More actions" per-card menu — Duplicate only, since Edit/Delete already
   // have their own always-visible buttons on the card.
-  const [docMenu, setDocMenu] = React.useState<{
-    x: number;
-    y: number;
-    doc: unknown;
-    returnFocusTo?: HTMLElement | null;
-    focusMenuOnOpen?: boolean;
-  } | null>(null);
-  const docMenuRef = React.useRef<HTMLDivElement | null>(null);
-  const handleOpenRowMenu = React.useCallback(
-    (
-      doc: unknown,
-      anchor: { x: number; y: number },
-      focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
-    ) => {
-      setDocMenu({ ...anchor, doc, returnFocusTo: focus?.returnFocusTo, focusMenuOnOpen: focus?.focusMenuOnOpen });
-    },
-    [],
-  );
-  const closeDocMenu = React.useCallback(() => setDocMenu(null), []);
-  useMenuFocus(docMenuRef, docMenu, closeDocMenu);
+  const { docMenu, docMenuRef, openDocMenu: handleOpenRowMenu, closeDocMenu } = useDocMenu();
 
   // Cards are variable-height (driven by the doc's serialized size). The
   // estimate is intentionally generous; useDynamicRowHeight refines on render.
@@ -571,33 +552,15 @@ export function JsonView({ documents }: JsonViewProps) {
         }}
       />
       {docMenu && (
-        <div
-          ref={docMenuRef}
-          role="group"
-          aria-label="Document actions"
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            top: docMenu.y,
-            left: docMenu.x,
-            background: 'var(--atelier-surface)',
-            border: '1px solid var(--atelier-border-med)',
-            borderRadius: 'var(--atelier-radius-sm)',
-            boxShadow: 'var(--atelier-shadow)',
-            zIndex: 1000,
-            minWidth: 160,
-            padding: '4px 0',
-          }}
-        >
-          <RowActionsMenu
-            doc={docMenu.doc}
-            onEdit={onEditDoc}
-            onDuplicate={onDuplicateDoc}
-            onDelete={onDeleteDoc}
-            isReadOnly={meta.isReadOnly}
-            onClose={closeDocMenu}
-          />
-        </div>
+        <DocActionsPopup
+          menu={docMenu}
+          menuRef={docMenuRef}
+          onEdit={onEditDoc}
+          onDuplicate={onDuplicateDoc}
+          onDelete={onDeleteDoc}
+          isReadOnly={meta.isReadOnly}
+          onClose={closeDocMenu}
+        />
       )}
     </div>
   );

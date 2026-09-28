@@ -1,4 +1,5 @@
 import { isRecord } from '../../../utils/displayValue';
+import { getAtSegments } from '../documentDiff';
 import type { TableColumnConfig } from '@shared/types';
 import type { SortDir } from '../builder';
 
@@ -124,15 +125,6 @@ export function reorder<T>(list: T[], from: number, to: number): T[] {
 }
 
 /**
- * Walk a dotted path (e.g. `address.city`, `tags.1`) into a document,
- * resolving numeric segments as array indices. Returns `undefined` on any
- * missing/non-record intermediate — same "absent value" semantics as a
- * regular missing field, so the Table renders it identically (T2.5, AC8).
- * No expression evaluation — accessor-only, per the ticket's scope guard.
- */
-const ARRAY_INDEX_RE = /^(?:0|[1-9]\d*)$/;
-
-/**
  * `aria-sort` for a Table header cell (#53). A non-sortable column (a
  * computed accessor column, or a plain column when the view has no
  * `onSortField` at all) gets `undefined` — no attribute at all — rather than
@@ -150,23 +142,14 @@ export function ariaSortFor(
   return 'none';
 }
 
+/**
+ * Walk a dotted path (e.g. `address.city`, `tags.1`) into a document,
+ * resolving numeric segments as array indices. Returns `undefined` on any
+ * missing/non-document intermediate — same "absent value" semantics as a
+ * regular missing field, so the Table renders it identically (T2.5, AC8).
+ * No expression evaluation — accessor-only, per the ticket's scope guard.
+ * Own keys only, so a path can't read an inherited `constructor`.
+ */
 export function getValueAtPath(doc: unknown, path: string): unknown {
-  const segments = path.split('.');
-  let current: unknown = doc;
-  for (const segment of segments) {
-    if (Array.isArray(current)) {
-      // Canonical non-negative integers only — `Number(segment)` alone would
-      // coerce non-numeric-looking strings (" ", "", "1e0", "0x1", "01")
-      // into a valid index.
-      if (!ARRAY_INDEX_RE.test(segment)) return undefined;
-      const index = Number(segment);
-      // Stryker disable next-line EqualityOperator,ConditionalExpression: JS array indexing never throws on an out-of-range index — current[index] is undefined whether index equals or exceeds current.length, verified with a node probe, so >= vs > and the guard itself all produce the same final undefined
-      if (index >= current.length) return undefined;
-      current = current[index];
-      continue;
-    }
-    if (!isRecord(current)) return undefined;
-    current = current[segment];
-  }
-  return current;
+  return getAtSegments(doc as Record<string, unknown>, path.split('.'))?.value;
 }

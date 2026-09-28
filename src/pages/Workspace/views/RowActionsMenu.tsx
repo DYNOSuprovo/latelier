@@ -1,4 +1,5 @@
 import React from 'react';
+import type { DocMenuState } from './useDocMenu';
 
 /**
  * Shared "More actions" popup content — Edit/Duplicate/Delete for a
@@ -9,10 +10,8 @@ import React from 'react';
  * Duplicate affordance as Table without a second copy of the item list.
  *
  * Deliberately just the buttons, not the popup's own positioning/dismiss
- * chrome (`role="group"`, `position: fixed`, `useMenuFocus`) — each caller
- * already owns that shell for its own reasons (Table's is shared with the
- * field menu; a standalone one is new for Tree/JSON), so this only owns
- * what's identical between them.
+ * chrome — Table's shell is shared with its field menu, while Tree and JSON
+ * use `DocActionsPopup` below with `useDocMenu`'s state.
  */
 export interface RowActionsMenuProps {
   doc: unknown;
@@ -80,5 +79,38 @@ export function RowActionsMenu({
         Delete
       </button>
     </>
+  );
+}
+
+/** The standalone "More actions" popup Tree and JSON open from a row button. */
+export function DocActionsPopup({
+  menu,
+  menuRef,
+  ...actions
+}: Omit<RowActionsMenuProps, 'doc'> & {
+  menu: DocMenuState;
+  menuRef: React.Ref<HTMLDivElement>;
+}) {
+  return (
+    <div
+      ref={menuRef}
+      role="group"
+      aria-label="Document actions"
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: 'fixed',
+        top: menu.y,
+        left: menu.x,
+        background: 'var(--atelier-surface)',
+        border: '1px solid var(--atelier-border-med)',
+        borderRadius: 'var(--atelier-radius-sm)',
+        boxShadow: 'var(--atelier-shadow)',
+        zIndex: 1000,
+        minWidth: 160,
+        padding: '4px 0',
+      }}
+    >
+      <RowActionsMenu doc={menu.doc} {...actions} />
+    </div>
   );
 }

@@ -23,7 +23,8 @@ import { DocFieldTree, DOC_FIELD_TREE_GRID_TEMPLATE, type FieldMenuOpenPayload }
 import { getDocId, getFullDocId } from './docId';
 import { deriveColumns, orderFields } from './tableColumns';
 import { SelectToggle } from './SelectToggle';
-import { RowActionsMenu } from './RowActionsMenu';
+import { DocActionsPopup } from './RowActionsMenu';
+import { useDocMenu } from './useDocMenu';
 
 interface TreeViewProps {
   documents: unknown[];
@@ -518,22 +519,16 @@ export function TreeView({
   // field-level `contextMenu` above: this one is doc-level (opened from the
   // row strip, not from inside an expanded field). Declared here, ahead of
   // handleOpenMenu below, so both open handlers can close the other menu.
-  const [docMenu, setDocMenu] = React.useState<{
-    x: number;
-    y: number;
-    doc: unknown;
-    returnFocusTo?: HTMLElement | null;
-    focusMenuOnOpen?: boolean;
-  } | null>(null);
+  const { docMenu, docMenuRef, openDocMenu, closeDocMenu } = useDocMenu();
 
   const handleOpenMenu = React.useCallback(
     ({ anchor, fieldPath, value, returnFocusTo, focusMenuOnOpen }: FieldMenuOpenPayload) => {
       // Symmetric with handleOpenRowMenu below: only one of the field-level
       // and doc-level menus should ever be open at once.
-      setDocMenu(null);
+      closeDocMenu();
       setContextMenu({ ...anchor, fieldPath, value, returnFocusTo, focusMenuOnOpen });
     },
-    [],
+    [closeDocMenu],
   );
 
   // Menu disables up front when the filter bar's text doesn't parse, rather
@@ -577,24 +572,17 @@ export function TreeView({
   const closeContextMenu = React.useCallback(() => setContextMenu(null), []);
   useMenuFocus(fieldMenuRef, contextMenu, closeContextMenu);
 
-  const docMenuRef = React.useRef<HTMLDivElement | null>(null);
   const handleOpenRowMenu = React.useCallback(
-    (
-      doc: unknown,
-      anchor: { x: number; y: number },
-      focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
-    ) => {
+    (...args: Parameters<typeof openDocMenu>) => {
       // The field-level context menu and this doc-level one both only close
       // via useMenuFocus's window click listener, but this button already
       // stops propagation — so opening one while the other is open would
       // otherwise leave both on screen at once.
       setContextMenu(null);
-      setDocMenu({ ...anchor, doc, returnFocusTo: focus?.returnFocusTo, focusMenuOnOpen: focus?.focusMenuOnOpen });
+      openDocMenu(...args);
     },
-    [],
+    [openDocMenu],
   );
-  const closeDocMenu = React.useCallback(() => setDocMenu(null), []);
-  useMenuFocus(docMenuRef, docMenu, closeDocMenu);
 
   // Virtualize the outer doc list with react-window v2. Collapsed rows are
   // ~44px; expanded rows grow with field count. useDynamicRowHeight observes
@@ -906,33 +894,15 @@ export function TreeView({
         </div>
       )}
       {docMenu && (
-        <div
-          ref={docMenuRef}
-          role="group"
-          aria-label="Document actions"
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            top: docMenu.y,
-            left: docMenu.x,
-            background: 'var(--atelier-surface)',
-            border: '1px solid var(--atelier-border-med)',
-            borderRadius: 'var(--atelier-radius-sm)',
-            boxShadow: 'var(--atelier-shadow)',
-            zIndex: 1000,
-            minWidth: 160,
-            padding: '4px 0',
-          }}
-        >
-          <RowActionsMenu
-            doc={docMenu.doc}
-            onEdit={onEditDoc}
-            onDuplicate={onDuplicateDoc}
-            onDelete={onDeleteDoc}
-            isReadOnly={meta.isReadOnly}
-            onClose={closeDocMenu}
-          />
-        </div>
+        <DocActionsPopup
+          menu={docMenu}
+          menuRef={docMenuRef}
+          onEdit={onEditDoc}
+          onDuplicate={onDuplicateDoc}
+          onDelete={onDeleteDoc}
+          isReadOnly={meta.isReadOnly}
+          onClose={closeDocMenu}
+        />
       )}
     </>
   );

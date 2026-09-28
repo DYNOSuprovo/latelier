@@ -1,6 +1,6 @@
 import { isRecord } from '../../../utils/displayValue';
 import { ejsonParse, ejsonStringify, ejsonStringifyReadable } from '../../../utils/ejson';
-import { kindOf, type Kind } from '../documentFieldTypes';
+import type { Kind } from '../documentFieldTypes';
 
 /**
  * Short, human-scannable row identifier — last 8 chars of an `$oid`, or a
@@ -75,7 +75,7 @@ export function buildIdFilter(doc: unknown): string | null {
  * *objects* the wire actually carries (`parseFindResult` is a plain
  * `JSON.parse`, not a BSON-aware revive — see `electron/preload.ts`).
  * `documentFieldTypes.ts`'s `kindOf` only recognizes the revived shapes, so
- * both `isInlineEditable` and the inline editor's own control-picking logic
+ * both `isInlineEditableKind` and the inline editor's own control-picking logic
  * go through this first — they'd otherwise see every sentinel as a generic
  * `'object'` and either refuse everything or, worse, misclassify one.
  * Falls back to the raw value on a parse failure, which `kindOf` then reads
@@ -107,8 +107,11 @@ const INLINE_EDITABLE_KINDS: ReadonlySet<Kind> = new Set<Kind>([
 
 /**
  * Whether a Table cell's value is safe for the inline single-field editor
- * (W18 §8). String, boolean and the BSON numeric types (Int32/Int64/Double/
- * Decimal128) qualify — each keeps its loaded type through the guarded save
+ * (W18 §8), given its `kindOf(reviveTableValue(value))` — takes the kind
+ * rather than the raw value so `TableCell` can reuse the revival it already
+ * memoises instead of paying for a second one on every render. String,
+ * boolean and the BSON numeric types (Int32/Int64/Double/Decimal128)
+ * qualify — each keeps its loaded type through the guarded save
  * path (`documentDiff.ts`'s `buildUpdateRequest`), same as the Document
  * Editor's Fields view. Date, ObjectId, Binary, null, arrays and plain
  * objects are out of scope: those open the Document Editor on the field
@@ -119,9 +122,9 @@ const INLINE_EDITABLE_KINDS: ReadonlySet<Kind> = new Set<Kind>([
  * before offering the affordance, since `$set` needs a real field path, not
  * a computed column's display label.
  */
-export function isInlineEditable(value: unknown, fieldPath: string): boolean {
+export function isInlineEditableKind(kind: Kind, fieldPath: string): boolean {
   if (fieldPath === '_id') return false;
-  return INLINE_EDITABLE_KINDS.has(kindOf(reviveTableValue(value)));
+  return INLINE_EDITABLE_KINDS.has(kind);
 }
 
 /**

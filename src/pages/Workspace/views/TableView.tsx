@@ -29,7 +29,7 @@ import { useCollectionWorkspace } from '../context';
 import { insertAt, parseFilter, printFilter } from '../filterTree';
 import { useResultSelection } from '../resultSelection';
 import { DocFieldTree, type FieldMenuOpenPayload } from './DocFieldTree';
-import { getDocId, getFullDocId, isInlineEditable, reviveTableValue } from './docId';
+import { getDocId, getFullDocId, isInlineEditableKind, reviveTableValue } from './docId';
 import { kindOf, parseAs, textOf, type FieldKind } from '../documentFieldTypes';
 import { SelectToggle } from './SelectToggle';
 import { RowActionsMenu } from './RowActionsMenu';
@@ -113,9 +113,6 @@ interface TableCellProps {
   value: unknown;
   /** Dotted path or plain field name — drag payload, title, "Copy field path". */
   fieldPath: string;
-  /** Inline-edit eligibility, computed by the caller since only it knows `col.kind`
-   * (a computed accessor column's `fieldPath` is a display label, not a real `$set` target). */
-  editable: boolean;
   /**
    * `col.kind === 'field'` — a real document field, as opposed to a computed
    * accessor column. W18 §8: a field this narrow but `!editable` (Date,
@@ -150,7 +147,6 @@ interface TableCellProps {
 function TableCell({
   value,
   fieldPath,
-  editable,
   isFieldColumn,
   doc,
   width,
@@ -187,11 +183,15 @@ function TableCell({
   const commitGuardRef = React.useRef(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  // W18 §8 — the cell's real BSON kind, revived from the wire sentinel the
-  // same way `isInlineEditable` classifies it, so the two can't disagree
-  // about what this value is.
+  // W18 §8 — the cell's real BSON kind, revived from the wire sentinel once
+  // and shared by the eligibility check and the editor's control choice, so
+  // the two can't disagree about what this value is.
   const revived = React.useMemo(() => reviveTableValue(value), [value]);
   const kind = React.useMemo(() => kindOf(revived), [revived]);
+  // T2.6 — restricted to real field columns: a computed accessor column's
+  // `fieldPath` is a display label (or dotted path), never a real document
+  // field, so it must never reach `$set`.
+  const editable = isFieldColumn && isInlineEditableKind(kind, fieldPath);
   const isNumericKind = kind === 'int32' || kind === 'long' || kind === 'double' || kind === 'decimal';
 
   // Index-virtualization rebinds this same TableCell instance to a different
@@ -869,17 +869,12 @@ function TableRowImpl({
           const isCopied = copiedCell === cellKey;
           const width = ownGet(widths, col.field) ?? 160;
           const rule = val !== undefined ? refsByField?.get(fieldPath) : undefined;
-          // T2.6 — restricted to real field columns: a computed accessor
-          // column's `fieldPath` is a display label (or dotted path), never
-          // a real document field, so it must never reach `$set`.
-          const editable = col.kind === 'field' && isInlineEditable(val, fieldPath);
 
           return (
             <TableCell
               key={col.field}
               value={val}
               fieldPath={fieldPath}
-              editable={editable}
               isFieldColumn={col.kind === 'field'}
               doc={doc}
               width={width}

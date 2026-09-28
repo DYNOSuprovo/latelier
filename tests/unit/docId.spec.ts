@@ -3,10 +3,15 @@ import {
   getDocId,
   getFullDocId,
   buildIdFilter,
-  isInlineEditable,
+  isInlineEditableKind,
   reviveTableValue,
   stripIdForDuplicate,
 } from '../../src/pages/Workspace/views/docId';
+import { kindOf } from '../../src/pages/Workspace/documentFieldTypes';
+
+// The same pipeline `TableCell` runs on a raw wire value.
+const isInlineEditable = (value: unknown, fieldPath: string) =>
+  isInlineEditableKind(kindOf(reviveTableValue(value)), fieldPath);
 
 describe('getDocId', () => {
   it('takes the last 8 chars of an $oid', () => {
@@ -109,7 +114,7 @@ describe('buildIdFilter', () => {
   });
 });
 
-describe('isInlineEditable', () => {
+describe('isInlineEditableKind', () => {
   it('allows a plain string value on a non-_id field', () => {
     expect(isInlineEditable('pending', 'status')).toBe(true);
   });

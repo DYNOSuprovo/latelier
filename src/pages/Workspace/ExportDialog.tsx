@@ -1,6 +1,7 @@
 import React from 'react';
 import { Button, Checkbox, Group, Modal, SegmentedControl, Stack } from '@mantine/core';
 import { useDialogFocusReturn } from '../../hooks/useDialogFocusReturn';
+import { SubmitButton } from '../../components/SubmitButton';
 import { api, getErrorMessage } from '../../api/atelier';
 import { notify } from '../../theme/notifications';
 import { useCollectionWorkspace } from './context';
@@ -58,7 +59,7 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
   // committed `queryRaw` straight to the driver, so it must be at least as
   // runnable as a Run click.
   const canRunAll = findProblem(state) === null;
-  const canExport = scope === 'page' ? documents.length > 0 && !saving : canRunAll && !saving;
+  const canExport = scope === 'page' ? documents.length > 0 : canRunAll;
 
   const columns = () =>
     exportColumnsFrom(resolveColumns(deriveColumns(documents), state.columnConfig));
@@ -103,7 +104,7 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
   };
 
   const handleExport = async () => {
-    if (!canExport) return;
+    if (!canExport || saving) return;
     setSaving(true);
     try {
       await (scope === 'page' ? exportPage() : exportAll());
@@ -149,9 +150,9 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
           <Button variant="default" size="xs" onClick={close}>
             Cancel
           </Button>
-          <Button size="xs" disabled={!canExport} onClick={() => void handleExport()}>
+          <SubmitButton size="xs" submitting={saving} disabled={!canExport} onClick={() => void handleExport()}>
             {saving ? 'Exporting…' : 'Export…'}
-          </Button>
+          </SubmitButton>
         </Group>
       </Stack>
     </Modal>
