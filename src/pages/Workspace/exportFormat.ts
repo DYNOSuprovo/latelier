@@ -50,6 +50,7 @@ export function serializeJsonArray(documents: unknown[], relaxed: boolean): stri
   // `EJSON.stringify(v, ..., { relaxed: true })` are byte-identical) — a
   // mutation-test-confirmed equivalent, kept explicit so this call still
   // reads correctly if bson's default ever changes.
+  // Stryker disable next-line ObjectLiteral: {relaxed: true} and {} are byte-identical bson output — verified with a node EJSON.stringify probe
   return EJSON.stringify(revived as Parameters<typeof EJSON.stringify>[0], undefined, 2, {
     relaxed: true,
   });
@@ -64,6 +65,7 @@ export function serializeJsonl(documents: unknown[], relaxed: boolean): string {
     relaxed
       ? // Same equivalence note as `serializeJsonArray`: `{ relaxed: true }`
         // matches bson's own default, verified rather than assumed.
+        // Stryker disable next-line ObjectLiteral: {relaxed: true} and {} are byte-identical bson output — verified with a node EJSON.stringify probe
         EJSON.stringify(revive(doc) as Parameters<typeof EJSON.stringify>[0], undefined, undefined, {
           relaxed: true,
         })
@@ -87,6 +89,7 @@ function dateSentinelToIso(obj: Record<string, unknown>): string | null {
     typeof inner === 'object' &&
     typeof (inner as Record<string, unknown>).$numberLong === 'string'
   ) {
+    // Stryker disable BlockStatement: an empty catch falls through to an implicit `undefined` return, and `?? JSON.stringify(obj)` at the call site treats null/undefined identically (verified: `undefined ?? 'x'` === `null ?? 'x'`)
     try {
       return new Date(Number((inner as Record<string, unknown>).$numberLong)).toISOString();
     } catch {
@@ -97,6 +100,7 @@ function dateSentinelToIso(obj: Record<string, unknown>): string | null {
       // `undefined` identically (nullish coalescing, verified).
       return null;
     }
+    // Stryker restore BlockStatement
   }
   return null;
 }
