@@ -23,7 +23,7 @@ import {
   connectionReader,
 } from './mongo/ConnectionService.ts';
 import { registerConnChannels } from './ipc/handlers/conn.ts';
-import { registerAppChannels } from './ipc/handlers/app.ts';
+import { registerAppChannels, saveFilters } from './ipc/handlers/app.ts';
 import { registerMongoChannels } from './ipc/handlers/mongo.ts';
 import { registerMetaChannels } from './ipc/handlers/meta.ts';
 import { registerIndexChannels } from './ipc/handlers/indexes.ts';
@@ -56,10 +56,15 @@ import { SavedQueryRepo } from './db/repositories/SavedQueryRepo.ts';
 import { SavedQueryService } from './services/SavedQueryService.ts';
 import { RecentQueryRepo } from './db/repositories/RecentQueryRepo.ts';
 import { RecentQueryService } from './services/RecentQueryService.ts';
-import { PreviewFieldsRepo } from './db/repositories/PreviewFieldsRepo.ts';
-import { PreviewFieldsService } from './services/PreviewFieldsService.ts';
+import { RecentFieldValueRepo } from './db/repositories/RecentFieldValueRepo.ts';
+import { RecentFieldValueService } from './services/RecentFieldValueService.ts';
 import { MaintenanceService } from './services/MaintenanceService.ts';
-import { QueryService } from './mongo/QueryService.ts';
+import { AuditRepo } from './db/repositories/AuditRepo.ts';
+import { AuditService } from './services/AuditService.ts';
+import { registerAuditChannels } from './ipc/handlers/audit.ts';
+import { registerDataChannels, makeDataEmitter } from './ipc/handlers/data.ts';
+import { ImportService } from './mongo/ImportService.ts';
+import { DEFAULT_EXPORT_CAP, QueryService } from './mongo/QueryService.ts';
 import { DocumentService } from './mongo/DocumentService.ts';
 import { createLogger, type Logger } from './log.ts';
 import { createRouter } from './ipc/router.ts';
@@ -533,10 +538,13 @@ app.whenReady().then(() => {
   // this point, so the trusted frame is read through a closure rather than
   // captured — and it is re-read per message, which is what keeps it correct
   // across a reload.
+  const auditRepo = new AuditRepo(db);
+  const auditSvc = new AuditService(auditRepo, pool, log);
   const router = createRouter(
     ipcMain,
     senderCheck(() => win?.webContents.mainFrame ?? null, isAppLocation),
     log,
+    auditSvc,
   );
   // Workspace tabs
   const tabsRepo = new WorkspaceTabRepo(db);
@@ -546,33 +554,50 @@ app.whenReady().then(() => {
   const savedSvc = new SavedQueryService(savedRepo);
   const recentRepo = new RecentQueryRepo(db);
   const recentSvc = new RecentQueryService(recentRepo);
-  const previewRepo = new PreviewFieldsRepo(db);
-  const previewSvc = new PreviewFieldsService(previewRepo);
-  const querySvc = new QueryService(pool, recentSvc);
-  docSvc = new DocumentService(pool);
+  const recentFieldValueRepo = new RecentFieldValueRepo(db);
+  const recentFieldValueSvc = new RecentFieldValueService(recentFieldValueRepo);
+  const querySvc = new QueryService(pool, recentSvc, DEFAULT_EXPORT_CAP, log);
+  docSvc = new DocumentService(pool, { log });
   const aggSvc = new AggregationService(pool, recentSvc);
   const metaSvc = new MetaService(pool);
   const indexSvc = new IndexService(pool);
   const collectionAdminSvc = new CollectionAdminService(pool);
   const userSvc = new UserService(pool);
-  const maintenance = new MaintenanceService(recentRepo);
+  const maintenance = new MaintenanceService(recentRepo, auditRepo);
   maintenance.runIfNeeded(appState);
 
   const diagnostic = new DiagnosticService({ userDataDir, connRepo });
 
   registerConnChannels(router, connSvc);
-  registerAppChannels(router, () => win, diagnostic);
+  // Filled by the open dialog, read by the data channels: the only files an
+  // import may read are ones the user picked in main's own dialog.
+  const pickedImports = new Set<string>();
+  registerAppChannels(router, () => win, pickedImports, diagnostic);
   registerMongoChannels(router, pool, () => win?.webContents ?? null);
   registerMetaChannels(router, metaSvc);
   registerIndexChannels(router, indexSvc);
   registerCollectionAdminChannels(router, collectionAdminSvc);
   registerUserChannels(router, userSvc);
-  registerPrefsChannels(router, appState, () => win?.webContents ?? null, previewSvc);
+  registerPrefsChannels(router, appState, () => win?.webContents ?? null);
   registerTabsChannels(router, tabsSvc);
-  registerQueryChannels(router, querySvc);
+  // Same window-lookup + `saveFilters` pattern as `app.ts`'s `saveFile`,
+  // kept as a closure here rather than an import into query.ts so that file
+  // never needs `electron` itself (mirrors app.ts's own `dialog` usage).
+  registerQueryChannels(router, querySvc, async (defaultName) => {
+    const result = await (win
+      ? dialog.showSaveDialog(win, { defaultPath: defaultName, filters: saveFilters(defaultName) })
+      : dialog.showSaveDialog({ defaultPath: defaultName, filters: saveFilters(defaultName) }));
+    return result.canceled || !result.filePath ? null : result.filePath;
+  });
   registerDocChannels(router, docSvc);
   registerSavedChannels(router, savedSvc);
-  registerRecentChannels(router, recentSvc);
+  registerRecentChannels(router, recentSvc, recentFieldValueSvc);
+  registerAuditChannels(router, auditSvc);
+  registerDataChannels(
+    router,
+    new ImportService(pool, { emit: makeDataEmitter(() => win?.webContents ?? null) }),
+    pickedImports,
+  );
   registerAggChannels(router, aggSvc);
   registerShellChannels(router);
 

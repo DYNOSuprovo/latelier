@@ -22,12 +22,14 @@ import {
   IconDatabase,
   IconDeviceFloppy,
   IconDotsVertical,
+  IconDownload,
   IconExternalLink,
   IconEye,
   IconEyeOff,
   IconFileText,
   IconFilter,
   IconGripVertical,
+  IconLink,
   IconList,
   IconLock,
   IconMoon,
@@ -43,6 +45,7 @@ import {
   IconSun,
   IconTerminal2,
   IconTrash,
+  IconUpload,
   IconX,
 } from '@tabler/icons-react';
 
@@ -86,6 +89,8 @@ export const I = {
   code: <IconCode size={13} stroke={s} />,
   copy: <IconCopy size={12} stroke={s} />,
   save: <IconDeviceFloppy size={14} stroke={s} />,
+  download: <IconDownload size={13} stroke={s} />,
+  upload: <IconUpload size={13} stroke={s} />,
   arrowR: <IconArrowRight size={11} stroke={s} />,
   expand: <IconArrowsMaximize size={11} stroke={s} />,
   gear: <IconSettings size={14} stroke={s} />,
@@ -95,4 +100,5 @@ export const I = {
   // (I.code) reads as raw JSON and now sits on "add raw clause", where it
   // is accurate. Parentheses are how a nested boolean group is written.
   group: <IconParentheses size={13} stroke={s} />,
+  link: <IconLink size={13} stroke={s} />,
 };

@@ -38,6 +38,7 @@ describe('SavedTab — description rendering', () => {
         dbName="shop"
         collection="orders"
         onRunHere={() => {}}
+        onOpenInTab={() => {}}
       />,
     );
 
@@ -62,6 +63,7 @@ describe('SavedTab — description rendering', () => {
         dbName="shop"
         collection="orders"
         onRunHere={() => {}}
+        onOpenInTab={() => {}}
       />,
     );
 

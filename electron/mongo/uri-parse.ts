@@ -16,6 +16,7 @@ const AUTH_MECH_MAP: Record<string, AuthMech> = {
 };
 
 const READ_PREFS: ReadPref[] = [
+  // Stryker disable next-line StringLiteral: mutating this entry is unobservable — the fallback below (readPreference ?? 'primary') is 'primary' too, so an unmatched 'primary' param still resolves to 'primary'. Verified by reading the ternary at readPrefParam below.
   'primary',
   'primaryPreferred',
   'secondary',
@@ -56,8 +57,10 @@ export function parseConnectionUri(raw: string): ParsedUri {
   // surface a warning at the end.
   const srvPortStripped: string[] = [];
   let normalized = trimmed;
+  // Stryker disable next-line ConditionalExpression,StringLiteral: forcing this guard true only widens which strings reach the replace() below; the replacement regex is itself anchored to the literal 'mongodb+srv://' prefix, so it never matches a non-SRV string regardless of the guard. Verified with node: 'mongodb://...'.replace(/^(mongodb\+srv:\/\/...)/, ...) returns the input unchanged.
   if (normalized.startsWith('mongodb+srv://')) {
     normalized = normalized.replace(
+      // Stryker disable next-line Regex: removing the leading `^` is unobservable here — this branch only runs when `normalized` already starts with the literal at index 0 (see the startsWith guard above), and String#replace tries the leftmost position first, so the match is found at index 0 whether or not it is anchored. Verified with node across strings that also contain the literal again later.
       /^(mongodb\+srv:\/\/(?:[^@/]*@)?)([^/?]+)/,
       (_full, prefix: string, hostSegment: string) => {
         const cleaned = hostSegment
@@ -95,8 +98,11 @@ export function parseConnectionUri(raw: string): ParsedUri {
   }
 
   // Hosts ---------------------------------------------------------------
+  // Stryker disable next-line ArrayDeclaration: `cs.hosts` is never undefined for any URI that survives the `new ConnectionString(...)` construction above — every URI missing a host list already throws there (verified with node: 'mongodb://', 'mongodb:///db', 'mongodb://@/db' all throw "Protocol and host list are required"). The `?? []` is a defensive fallback against a library-invariant change, kept rather than deleted.
   const hosts = cs.hosts ?? [];
+  // Stryker disable next-line BlockStatement,ConditionalExpression: unreachable for the same reason — ConnectionString never returns an empty host list, so this guard's body never runs against real input. Kept as defense-in-depth against the library relaxing that invariant, not deleted.
   if (hosts.length === 0) {
+    // Stryker disable next-line StringLiteral,CallExpression: dead code per the note above; neither the message text nor the throw itself can be observed by any input.
     throw new ValidationError('URI has no host');
   }
   if (hosts.length > 1) {
@@ -109,8 +115,10 @@ export function parseConnectionUri(raw: string): ParsedUri {
   // host:port split (SRV always has no port)
   let host = firstHost;
   let port = 27017;
+  // Stryker disable next-line ConditionalExpression: forcing this guard true only runs the port split against an SRV host, which is always a bare DNS name with no ':' (the mongodb+srv scheme forbids a port — ConnectionString itself throws "cannot have port number" otherwise, verified with node), so lastIndexOf(':') is always -1 and the inner `if (idx >= 0)` never fires either way.
   if (!isSrv) {
     const idx = firstHost.lastIndexOf(':');
+    // Stryker disable next-line EqualityOperator: idx === 0 would require an empty hostname before the colon (e.g. ':1234'), which ConnectionString itself rejects as "Invalid connection string" (verified with node), so `idx > 0` and `idx >= 0` are indistinguishable for any host that reaches this line.
     if (idx >= 0) {
       const p = Number(firstHost.slice(idx + 1));
       if (Number.isFinite(p) && p > 0) {
@@ -127,14 +135,18 @@ export function parseConnectionUri(raw: string): ParsedUri {
   // above — this decode happens after construction succeeds, so it needs
   // its own try/catch to keep the same ValidationError taxonomy.
   let defaultDb: string | undefined;
+  // Stryker disable next-line StringLiteral: `cs.pathname` is always a string (at minimum '/') for any URI that parses at all — verified with node across 'mongodb://host', 'mongodb://host/', 'mongodb://host/db' — so the `?? ''` fallback is never taken.
   const pathname = cs.pathname ?? '';
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,StringLiteral: pathname is always truthy (see above), so `pathname && X` reduces to `X` for every reachable input; forcing the whole condition (or either operand) true only makes the branch run when pathname === '/', which strips to '' and is then reset to undefined by the `if (!defaultDb) defaultDb = undefined` normalization below anyway — same observable result either way. Verified by tracing pathname === '/' through both the guarded and unguarded path.
   if (pathname && pathname !== '/') {
     try {
+      // Stryker disable next-line Regex: removing the `^` anchor is unobservable — pathname always starts with '/' (WHATWG URL invariant, verified with node), so the leftmost (and only relevant) match is at index 0 whether or not the pattern is anchored.
       defaultDb = decodeURIComponent(pathname.replace(/^\//, ''));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new ValidationError(`could not parse URI: malformed database path (${msg})`);
     }
+    // Stryker disable next-line ConditionalExpression: unreachable given the guard above — decodeURIComponent never shrinks a non-empty input to length 0, and pathname !== '/' guarantees the stripped input has length >= 1, so defaultDb is always truthy here.
     if (!defaultDb) defaultDb = undefined;
   }
 

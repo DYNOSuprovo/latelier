@@ -69,9 +69,9 @@ function renderBar(
 }
 
 function selectFirstCard() {
-  // JsonView's card click toggles selection; clicking the rendered "alpha"
-  // text bubbles up to the card's own onClick handler.
-  fireEvent.click(screen.getByText('"alpha"'));
+  // A plain click on the card no longer selects it — the visible checkbox
+  // (or ⌘/Ctrl+click) is the way in now.
+  fireEvent.click(screen.getByRole('button', { name: 'Select document 99439011' }));
 }
 
 describe('SelectionActionBar', () => {
@@ -149,7 +149,7 @@ describe('SelectionActionBar', () => {
         </ResultViewer>
       </CollectionWorkspaceProvider>,
     );
-    fireEvent.click(screen.getByText('"no-id-doc"'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select document (no _id)' }));
     const deleteButton = container.querySelector(
       '[data-testid="selection-bar-delete"]',
     ) as HTMLButtonElement;

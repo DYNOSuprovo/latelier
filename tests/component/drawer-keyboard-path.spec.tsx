@@ -108,23 +108,23 @@ describe('⌘B toggles the drawer', () => {
   it('collapses the drawer and moves focus to the notch', async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('Prod'));
-    await screen.findByRole('button', { name: 'Collapse builder pane' });
+    await screen.findByRole('button', { name: 'Collapse Query Builder' });
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
 
     // Focus must not be left where it was, or the shortcut changes the layout
     // out from under the user and the next Tab continues from nowhere useful.
-    const notch = await screen.findByRole('button', { name: 'Open builder pane' });
+    const notch = await screen.findByRole('button', { name: 'Open Query Builder' });
     await waitFor(() => expect(document.activeElement).toBe(notch));
   });
 
   it('expands again and puts focus on the drawer tablist', async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('Prod'));
-    await screen.findByRole('button', { name: 'Collapse builder pane' });
+    await screen.findByRole('button', { name: 'Collapse Query Builder' });
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
-    await screen.findByRole('button', { name: 'Open builder pane' });
+    await screen.findByRole('button', { name: 'Open Query Builder' });
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
 
@@ -139,12 +139,12 @@ describe('⌘B toggles the drawer', () => {
   it('does nothing in the aggregation view', async () => {
     renderWorkspace('aggregation');
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('Prod'));
-    const before = await screen.findByRole('button', { name: 'Collapse builder pane' });
+    const before = await screen.findByRole('button', { name: 'Collapse Query Builder' });
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
 
     // Still expanded — the notch never flipped to "Open".
     await waitFor(() => expect(before).toBeTruthy());
-    expect(screen.queryByRole('button', { name: 'Open builder pane' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Query Builder' })).toBeNull();
   });
 });

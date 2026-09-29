@@ -53,7 +53,14 @@ const STAGE_HINT: Record<string, string> = {
 export const STAGE_OP_INFO: Record<string, { desc: string; hint: string }> = Object.fromEntries(
   KNOWN_STAGE_OPS.map((op) => [
     op,
-    { desc: stageOperatorSummary(op) ?? '', hint: STAGE_HINT[op] ?? '' },
+    {
+      // Stryker disable next-line StringLiteral: every KNOWN_STAGE_OPS entry has a
+      // real summary in the operator catalog (verified: none fall through to '').
+      desc: stageOperatorSummary(op) ?? '',
+      // Stryker disable next-line StringLiteral: every KNOWN_STAGE_OPS entry has a
+      // STAGE_HINT entry above (verified: none fall through to '').
+      hint: STAGE_HINT[op] ?? '',
+    },
   ]),
 );
 
@@ -111,8 +118,6 @@ export const OP_COLOR: Record<string, { bg: string; text: string }> = {
   '$documents':       { bg: 'rgba(90,90,58,0.15)',    text: '#5A5A3A' },
 };
 
-const PRIMITIVE_BODY_OPS = new Set<string>(['$limit', '$skip', '$count', '$unwind', '$unset', '$redact', '$out']);
-
 export function isWriteStage(op: string): boolean {
   return op === '$out' || op === '$merge';
 }
@@ -122,6 +127,10 @@ export function isKnownOp(op: string): op is StageOp {
 }
 
 export function nextStageId(stages: Stage[]): number {
+  // Stryker disable next-line EqualityOperator: when s.id === m, `s.id > m`
+  // and `s.id >= m` pick different branches but the same value (m itself),
+  // so the reduce's running max is identical either way. Verified: a `>` vs
+  // `>=` swap here cannot change the result of a max-reduce.
   return stages.reduce((m, s) => (s.id > m ? s.id : m), 0) + 1;
 }
 
@@ -134,6 +143,11 @@ export function addStage(
   const body = DEFAULT_BODIES[op] ?? '{}';
   const stage: Stage = { id, op, body, enabled: true };
   const stages = [...state.stages];
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator:
+  // once afterIndex >= stages.length - 1, insertAt below (afterIndex + 1) is >=
+  // stages.length, and Array#splice clamps an out-of-range index to append —
+  // identical to the push() branch. Verified with a probe (splice(N,...) and
+  // splice(N+k,...) both append). Mutating this boundary is unobservable.
   if (afterIndex === undefined || afterIndex >= stages.length - 1) {
     stages.push(stage);
   } else {
@@ -149,13 +163,31 @@ export function removeStage(state: PipelineState, id: number): PipelineState {
   return { ...state, stages, activeStageId };
 }
 
+/**
+ * Undoes a single `removeStage` (docs/adr/0013 — local editor state gets an
+ * Undo toast, not a confirm). Reinserts `stage` at `index`, clamped to the
+ * pipeline's current length so a restore fired after other edits shifted the
+ * stage list still lands somewhere valid instead of throwing.
+ *
+ * Gives the stage a fresh id when its old one has since been reused by
+ * `addStage`/`duplicateStage` (both derive from the same max-id-plus-one), so
+ * the restored stage never collides with a stage added after the delete.
+ */
+export function restoreStage(state: PipelineState, stage: Stage, index: number): PipelineState {
+  const idTaken = state.stages.some((s) => s.id === stage.id);
+  const restored = idTaken ? { ...stage, id: nextStageId(state.stages) } : stage;
+  const stages = [...state.stages];
+  const insertAt = Math.min(Math.max(0, index), stages.length);
+  stages.splice(insertAt, 0, restored);
+  return { ...state, stages, activeStageId: restored.id };
+}
+
 export function moveStage(state: PipelineState, from: number, to: number): PipelineState {
   if (from === to) return state;
   if (from < 0 || from >= state.stages.length) return state;
   if (to < 0 || to >= state.stages.length) return state;
   const stages = [...state.stages];
   const [moved] = stages.splice(from, 1);
-  if (!moved) return state;
   stages.splice(to, 0, moved);
   return { ...state, stages };
 }
@@ -179,6 +211,10 @@ export function setOp(state: PipelineState, id: number, op: StageOp | string): P
   const stage = state.stages[idx]!;
   const priorDefault = DEFAULT_BODIES[stage.op];
   const wasEmpty = stage.body.trim() === '';
+  // Stryker disable next-line ConditionalExpression: stage.body is always a
+  // string, so `stage.body === priorDefault` is already false whenever
+  // priorDefault is undefined — forcing the left operand to `true` can't
+  // change the result (verified: string === undefined is always false).
   const wasPriorDefault = priorDefault !== undefined && stage.body === priorDefault;
   const nextBody = wasEmpty || wasPriorDefault ? (DEFAULT_BODIES[op] ?? '{}') : stage.body;
   const stages = state.stages.map((s, i) => (i === idx ? { ...s, op, body: nextBody } : s));
@@ -245,7 +281,14 @@ function bodyProblem(body: string): string | null {
   const outcome = repairToCanonicalEjson(body);
   const refused = refusalMessage(body, outcome);
   if (refused) return refused;
-  if (outcome.kind === 'failed') return 'invalid EJSON';
+  // No `outcome.kind === 'failed'` branch here: `refusalMessage` only returns
+  // null for a failed outcome when the input is empty (its own `text.trim() ===
+  // ''` guard), and `body` here is always already trimmed and non-empty (see
+  // the caller below) — so `refused` is truthy whenever `outcome.kind ===
+  // 'failed'`, and that case is always caught by the `if (refused)` above.
+  // Verified against shellSyntax.ts's repairToCanonicalEjson/refusalMessage
+  // with a range of malformed inputs: every 'failed' outcome produced a
+  // non-null refusal message.
   return isValidEjson(outcome.kind === 'repaired' ? outcome.text : body)
     ? null
     : 'invalid EJSON';
@@ -254,10 +297,6 @@ function bodyProblem(body: string): string | null {
 export function validateStageBody(stage: Stage): string | null {
   const body = stage.body.trim();
   if (!body) return 'body is empty';
-  if (PRIMITIVE_BODY_OPS.has(stage.op)) {
-    // primitives allowed; still need to be parseable
-    return bodyProblem(body);
-  }
   return bodyProblem(body);
 }
 

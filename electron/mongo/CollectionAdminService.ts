@@ -10,6 +10,7 @@ import { classifyMongoOpError } from './errors.ts';
 import { ConflictError, ValidationError } from '../errors.ts';
 import type { MongoPool } from './MongoPool.ts';
 import { ADMIN_LONG_TIMEOUT_MS, STATS_TIMEOUT_MS } from './timeouts.ts';
+import { attachUndo } from './undo.ts';
 
 /**
  * Structural admin operations on collections and databases (T1.1) —
@@ -92,7 +93,7 @@ export class CollectionAdminService {
       // forbids a cross-db target), so it belongs on the metadata budget, not
       // the long one drop needs.
       await db.renameCollection(input.collection, input.newName, { maxTimeMS: STATS_TIMEOUT_MS });
-      return { name: input.newName };
+      return attachUndo({ name: input.newName }, { fromName: input.collection, toName: input.newName });
     } catch (err) {
       throw classifyMongoOpError(err);
     }

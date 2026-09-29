@@ -63,7 +63,7 @@ test('collapsing the query drawer does not destroy its stored width', async () =
     await win.reload();
     await win.waitForLoadState('domcontentloaded');
 
-    const collapseNotch = win.getByRole('button', { name: 'Collapse builder pane' });
+    const collapseNotch = win.getByRole('button', { name: 'Collapse Query Builder' });
     await expect(collapseNotch).toBeVisible({ timeout: 15_000 });
 
     const readSplit = () =>
@@ -75,14 +75,14 @@ test('collapsing the query drawer does not destroy its stored width', async () =
       });
 
     await collapseNotch.click();
-    await expect(win.getByRole('button', { name: 'Open builder pane' })).toBeVisible();
+    await expect(win.getByRole('button', { name: 'Open Query Builder' })).toBeVisible();
 
     // The regression: the collapsed rail width used to land here.
     const afterCollapse = await readSplit();
     expect(typeof afterCollapse).toBe('number');
     expect(afterCollapse as number).toBeGreaterThanOrEqual(15);
 
-    await win.getByRole('button', { name: 'Open builder pane' }).click();
+    await win.getByRole('button', { name: 'Open Query Builder' }).click();
     await expect(collapseNotch).toBeVisible();
 
     // Checked before the width, and the order matters. Reopening at the rail

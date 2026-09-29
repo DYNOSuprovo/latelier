@@ -50,6 +50,13 @@ export function MongoShellPane({ connectionId, connectionName, height, onClose }
   const [input, setInput] = React.useState('');
   const outputRef = React.useRef<HTMLPreElement | null>(null);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
+  // Whether the user was scrolled to (or near) the bottom before the most
+  // recent buffer change. Read in the auto-scroll effect below, so new
+  // output only pulls the view down when the user hasn't scrolled up to
+  // read scrollback. Starts true so the initial render still lands at the
+  // bottom.
+  const stickToBottomRef = React.useRef(true);
+  const STICK_TO_BOTTOM_THRESHOLD_PX = 4;
 
   // Append output, capping the buffer at MAX_BUFFER_BYTES. Drop-from-front
   // policy so a runaway query never pegs renderer memory — the user can
@@ -80,11 +87,21 @@ export function MongoShellPane({ connectionId, connectionName, height, onClose }
     return unsubscribe;
   }, [append]);
 
-  // Auto-scroll to bottom on new output.
+  // Auto-scroll to bottom on new output, but only if the user was already
+  // pinned to the bottom before this change landed. Otherwise they're
+  // reading scrollback and a forced scroll would yank them away from it.
   React.useEffect(() => {
     const el = outputRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [buffer]);
+
+  // Track whether the user is at the bottom as they scroll, so the effect
+  // above knows whether to follow new output.
+  const handleOutputScroll = (e: React.UIEvent<HTMLPreElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= STICK_TO_BOTTOM_THRESHOLD_PX;
+  };
 
   // Auto-start when the pane mounts, the connection changes, or the user
   // clicks Restart (`restartNonce` ticks). The IIFE awaits a microtask
@@ -153,6 +170,10 @@ export function MongoShellPane({ connectionId, connectionName, height, onClose }
     liveBufferRef.current = '';
     setInput('');
     if (line.length === 0) return;
+    // Submitting a command re-pins to the bottom even if the user had
+    // scrolled up to read scrollback — like a real terminal, entering
+    // input should always surface the command's echo and its output.
+    stickToBottomRef.current = true;
     // The REPL doesn't echo stdin — paint what the user typed locally so
     // they see their own command in the transcript.
     append(`> ${line}\n`);
@@ -256,6 +277,7 @@ export function MongoShellPane({ connectionId, connectionName, height, onClose }
 
       <pre
         ref={outputRef}
+        onScroll={handleOutputScroll}
         data-testid="mongo-shell-output"
         style={{
           flex: 1,

@@ -30,7 +30,9 @@ import { modals } from '@mantine/modals';
  *     survives being flattened into a two-button dialog.
  *   - `features/connections/ConnectionDeleteDialog.tsx` — extracted so the
  *     manager and the switcher cannot drift on copy. Re-inlining it at
- *     two call sites to save a component would undo that.
+ *     two call sites to save a component would undo that. It also now gates
+ *     on typing the connection name (docs/adr/0013), which a two-button
+ *     confirm can't express either.
  */
 export function confirmDestructive(opts: {
   title: string;

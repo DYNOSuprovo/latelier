@@ -396,4 +396,70 @@ describe('QueryBar - Run button', () => {
       expect(screen.getByText('42', { selector: 'strong' })).toBeTruthy();
     });
   });
+
+  it('Run swaps to Cancel while a find is in flight; Cancel aborts it and returns to idle with no error banner', async () => {
+    let rejectFind: ((err: unknown) => void) | undefined;
+    const findSpy = vi.fn<IpcApi['query']['find']>(
+      () =>
+        new Promise((_res, rej) => {
+          rejectFind = rej;
+        }),
+    );
+    const cancelSpy = vi.fn<IpcApi['query']['cancel']>(async () => undefined);
+
+    installAtelierMock({
+      tabs: {
+        list: async () => [makeCollectionTab()],
+        setActive: async (id) => ({ id }),
+        update: async () => makeCollectionTab(),
+      },
+      conn: {
+        list: async () => [
+          {
+            id: 'c1',
+            name: 'Local',
+            color: '#1A6835',
+            host: 'localhost',
+            port: 27017,
+            connectionType: 'standard',
+            readOnly: false,
+            status: 'connected',
+          },
+        ],
+      },
+      query: {
+        find: findSpy,
+        count: async () => ({ count: 0 }),
+        cancel: cancelSpy,
+      },
+    });
+
+    mountWorkspace();
+
+    const runBtn = await screen.findByTestId('query-run-btn');
+    fireEvent.click(runBtn);
+    await waitFor(() => expect(findSpy).toHaveBeenCalledTimes(1));
+
+    // isLoading flips true after the loading-delay timer — the Run button
+    // is replaced by a keyboard-accessible native Cancel button.
+    const cancelBtn = await screen.findByTestId('query-cancel-btn');
+    expect(cancelBtn.tagName).toBe('BUTTON');
+    expect(screen.queryByTestId('query-run-btn')).toBeNull();
+
+    fireEvent.click(cancelBtn);
+
+    const callArgs = cancelSpy.mock.calls[0]?.[0];
+    expect(callArgs).toBeDefined();
+    expect(typeof callArgs?.token).toBe('string');
+
+    // Back to idle immediately, without waiting for the abort to settle.
+    await screen.findByTestId('query-run-btn');
+    expect(screen.queryByTestId('query-cancel-btn')).toBeNull();
+
+    // The aborted find rejecting afterwards must not surface as an error —
+    // a cancelled run is not a failure.
+    rejectFind!(Object.assign(new Error('aborted'), { code: 'INTERNAL' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText(/INTERNAL:/)).toBeNull();
+  });
 });

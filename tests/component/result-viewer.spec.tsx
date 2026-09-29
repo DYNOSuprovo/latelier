@@ -60,9 +60,96 @@ function renderViewer(
 }
 
 describe('ResultViewer compound', () => {
-  it('Body renders the empty-state CTA when there are no documents', () => {
+  it('Body shows the empty-collection CTA when the committed filter is {} on page 0', () => {
     const state = makeState({
       view: 'Tree',
+      queryRaw: '{}',
+      page: 0,
+      lastRun: {
+        documents: [],
+        durationMs: 0,
+        ranAt: new Date().toISOString(),
+      },
+    });
+    const { container } = renderViewer(
+      state,
+      {},
+      <ResultViewer>
+        <ResultViewer.Body
+          onClearFilter={noop}
+          onColumnResize={noop}
+          onRowExpand={noop}
+        />
+      </ResultViewer>,
+    );
+    expect(container.textContent).toContain('This collection is empty');
+    expect(screen.getByRole('button', { name: /import documents/i })).toBeTruthy();
+  });
+
+  it('keeps the import dialog open when the import refresh fills the empty collection', () => {
+    const empty = makeState({
+      queryRaw: '{}',
+      page: 0,
+      lastRun: { documents: [], durationMs: 0, ranAt: new Date().toISOString() },
+    });
+    const body = (
+      <ResultViewer>
+        <ResultViewer.Body onClearFilter={noop} onColumnResize={noop} onRowExpand={noop} />
+      </ResultViewer>
+    );
+    const { rerender } = renderViewer(empty, {}, body);
+    fireEvent.click(screen.getByRole('button', { name: /import documents/i }));
+    expect(screen.getByRole('dialog', { name: /import into/i })).toBeTruthy();
+
+    // The import's own refresh lands rows, which unmounts the empty state.
+    rerender(
+      <CollectionWorkspaceProvider
+        state={makeState({
+          queryRaw: '{}',
+          page: 0,
+          lastRun: { documents: [{ _id: 1 }], durationMs: 0, ranAt: new Date().toISOString() },
+        })}
+        actions={emptyWorkspaceActions()}
+        meta={makeMeta({})}
+      >
+        {body}
+      </CollectionWorkspaceProvider>,
+    );
+    expect(screen.queryByText('This collection is empty')).toBeNull();
+    expect(screen.getByRole('dialog', { name: /import into/i })).toBeTruthy();
+  });
+
+  it('Body hides the import CTA for a read-only consumer, but still shows the empty-collection message', () => {
+    const state = makeState({
+      view: 'Tree',
+      queryRaw: '{}',
+      page: 0,
+      lastRun: {
+        documents: [],
+        durationMs: 0,
+        ranAt: new Date().toISOString(),
+      },
+    });
+    const { container } = renderViewer(
+      state,
+      { isReadOnly: true },
+      <ResultViewer>
+        <ResultViewer.Body
+          onClearFilter={noop}
+          onColumnResize={noop}
+          onRowExpand={noop}
+        />
+      </ResultViewer>,
+    );
+    expect(container.textContent).toContain('This collection is empty');
+    expect(screen.queryByRole('button', { name: /import documents/i })).toBeNull();
+  });
+
+  it('Body renders "No matching documents" for an empty result behind a non-default filter', () => {
+    const state = makeState({
+      view: 'Tree',
+      queryRaw: '{ "status": "archived" }',
+      page: 0,
       lastRun: {
         documents: [],
         durationMs: 0,
@@ -85,6 +172,31 @@ describe('ResultViewer compound', () => {
     expect(container.textContent).toContain('Clear filter');
     fireEvent.click(screen.getByRole('button', { name: /clear filter/i }));
     expect(onClearFilter).toHaveBeenCalledTimes(1);
+  });
+
+  it('Body renders "No matching documents" for an empty result on a later page of an unfiltered query', () => {
+    const state = makeState({
+      view: 'Tree',
+      queryRaw: '{}',
+      page: 1,
+      lastRun: {
+        documents: [],
+        durationMs: 0,
+        ranAt: new Date().toISOString(),
+      },
+    });
+    const { container } = renderViewer(
+      state,
+      {},
+      <ResultViewer>
+        <ResultViewer.Body
+          onClearFilter={noop}
+          onColumnResize={noop}
+          onRowExpand={noop}
+        />
+      </ResultViewer>,
+    );
+    expect(container.textContent).toContain('No matching documents');
   });
 
   it('Body switches to the Table slot when state.view is "Table"', () => {

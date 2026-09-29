@@ -9,14 +9,13 @@ import { useConnections, isConnectionActive, isKnownNotConnected } from '../stat
 import { setFocusedConnectionId as publishFocusedConnectionId } from '../state/focusedConnection';
 import { api, getErrorMessage, isIpcError } from '../api/atelier';
 import { notify } from '../theme/notifications';
-import { buildIdFilter } from './Workspace/views/docId';
-import { ejsonStringify } from '../utils/ejson';
+import { ejsonParse, isPlainDocument } from '../utils/ejson';
+import { buildUpdateRequest, setAtSegments } from './Workspace/documentDiff';
 import { copyToClipboard } from '../utils/clipboard';
 import { BUILDER_MIN_PCT } from './Workspace/panelSizes';
 import type { CollectionView } from '@shared/types';
 import { DEFAULT_AGGREGATION_TAB_STATE, DEFAULT_SCHEMA_TAB_STATE } from '@shared/defaults';
 import { useReferenceRules } from '../features/references/useReferenceRules';
-import { usePreviewFields } from './Workspace/usePreviewFields';
 import { useReferenceDrawer } from './Workspace/useReferenceDrawer';
 import { groupTabsByConnection } from './Workspace/tabGroups';
 import {
@@ -28,10 +27,12 @@ import type { RunnerTarget } from './Workspace/useQueryRunner';
 import { useWorkspacePanelPrefs } from './Workspace/useWorkspacePanelPrefs';
 import { useConnectionDialogs } from './Workspace/useConnectionDialogs';
 import { useDocumentDialogs } from './Workspace/useDocumentDialogs';
+import { offerUndo } from './Workspace/offerUndo';
 import { useCollectionTabActions } from './Workspace/useCollectionTabActions';
 import { DialogStack } from './Workspace/DialogStack';
 import { ShellSection } from './Workspace/ShellSection';
 import { PanelBody, type PanelBodyCollectionProps } from './Workspace/PanelBody';
+import type { IndexCreateRequest } from './IndexesTab';
 import { useSettings } from './SettingsContext';
 import { useRegisterCommands } from '../commands/useRegisterCommands';
 import { useLatest } from '../commands/useLatest';
@@ -44,6 +45,7 @@ import {
   compileFindOptions,
   currentFilterJson,
   effectivePageLimit,
+  findProblem,
   isDefaultQueryState,
 } from './Workspace/builder';
 import type { SuggestionContext } from '../features/fieldSuggestions/types';
@@ -253,35 +255,6 @@ function WorkspaceInner() {
     };
   }, [activeCollection]);
 
-  const [activePreviewFields, setActivePreviewFields] = usePreviewFields(
-    activeCollection?.connectionId ?? null,
-    activeCollection?.dbName ?? null,
-    activeCollection?.collection ?? null,
-  );
-
-  const previewKnownFields = React.useMemo(() => {
-    const docs = activeCollection?.state.lastRun?.documents ?? [];
-    const seen = new Set<string>();
-    for (const doc of docs.slice(0, 50)) {
-      if (doc && typeof doc === 'object' && !Array.isArray(doc)) {
-        for (const k of Object.keys(doc as Record<string, unknown>)) {
-          if (k !== '_id') seen.add(k);
-        }
-      }
-    }
-    return Array.from(seen).sort((a, b) => a.localeCompare(b));
-  }, [activeCollection?.state.lastRun?.documents]);
-
-  const previewConfigureWhen =
-    activeView === 'documents' &&
-    !!activeCollection?.state.lastRun &&
-    previewKnownFields.length >= 4 &&
-    (activePreviewFields === null || activePreviewFields.length === 0);
-  const previewConfigureHint = useFeatureHint(
-    'preview.configure',
-    previewConfigureWhen,
-  );
-
   const queryRunner = useQueryRunner({
     active: activeCollection
       ? {
@@ -296,6 +269,27 @@ function WorkspaceInner() {
     recordSessionEvent: hints.recordSessionEvent,
   });
   const showLoading = queryRunner.isLoading;
+
+  // The first hint a new user sees should be about Run, not a secondary
+  // feature. Workspace's own auto-run effect means `lastRun` is set almost
+  // as soon as a tab opens, so gating on "no lastRun" would essentially
+  // never fire once the user starts editing. `savedCreateCount` is this same
+  // query's exact run-key looked up in this session's run tally (recorded
+  // by `useQueryRunner` on every completed run, further up in this file) —
+  // zero means the query on screen right now has never actually been run,
+  // whether because nothing has run yet or because it was edited since the
+  // last one that did. Gated on the same two conditions the Run button
+  // itself gates on (`QueryBar`'s `canRun`), or the hint would teach "Press
+  // Run" while Run is disabled (an unparseable filter) or mid-flight
+  // (Cancel has replaced Run).
+  const runExecuteHint = useFeatureHint(
+    'run.execute',
+    activeView === 'documents' &&
+      !!activeCollection &&
+      !queryRunner.isLoading &&
+      findProblem(activeCollection.state) === null &&
+      savedCreateCount === 0,
+  );
 
   // Auto-runs the base query on a fresh/restored tab landing on Documents
   // with no prior run, only while the query is still at its default shape
@@ -322,18 +316,42 @@ function WorkspaceInner() {
   // Stable callbacks for the major panels, reading state via the `*Ref` bag
   // so an unrelated re-render doesn't cascade through every child.
   // `useQueryRunner` returns a fresh object each render; depend on `run` alone.
-  const { run } = queryRunner;
+  const { run, cancel: cancelRun } = queryRunner;
   const collectionTabActions = useCollectionTabActions({
     activeCollectionRef,
     activeScriptRef,
     tabs,
     run,
+    cancel: cancelRun,
   });
   const {
     patchActiveCollection,
     patchActiveCollectionWith,
     runActiveCollection,
+    cancelActiveCollection,
+    selectActiveView,
   } = collectionTabActions;
+
+  // W16 Tier 4 — ExplainDrawer's "Create an index for this query". Kept as
+  // plain tab-scoped state (not tab persisted state) because it's a one-shot
+  // UI trigger, not data: `openCreateIndex` sets it and switches to
+  // Structure; `IndexesTab` (via `PanelBody`/`StructureView`) opens the
+  // drawer from it and immediately calls `onCreateIndexConsumed` — see that
+  // callback's own comment for why a stale request can't be left set past
+  // its one use.
+  const [createIndexRequest, setCreateIndexRequest] = React.useState<
+    (IndexCreateRequest & { tabId: string }) | null
+  >(null);
+  const openCreateIndex = React.useCallback(
+    (suggestion: IndexCreateRequest['suggestion']) => {
+      const a = activeCollectionRef.current;
+      if (!a) return;
+      setCreateIndexRequest({ tabId: a.id, requestId: crypto.randomUUID(), suggestion });
+      selectActiveView('structure');
+    },
+    [activeCollectionRef, selectActiveView],
+  );
+  const onCreateIndexConsumed = React.useCallback(() => setCreateIndexRequest(null), []);
   // The post-write refresh target, resolved fresh from `tabsRef` at
   // completion time rather than snapshotted, since a drawer pinned to tab A
   // must refresh A even after the user switches to tab B.
@@ -356,73 +374,121 @@ function WorkspaceInner() {
     queryRunner,
     activeTabId: tabs.activeId,
     resolveRunnerTarget,
+    readOnly: focusedConnection?.readOnly ?? false,
   });
   const {
     openEdit,
     setDeleteDoc,
     openInsertModal,
     openDeleteAllModal,
+    openUpdateAllModal,
     openDuplicate,
   } = documentDialogs;
   const openSaveModal = React.useCallback(
     () => setQueryBarSaveOpen(true),
     [],
   );
-  // Table view's inline single-field edit: `$set`s just `fieldPath`, then
-  // re-runs. No drawer to show an inline error, so this uses `notify` instead.
+  // Table view's inline single-field edit (W18 §8, Quick Edit): the same
+  // one-path guarded save the Document Editor uses (`documentDiff.ts`'s
+  // `buildUpdateRequest`), so a concurrent change to the loaded value is
+  // caught instead of silently overwritten, and `newValue`'s own type
+  // (string, boolean, or a revived BSON numeric instance) is what gets
+  // written — never a re-typed string coerced into another field's type. No
+  // drawer to show an inline error, so this uses `notify` instead.
+  // Returns the write's settlement, not just fires it: the boolean Quick
+  // Edit toggle (`TableCell`, W18 §8) is a controlled checkbox with no
+  // separate "editing" draft, so it needs to know when an in-flight write
+  // has landed to disable itself and stop a second click mid-flight from
+  // firing a guard built on the value the first click is still saving.
   const updateField = React.useCallback(
-    (doc: unknown, fieldPath: string, newValue: string) => {
+    (doc: unknown, fieldPath: string, newValue: unknown): Promise<void> => {
       const a = activeCollectionRef.current;
-      if (!a) return;
-      const filterJson = buildIdFilter(doc);
-      if (filterJson === null) {
+      if (!a) return Promise.resolve();
+      const revived = ejsonParse<unknown>(JSON.stringify(doc));
+      if (!isPlainDocument(revived)) {
         notify.error('Cannot edit a document without an _id');
-        return;
+        return Promise.resolve();
       }
-      const updateJson = ejsonStringify({ $set: { [fieldPath]: newValue } });
-      api.doc
+      const original = revived as Record<string, unknown>;
+      const draft = setAtSegments(original, [fieldPath], newValue);
+      let request;
+      try {
+        request = buildUpdateRequest(original, draft);
+      } catch (e) {
+        notify.error(getErrorMessage(e, 'Cannot save this value'));
+        return Promise.resolve();
+      }
+      if (request === null) return Promise.resolve(); // unchanged — same field, same value
+      return api.doc
         .updateOne({
           connectionId: a.connectionId,
           dbName: a.dbName,
           collection: a.collection,
-          filterJson,
-          updateJson,
+          filterJson: request.filterJson,
+          updateJson: request.updateJson,
         })
-        .then(() => {
-          void run();
+        .then(({ matchedCount, auditId }) => {
+          // Guarded: nothing matching means the field (or the document)
+          // changed since it was loaded, not that the write landed unseen.
+          if (matchedCount === 0) {
+            notify.error('This document changed since it was loaded; the edit was not saved.', {
+              title: 'Update failed',
+            });
+            return;
+          }
+          // Returned (not fired-and-forgotten): the boolean Quick Edit
+          // toggle stays disabled off this same promise (`TableCell`'s
+          // `pendingBoolean`) until the row it reads its checked state from
+          // actually reflects the write — resolving before the re-run lands
+          // would re-enable it against the stale value, and a second click
+          // there would guard its compare-and-set on that stale value too.
+          const refreshed = run();
+          // The tab edited, not whichever has focus when Undo is clicked.
+          const tabId = a.id;
+          offerUndo('Field updated', auditId, () => {
+            const target = resolveRunnerTarget(tabId);
+            if (target) void run(undefined, target);
+          });
+          return refreshed;
         })
         .catch((e: unknown) => {
           notify.error(getErrorMessage(e, 'Update failed'), { title: 'Update failed' });
         });
     },
-    [activeCollectionRef, run],
+    [activeCollectionRef, resolveRunnerTarget, run],
   );
   const workspaceActions = React.useMemo<CollectionWorkspaceActions>(
     () => ({
       patch: patchActiveCollection,
       patchWith: patchActiveCollectionWith,
       run: runActiveCollection,
+      cancel: cancelActiveCollection,
       openEdit,
       openDelete: setDeleteDoc,
       openDeleteAll: openDeleteAllModal,
+      openUpdateAll: openUpdateAllModal,
       openInsert: openInsertModal,
       openSave: openSaveModal,
       expandBuilder,
       updateField,
       openDuplicate,
+      openCreateIndex,
     }),
     [
       patchActiveCollection,
       patchActiveCollectionWith,
       runActiveCollection,
+      cancelActiveCollection,
       openEdit,
       setDeleteDoc,
       openDeleteAllModal,
+      openUpdateAllModal,
       openInsertModal,
       openSaveModal,
       expandBuilder,
       updateField,
       openDuplicate,
+      openCreateIndex,
     ],
   );
   const workspaceMeta = React.useMemo<CollectionWorkspaceMeta | null>(
@@ -450,9 +516,6 @@ function WorkspaceInner() {
             view: activeView,
             aggregationState,
             schemaState,
-            previewKnownFields,
-            activePreviewFields,
-            setActivePreviewFields,
             suggestionContext: collectionSuggestionContext,
             savedRefreshKey,
           }
@@ -464,9 +527,6 @@ function WorkspaceInner() {
       activeView,
       aggregationState,
       schemaState,
-      previewKnownFields,
-      activePreviewFields,
-      setActivePreviewFields,
       collectionSuggestionContext,
       savedRefreshKey,
     ],
@@ -917,6 +977,7 @@ function WorkspaceInner() {
         setNewTabOpen={setNewTabOpen}
         panelPrefs={panelPrefs}
         connectionDialogs={connectionDialogs}
+        onOpenReferences={() => setRefEditorOpen(true)}
       />
 
       <PanelBody
@@ -946,6 +1007,10 @@ function WorkspaceInner() {
         builderPanelRef={builderPanelRef}
         toggleBuilder={toggleBuilder}
         notchRef={notchRef}
+        structureInitialCreate={
+          createIndexRequest?.tabId === activeCollection?.id ? createIndexRequest : null
+        }
+        onStructureInitialCreateConsumed={onCreateIndexConsumed}
       />
 
       <DialogStack
@@ -968,7 +1033,7 @@ function WorkspaceInner() {
         refsConfigureHint={refsConfigureHint}
         tabsPinHint={tabsPinHint}
         savedCreateHint={savedCreateHint}
-        previewConfigureHint={previewConfigureHint}
+        runExecuteHint={runExecuteHint}
       />
     </AppShell>
   );

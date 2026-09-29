@@ -1,37 +1,35 @@
 import React from 'react';
-import { Button, Group, Tooltip } from '@mantine/core';
+import { Group, Tooltip } from '@mantine/core';
 import { themeVars } from '../../theme/themeVars';
-import { I } from '../../icons';
 import { api } from '../../api/atelier';
-import { PreviewPicker } from './PreviewPicker';
 
 interface CollectionHeaderProps {
   connectionId: string;
   dbName: string;
   collection: string;
-  onInsert: () => void;
-  onOpenReferences: () => void;
-  referenceRuleCount: number;
-  previewKnownFields: string[];
-  previewFields: string[] | null;
-  onPreviewFieldsChange: (fields: string[]) => void;
+  /**
+   * `useDocumentDialogs`'s write-completion counter — bumps once per
+   * finished insert/edit/delete/delete-many. Reusing that existing signal
+   * (rather than the query re-run itself) keeps this effect from firing on
+   * every sort/filter/page re-run too: `listCollections` fans out a
+   * per-collection stats call across the whole database, so it isn't free.
+   */
+  refreshSignal?: number;
 }
 
 /**
  * Top breadcrumb header. The Tree|JSON|Table view switch moved down to
  * `<ResultBar/>` alongside the pagination so the top row stays a clean
- * breadcrumb-plus-stats line.
+ * breadcrumb-plus-stats line. Insert and References used to live here too;
+ * Insert moved to `<ResultBar/>` (primary create action, next to the
+ * Documents menu) and References moved to the navigator's collection
+ * context menu and the command palette — this is breadcrumb + stats only.
  */
 export function CollectionHeader({
   connectionId,
   dbName,
   collection,
-  onInsert,
-  onOpenReferences,
-  referenceRuleCount,
-  previewKnownFields,
-  previewFields,
-  onPreviewFieldsChange,
+  refreshSignal,
 }: CollectionHeaderProps) {
   const T = themeVars;
   const cacheKey = `${connectionId}|${dbName}|${collection}`;
@@ -59,14 +57,15 @@ export function CollectionHeader({
           });
         }
       } catch {
-        // Best-effort: leave the stats as null and the header just shows the
-        // breadcrumb. A noisy fallback would be worse than a silent one.
+        // Best-effort — but a failed refresh must not leave a pre-write count
+        // on screen looking current, so clear rather than hold the last value.
+        if (!cancelled) setStats(null);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [connectionId, dbName, collection, cacheKey]);
+  }, [connectionId, dbName, collection, cacheKey, refreshSignal]);
 
   return (
     <Group
@@ -105,7 +104,7 @@ export function CollectionHeader({
                 <strong style={{ fontWeight: 500, color: T.text }}>
                   {docCount.toLocaleString()}
                 </strong>
-                {' docs'}
+                {' docs in collection'}
               </>
             )}
             {docCount !== null && indexCount !== null && ' · '}
@@ -118,44 +117,6 @@ export function CollectionHeader({
           </span>
         )}
       </Group>
-
-      <span style={{ flex: 1 }} />
-
-      {/* Preview-fields picker — collection-level setting, lives in the header
-          alongside the other per-collection controls (view, refs, insert). */}
-      <PreviewPicker
-        knownFields={previewKnownFields}
-        currentFields={previewFields ?? []}
-        onChange={onPreviewFieldsChange}
-      />
-
-      {/* References — secondary action; collapses to icon + count */}
-      <Tooltip label={`Manage reference rules for this collection (${referenceRuleCount})`} withArrow>
-        <Button
-          data-hint-anchor="refs.configure"
-          variant="default"
-          size="compact-xs"
-          onClick={onOpenReferences}
-        >
-          ↗ Refs ({referenceRuleCount})
-        </Button>
-      </Tooltip>
-
-      {/* Insert — primary action. The visible label is "+ Insert" (icon +
-          text "Insert") but we set an aria-label so existing e2e selectors
-          looking for `/Insert document/` keep matching the toolbar button
-          rather than the drawer's primary action. */}
-      <Tooltip label="Insert a new document into this collection" withArrow>
-        <Button
-          variant="filled"
-          size="compact-xs"
-          leftSection={I.plus}
-          onClick={onInsert}
-          aria-label="Insert document"
-        >
-          Insert
-        </Button>
-      </Tooltip>
     </Group>
   );
 }

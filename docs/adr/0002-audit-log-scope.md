@@ -25,9 +25,11 @@ The app already carries three things that constrain the design:
 durable per-Connection record of Operations. Undo exists only where putting the state back is
 honest.
 
-**Eight channels are audited**, chosen by blast radius on documents rather than by API level:
-`docInsertMany`, `docReplace`, `docUpdateOne`, `docDeleteOne`, `docDeleteMany`, `collectionDrop`,
-`collectionRename`, `databaseDrop`.
+**Nine Operations are audited**, chosen by blast radius on documents rather than by API level:
+`docInsertMany`, `docUpdateOne`, `docUpdateMany`, `docDeleteOne`, `docDeleteMany`,
+`collectionDrop`, `collectionRename`, `databaseDrop`, and a data import. The `op` set is frozen in
+the migration's `CHECK`, because SQLite cannot alter one in place. There is no `docReplace`
+to audit: the Document Editor saves through `docUpdateOne`, and the `doc:replace` channel is gone.
 
 Excluded, deliberately:
 
@@ -74,7 +76,7 @@ built to prevent data loss cause it — silently, and recorded as a success.
 - Ceilings are visible rather than surprising: `confirmDeleteMany` already counts matches, so the
   confirm dialogs state whether the action can be undone.
 - Undo on the same document unwinds in reverse order. If the intervening change came from outside
-  MongoLab there is nothing to unwind first, and Undo stays refused.
+  L'Atelier there is nothing to unwind first, and Undo stays refused.
 - Pre-images make retention non-uniform: the payload is short-lived, the record is not.
 - The Audit Log dies with its Connection (`ON DELETE CASCADE`) — no ghost data, and no trail for a
   server you can no longer reach.

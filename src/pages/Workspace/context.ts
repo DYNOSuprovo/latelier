@@ -1,5 +1,6 @@
 import { createContext, use } from 'react';
 import type { CollectionTabState } from '@shared/types';
+import type { IndexSuggestion } from '../../utils/indexSuggestion';
 
 /**
  * Actions exposed to any subtree inside a `<CollectionWorkspaceProvider>`.
@@ -20,12 +21,21 @@ export interface CollectionWorkspaceActions {
   patchWith: (fn: (s: CollectionTabState) => Partial<CollectionTabState>) => void;
   /** Trigger a find run. Optional override merges into the in-flight patch. */
   run: (override?: Partial<CollectionTabState>) => void;
-  /** Open the per-document edit drawer. */
-  openEdit: (doc: unknown) => void;
+  /** Cancel the in-flight find, if any. A no-op otherwise. */
+  cancel: () => void;
+  /**
+   * Open the Document Editor on one document. `focusPath` (W18 §8's
+   * "open the Document Editor on that field") scrolls that top-level row
+   * into view and focuses it once the editor mounts, instead of leaving the
+   * editor at its default scroll position.
+   */
+  openEdit: (doc: unknown, focusPath?: string) => void;
   /** Open the per-document delete confirmation. */
   openDelete: (doc: unknown) => void;
   /** Open the delete-all-matching confirmation, scoped to the tab's current query filter. */
   openDeleteAll: () => void;
+  /** Open the update-all-matching confirmation, scoped to the tab's current query filter. */
+  openUpdateAll: () => void;
   /** Open the insert-document drawer. */
   openInsert: () => void;
   /** Open the save-query modal. */
@@ -39,19 +49,38 @@ export interface CollectionWorkspaceActions {
    */
   expandBuilder?: () => void;
   /**
-   * Inline single-field edit (T2.6) — writes only `fieldPath` via a `$set`
-   * (`api.doc.updateOne`), unlike `openEdit`'s replace-mode default. Optional
-   * because it's a leaf-only affordance: read-only providers (saved-query
-   * preview, ScriptTab's synthetic result provider) simply omit it, and
-   * consumers must treat a missing `updateField` the same as `isReadOnly` —
-   * no affordance shown.
+   * Inline single-field edit (W18 §8, Quick Edit) — writes `fieldPath`
+   * through the Document Editor's own guarded save path (`documentDiff.ts`'s
+   * `buildUpdateRequest`: a one-path `$set`/`$unset` with a compare-and-set
+   * guard), without opening the editor. `newValue` is the field's own typed
+   * value — a `string`, a `boolean`, or a revived BSON numeric instance
+   * (`Int32`/`Long`/`Double`/`Decimal128`) — never a re-typed string for a
+   * non-string field, so the loaded BSON type survives the round trip.
+   * Optional because it's a leaf-only affordance: read-only providers
+   * (saved-query preview, ScriptTab's synthetic result provider) simply omit
+   * it, and consumers must treat a missing `updateField` the same as
+   * `isReadOnly` — no affordance shown. Returns the write's settlement
+   * (never its outcome — callers read notifications for that): the boolean
+   * toggle has no separate draft to gate a second click on, so it disables
+   * itself until this resolves.
    */
-  updateField?: (doc: unknown, fieldPath: string, newValue: string) => void;
+  updateField?: (doc: unknown, fieldPath: string, newValue: unknown) => Promise<void>;
   /**
-   * Open the Insert drawer pre-filled with `doc`'s EJSON minus `_id` (T2.6,
-   * "Duplicate document"). Optional for the same reason as `updateField`.
+   * Open the Document Editor's insert mode pre-filled with `doc`'s EJSON
+   * minus `_id` ("Duplicate document"). Optional for the same reason as
+   * `updateField`.
    */
   openDuplicate?: (doc: unknown) => void;
+  /**
+   * Switches to the Structure view and opens `IndexesTab`'s create-index
+   * drawer prefilled from `suggestion` (`null` prefills nothing — every
+   * `suggestIndex` refusal still opens the drawer, just empty). Driven by
+   * `ExplainDrawer`'s "Create an index for this query" on a COLLSCAN.
+   * Optional like `expandBuilder`: providers with no Structure view (saved-
+   * query preview, ScriptTab's synthetic provider) simply omit it, and
+   * `QueryBar` passes no `onCreateIndex` to `ExplainDrawer` when it's absent.
+   */
+  openCreateIndex?: (suggestion: IndexSuggestion | null) => void;
 }
 
 /**

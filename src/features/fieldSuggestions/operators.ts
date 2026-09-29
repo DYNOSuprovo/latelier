@@ -71,6 +71,30 @@ const UPDATE: readonly OperatorContext[] = ['update'];
 
 const DOCS = 'https://www.mongodb.com/docs/manual/reference/operator';
 
+/**
+ * Names valid directly at a field's own operator position, `{ field: { $op:
+ * value } }`. Strictly narrower than `validIn: matchKey` — that tag also
+ * covers ~136 expression-class operators (`PROJECT_EXPR` includes `matchKey`)
+ * plus keys that only ever appear at the top of a filter document (`$expr`,
+ * `$text`, `$where`, `$and`, `$or`, `$nor`, `$jsonSchema`) or as a nested
+ * modifier of another operator (`$geometry`, `$box`, `$center`,
+ * `$centerSphere`, `$polygon`, `$minDistance`, `$maxDistance`), never as a
+ * field's own operator.
+ *
+ * Used only to strictly filter the Query Builder's op box, which always sits
+ * in this exact position. The wider catalog mis-tagging above (which also
+ * reaches the Filter Bar and stage bodies, and only ranks down rather than
+ * hides) is a separate, broader fix tracked outside this list.
+ */
+export const FIELD_POSITION_OPS: ReadonlySet<string> = new Set([
+  '$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin',
+  '$exists', '$type',
+  '$all', '$elemMatch', '$size',
+  '$mod', '$regex', '$not',
+  '$bitsAllClear', '$bitsAllSet', '$bitsAnyClear', '$bitsAnySet',
+  '$geoWithin', '$geoIntersects', '$near', '$nearSphere',
+]);
+
 // ─── Stage operators ──────────────────────────────────────────────────────
 const STAGES: readonly OperatorDef[] = [
   {

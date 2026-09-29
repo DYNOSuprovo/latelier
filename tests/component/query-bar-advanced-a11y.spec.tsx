@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen } from '../helpers/render';
+import { render, screen, fireEvent } from '../helpers/render';
 import { MemoryRouter } from 'react-router-dom';
 import Workspace from '../../src/pages/Workspace';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
@@ -93,14 +93,21 @@ afterEach(() => {
 });
 
 describe('W15 §5 — the advanced row announces which field you are on', () => {
-  it('names projection and sort off their visible label cells', async () => {
+  it('names sort off its visible label cell', async () => {
     mount();
-    await screen.findByTestId('query-bar-projection');
+    await screen.findByTestId('query-bar-sort');
 
     // Lowercase: the cells render lowercase text and uppercase it in CSS,
     // and an accessible name is the text, not the rendering.
-    expect(screen.getByLabelText('projection')).toBe(screen.getByTestId('query-bar-projection'));
     expect(screen.getByLabelText('sort')).toBe(screen.getByTestId('query-bar-sort'));
+  });
+
+  // The projection moved out of this row into the Fields control (W14 §4),
+  // and keeps an accessible name there.
+  it('names the projection input in the Fields control', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: /^fields/i }));
+    expect(await screen.findByLabelText('Projection')).toBe(screen.getByTestId('fields-projection'));
   });
 
   it('names limit and skip too', async () => {

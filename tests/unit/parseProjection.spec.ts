@@ -3,6 +3,7 @@ import {
   parseProjection,
   formatProjection,
   isRawProjection,
+  notFetchedFields,
 } from '../../src/pages/Workspace/projection';
 import { compileFindOptions, projectionProblem } from '../../src/pages/Workspace/builder';
 import type { BuilderState } from '@shared/types';
@@ -182,5 +183,150 @@ describe('projectionProblem — the gate the compiler leans on', () => {
       .toMatch(/Can't parse this projection/);
     expect(projectionProblem(builder({ projectionRaw: '[1,2]' })))
       .toMatch(/Can't parse this projection/);
+  });
+});
+
+describe('parseProjection — the lenient path', () => {
+  it('trims before stripping braces, so padding does not leak into a field name', () => {
+    expect(fieldsOf('  {a: 1}  ')).toEqual(['a']);
+  });
+
+  it('reads an unclosed empty brace as no projection', () => {
+    expect(fieldsOf('{ ')).toEqual([]);
+  });
+
+  it('prefers the JSON reading, so a key containing a comma stays one field', () => {
+    expect(fieldsOf('{"a,b": 1}')).toEqual(['a,b']);
+  });
+
+  it('reads JSON that is not a document as a bare field list, not an empty one', () => {
+    expect(fieldsOf('5')).toEqual(['5']);
+  });
+
+  // Only the outer pair is stripped. An inner `{` stays in the field name
+  // where the user can see it, rather than being silently repaired into a
+  // field they never typed cleanly.
+  it('strips only the outer opening brace, keeping a stray inner one', () => {
+    expect(fieldsOf('{a: 1, {b: 1}')).toEqual(['a', '{b']);
+  });
+
+  it('refuses a stray closing brace rather than dropping it', () => {
+    expect(parseProjection('{a: 1}}').ok).toBe(false);
+  });
+
+  it('strips one pair of surrounding quotes and keeps a quote inside a name', () => {
+    expect(fieldsOf("{'a': 1, \"b\": 1}")).toEqual(['a', 'b']);
+    expect(fieldsOf("{it's: 1}")).toEqual(["it's"]);
+  });
+
+  it('accepts true as an inclusion', () => {
+    expect(fieldsOf('{a: true}')).toEqual(['a']);
+  });
+});
+
+describe('notFetchedFields', () => {
+  const b = (over: Partial<BuilderState>): BuilderState => ({
+    projection: [],
+    sort: '',
+    limit: '',
+    ...over,
+  });
+  const known = ['_id', 'name', 'email', 'address'];
+
+  it('reports nothing without a projection', () => {
+    expect(notFetchedFields(b({}), known)).toEqual([]);
+    expect(notFetchedFields(b({ projectionRaw: '   ' }), known)).toEqual([]);
+  });
+
+  it('a modelled inclusion keeps _id and the listed fields, and drops the rest of `known`', () => {
+    expect(notFetchedFields(b({ projection: ['name'] }), known)).toEqual(['email', 'address']);
+  });
+
+  it('a dotted inclusion keeps its top-level field', () => {
+    expect(notFetchedFields(b({ projection: ['address.city'] }), known)).toEqual(['name', 'email']);
+  });
+
+  it('a raw inclusion with _id: 0 drops _id too', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"_id": 0, "name": 1}' }), known)).toEqual([
+      '_id',
+      'email',
+      'address',
+    ]);
+  });
+
+  it('{_id: 1} alone is an inclusion of _id only', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"_id": 1}' }), known)).toEqual(['name', 'email', 'address']);
+  });
+
+  it('an exclusion drops exactly its top-level keys, known or not, in `known` order first', () => {
+    expect(
+      notFetchedFields(b({ projectionRaw: '{"secret": 0, "email": false, "_id": 0}' }), known),
+    ).toEqual(['_id', 'email', 'secret']);
+  });
+
+  it('a boxed numeric zero is an exclusion', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"email": {"$numberInt": "0"}}' }), known)).toEqual([
+      'email',
+    ]);
+  });
+
+  it('a dotted exclusion trims inside a field and never drops the field itself', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"address.city": 0}' }), known)).toEqual([]);
+  });
+
+  it('$slice alone decides nothing about which fields come back', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"tags": {"$slice": 5}}' }), known)).toEqual([]);
+  });
+
+  it('$slice beside an inclusion keeps its own field', () => {
+    expect(
+      notFetchedFields(b({ projectionRaw: '{"name": 1, "email": {"$slice": 2}}' }), known),
+    ).toEqual(['address']);
+  });
+
+  it('$slice beside an exclusion stays an exclusion', () => {
+    expect(
+      notFetchedFields(b({ projectionRaw: '{"email": 0, "tags": {"$slice": 2}}' }), known),
+    ).toEqual(['email']);
+  });
+
+  it('an operator other than $slice is an inclusion of its field', () => {
+    expect(
+      notFetchedFields(b({ projectionRaw: '{"email": {"$elemMatch": {"a": 1}}}' }), known),
+    ).toEqual(['name', 'address']);
+  });
+
+  it('a raw projection the app cannot read reports nothing (projectionProblem speaks for it)', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"_id": 0' }), known)).toEqual([]);
+  });
+
+  it('an explicit _id: 1 beside an exclusion is still an exclusion', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"_id": 1, "email": 0}' }), known)).toEqual(['email']);
+  });
+
+  it('a null value does not throw, and keeps its field like any non-zero value', () => {
+    expect(notFetchedFields(b({ projectionRaw: '{"name": null}' }), known)).toEqual([
+      'email',
+      'address',
+    ]);
+  });
+
+  it('an operator object is $slice-only only when $slice is its sole key', () => {
+    expect(
+      notFetchedFields(b({ projectionRaw: '{"email": {"$slice": 2, "$x": 1}}' }), known),
+    ).toEqual(['name', 'address']);
+  });
+
+  it('a blank raw beside a modelled list falls back to the list', () => {
+    expect(notFetchedFields(b({ projection: ['name'], projectionRaw: '  ' }), known)).toEqual([
+      'email',
+      'address',
+    ]);
+  });
+
+  it('raw wins over the modelled list, exactly as compileFindOptions does', () => {
+    expect(notFetchedFields(b({ projection: ['name'], projectionRaw: '{"email": 0}' }), known)).toEqual([
+      'email',
+    ]);
   });
 });

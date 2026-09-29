@@ -46,6 +46,16 @@ describe('orderFields', () => {
   it('does not duplicate a derived field that appears twice in the input', () => {
     expect(orderFields(['a', 'a', 'b'], ['b'])).toEqual(['b', 'a']);
   });
+
+  // The early `order.length === 0` return hands back `derived.slice()`
+  // verbatim, duplicates included. Without the early return, an empty
+  // `order` would fall into the general loop, whose `seen` set dedupes —
+  // a duplicate `derived` entry is the only input that tells the two
+  // code paths apart (their output is otherwise identical for every
+  // non-duplicated `derived`).
+  it('preserves a duplicate derived field when order is the empty array', () => {
+    expect(orderFields(['a', 'a', 'b'], [])).toEqual(['a', 'a', 'b']);
+  });
 });
 
 describe('resolveColumns', () => {
@@ -221,6 +231,11 @@ describe('getValueAtPath', () => {
     expect(getValueAtPath('not a doc', 'a.b')).toBeUndefined();
     expect(getValueAtPath(null, 'a.b')).toBeUndefined();
     expect(getValueAtPath(undefined, 'a.b')).toBeUndefined();
+  });
+
+  it('reads own keys only, never an inherited property', () => {
+    expect(getValueAtPath({ a: {} }, 'a.constructor')).toBeUndefined();
+    expect(getValueAtPath({ tags: ['x'] }, 'tags.length')).toBeUndefined();
   });
 
   // Reviewer-bot finding: `Number(segment)` + `Number.isInteger` coerces

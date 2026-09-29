@@ -3,7 +3,8 @@ import type { MongoMemoryServer } from 'mongodb-memory-server';
 import { Collection, MongoClient, ObjectId } from 'mongodb';
 import { Int32, Long } from 'bson';
 import { repairToCanonicalEjson } from '../../src/utils/shellSyntax';
-import { ejsonStringifyReadable } from '../../src/utils/ejson';
+import { ejsonParse, ejsonStringifyReadable } from '../../src/utils/ejson';
+import { buildUpdateRequest } from '../../src/pages/Workspace/documentDiff';
 import { MongoPool } from '../../electron/mongo/MongoPool';
 import { DocumentService } from '../../electron/mongo/DocumentService';
 import { DEFAULT_MAX_EJSON_BYTES } from '../../electron/mongo/ejson';
@@ -209,11 +210,11 @@ describe('DocumentService.confirmDeleteMany token sweep', () => {
   });
 });
 
-// BUG REPRO #2.2 / #2.3 — greedy EJSON.parse in DocumentService.insert / .replace
+// BUG REPRO #2.3 — greedy EJSON.parse in DocumentService.insert
 // collapses any object that starts with a recognised $-sentinel key, silently
 // dropping sibling keys.  The sub-document {"$date":"…","kept":"x"} must be
 // stored as a plain object with both fields intact.
-describe('DocumentService insert/replace EJSON round-trip (REPRO 2.2, 2.3)', () => {
+describe('DocumentService insert EJSON round-trip (REPRO 2.3)', () => {
   let hp: { host: string; port: number };
   let pool: MongoPool;
   let svc: DocumentService;
@@ -262,46 +263,13 @@ describe('DocumentService insert/replace EJSON round-trip (REPRO 2.2, 2.3)', () 
     expect((payload as Record<string, unknown>).kept).toBe('x');
   });
 
-  it('replace: sub-object with $date key + sibling key preserves sibling (REPRO 2.2)', async () => {
-    const coll = 'repro_22';
-    const client = await pool.write(connId).client();
-    await client.db(dbName).collection(coll).drop().catch(() => {});
-
-    // Insert a seed doc via the raw driver (no EJSON parse on insert path).
-    await client
-      .db(dbName)
-      .collection(coll)
-      .insertOne({ testId: 'repro22', note: 'original' });
-
-    const docJson = JSON.stringify({
-      testId: 'repro22',
-      payload: { $date: '2026-06-01T00:00:00Z', kept: 'y' },
-    });
-    const filterJson = JSON.stringify({ testId: 'repro22' });
-    await svc.replace({
-      connectionId: connId,
-      dbName,
-      collection: coll,
-      filterJson,
-      docJson,
-    });
-
-    const db = await pool.write(connId).db(dbName);
-    const stored = await db.collection(coll).findOne({ testId: 'repro22' });
-    expect(stored).not.toBeNull();
-    const payload = (stored as Record<string, unknown>).payload;
-    expect(payload).not.toBeInstanceOf(Date);
-    expect((payload as Record<string, unknown>).kept).toBe('y');
-  });
 });
 
-// Reviewer-bot finding (Gemini Code Assist, gemini-code-assist[bot] on
-// EditDrawer.tsx:77): claimed `JSON.stringify({ _id: originalId })` breaks
-// BSON-typed _ids because JSON.stringify on a live ObjectId yields a bare
-// 24-char hex string. That premise doesn't hold at that call site:
-// `originalId` is `doc._id` as it arrives from electron/preload.ts
-// `parseFindResult`, which does a PLAIN `JSON.parse(wire.documentsJson)` —
-// never bson `EJSON.parse`. So for an ObjectId _id, `originalId` is already
+// `buildIdFilter` builds `JSON.stringify({ _id: doc._id })`, which looks like
+// it breaks BSON-typed _ids because JSON.stringify on a live ObjectId yields a
+// bare 24-char hex string. That premise doesn't hold there: `doc._id`
+// arrives from electron/preload.ts `parseFindResult`, which does a PLAIN `JSON.parse(wire.documentsJson)` —
+// never bson `EJSON.parse`. So for an ObjectId _id, `doc._id` is already
 // the canonical EJSON *sentinel* `{ $oid: '<hex>' }`, never a live ObjectId
 // instance. `JSON.stringify` around that sentinel reproduces the exact
 // canonical EJSON, which the backend `EJSON.parse`s straight back into a
@@ -333,7 +301,7 @@ describe('DocumentService.updateOne — ObjectId _id filter built from a JSON.pa
     tmp.cleanup();
   });
 
-  it('matches and updates a real ObjectId _id when the filter is JSON.stringify\'d around the $oid sentinel (as EditDrawer does)', async () => {
+  it('matches and updates a real ObjectId _id when the filter is JSON.stringify\'d around the $oid sentinel (as buildIdFilter does)', async () => {
     const coll = 'oid_filter_roundtrip';
     const client = await pool.write(connId).client();
     await client.db(dbName).collection(coll).drop().catch(() => {});
@@ -341,10 +309,10 @@ describe('DocumentService.updateOne — ObjectId _id filter built from a JSON.pa
     const id = new ObjectId();
     await client.db(dbName).collection(coll).insertOne({ _id: id, name: 'original' });
 
-    // Mirrors EditDrawer.tsx exactly: `originalId` is never a live ObjectId —
+    // Mirrors `buildIdFilter` exactly: `originalId` is never a live ObjectId —
     // it's the sentinel already produced by preload's plain JSON.parse of the
     // find-result wire JSON. Do NOT build this from a live ObjectId; that
-    // scenario cannot occur at EditDrawer.tsx:77 and would misrepresent the bug.
+    // scenario cannot reach `buildIdFilter` and would misrepresent the bug.
     const originalId = { $oid: id.toHexString() };
     const filterJson = JSON.stringify({ _id: originalId });
     const updateJson = JSON.stringify({ $set: { name: 'updated' } });
@@ -621,19 +589,6 @@ describe('DocumentService — the filter guard matches QueryService', () => {
       expect(readDb).not.toHaveBeenCalled();
     });
 
-    it(`replace refuses ${label} as a filter, before any driver call`, async () => {
-      const handle = spyOnWriteHandle(pool);
-      const call = svc.replace({
-        connectionId: connId,
-        dbName,
-        collection: coll,
-        filterJson,
-        docJson: '{"a":1}',
-      });
-      await expect(call).rejects.toMatchObject({ code: 'VALIDATION' });
-      expect(handle).not.toHaveBeenCalled();
-    });
-
     it(`updateOne refuses ${label} as a filter, before any driver call`, async () => {
       const handle = spyOnWriteHandle(pool);
       const call = svc.updateOne({
@@ -656,20 +611,6 @@ describe('DocumentService — the filter guard matches QueryService', () => {
     await expect(
       svc.deleteOne({ connectionId: connId, dbName, collection: coll, filterJson: '{}' }),
     ).rejects.toMatchObject({ code: 'VALIDATION' });
-  });
-
-  it('still refuses an empty filter on replace, which is a valid document', async () => {
-    const handle = spyOnWriteHandle(pool);
-    const call = svc.replace({
-      connectionId: connId,
-      dbName,
-      collection: coll,
-      filterJson: '{}',
-      docJson: '{"a":1}',
-    });
-
-    await expect(call).rejects.toMatchObject({ code: 'VALIDATION' });
-    expect(handle).not.toHaveBeenCalled();
   });
 
   it('still accepts a filter whose value is a nested sentinel', async () => {
@@ -790,26 +731,6 @@ describe('DocumentService — text produced by the Shell Syntax transform', () =
     expect(await client.db(dbName).collection(coll).countDocuments()).toBe(2);
   });
 
-  it('replaces a document through an ObjectId filter written as ObjectId(…)', async () => {
-    const coll = 'shell_replace';
-    const client = await pool.write(connId).client();
-    await client.db(dbName).collection(coll).drop().catch(() => {});
-    const id = new ObjectId();
-    await client.db(dbName).collection(coll).insertOne({ _id: id, name: 'before' });
-
-    const res = await svc.replace({
-      connectionId: connId,
-      dbName,
-      collection: coll,
-      filterJson: repaired(`{_id: ObjectId('${id.toHexString()}')}`),
-      docJson: repaired(`{_id: ObjectId('${id.toHexString()}'), name: 'after'}`),
-    });
-
-    expect(res.matchedCount).toBe(1);
-    const stored = await client.db(dbName).collection(coll).findOne({ _id: id });
-    expect(stored!.name).toBe('after');
-  });
-
   it('applies a $set written in Shell Syntax', async () => {
     const coll = 'shell_update';
     const client = await pool.write(connId).client();
@@ -831,9 +752,9 @@ describe('DocumentService — text produced by the Shell Syntax transform', () =
 
   it('round-trips the readable renderer through a real write', async () => {
     // The other half of the same boundary: `ejsonStringifyReadable` fills the
-    // edit buffer, and an unedited save sends that text. The int32 has to come
-    // back an int32 and the int64 a int64, or the drawer quietly retyped a
-    // stored field.
+    // Duplicate buffer, and an unedited insert sends that text. The int32 has
+    // to come back an int32 and the int64 a int64, or the insert quietly
+    // retyped a stored field.
     const coll = 'shell_readable';
     const client = await pool.write(connId).client();
     await client.db(dbName).collection(coll).drop().catch(() => {});
@@ -846,11 +767,11 @@ describe('DocumentService — text produced by the Shell Syntax transform', () =
     });
 
     const original = await client.db(dbName).collection(coll).findOne({ _id: id });
-    await svc.replace({
+    await client.db(dbName).collection(coll).deleteOne({ _id: id });
+    await svc.insert({
       connectionId: connId,
       dbName,
       collection: coll,
-      filterJson: JSON.stringify({ _id: { $oid: id.toHexString() } }),
       docJson: ejsonStringifyReadable(original, 2),
     });
 
@@ -962,34 +883,6 @@ describe('DocumentService — read-only connection guard', () => {
 
     const res = await svc.insertMany({ connectionId: rwConnId, dbName, collection: coll, docsJson: '[{"n":1},{"n":2}]' });
     expect(res.insertedCount).toBe(2);
-  });
-
-  it('replace rejects on the read-only connection and succeeds on the writable one', async () => {
-    const coll = 'ro_guard_replace';
-    await verify.db(dbName).collection(coll).drop().catch(() => {});
-    await verify.db(dbName).collection<{ _id: number; name: string }>(coll).insertOne({ _id: 1, name: 'before' });
-
-    await expect(
-      svc.replace({
-        connectionId: roConnId,
-        dbName,
-        collection: coll,
-        filterJson: '{"_id":1}',
-        docJson: '{"_id":1,"name":"blocked"}',
-      }),
-    ).rejects.toMatchObject({ code: 'READ_ONLY' });
-    expect(
-      (await verify.db(dbName).collection<{ _id: number; name: string }>(coll).findOne({ _id: 1 }))!.name,
-    ).toBe('before');
-
-    const res = await svc.replace({
-      connectionId: rwConnId,
-      dbName,
-      collection: coll,
-      filterJson: '{"_id":1}',
-      docJson: '{"_id":1,"name":"after"}',
-    });
-    expect(res.matchedCount).toBe(1);
   });
 
   it('updateOne rejects on the read-only connection and succeeds on the writable one', async () => {
@@ -1255,22 +1148,6 @@ describe('DocumentService — fuzz-found write-validation bugs', () => {
       await expect(call).rejects.toMatchObject({ code: 'VALIDATION' });
     });
 
-    it('replace rejects a non-document docJson with VALIDATION', async () => {
-      const coll = 'fuzz_docjson_replace';
-      const client = await pool.write(connId).client();
-      await client.db(dbName).collection(coll).drop().catch(() => {});
-      await client.db(dbName).collection(coll).insertOne({ testId: 'r1' });
-
-      const call = svc.replace({
-        connectionId: connId,
-        dbName,
-        collection: coll,
-        filterJson: JSON.stringify({ testId: 'r1' }),
-        docJson: 'null',
-      });
-      await expect(call).rejects.toMatchObject({ code: 'VALIDATION' });
-    });
-
     it('a valid document insert still works (no regression)', async () => {
       const coll = 'fuzz_docjson_valid';
       const client = await pool.write(connId).client();
@@ -1327,7 +1204,7 @@ describe('DocumentService — fuzz-found write-validation bugs', () => {
 });
 
 // Every DocumentService write used to carry no maxTimeMS at all — an
-// unresponsive server held insertOne/insertMany/replaceOne/updateOne/
+// unresponsive server held insertOne/insertMany/updateOne/
 // deleteOne/deleteMany open until the socket gave up. Assert the bound is
 // actually on the wire rather than relying on a real slow query, which
 // mongodb-memory-server can't induce deterministically.
@@ -1381,22 +1258,15 @@ describe('DocumentService — every driver call carries maxTimeMS', () => {
     );
   });
 
-  it('replace / updateOne / deleteOne carry QUERY_TIMEOUT_MS', async () => {
+  it('updateOne / deleteOne carry QUERY_TIMEOUT_MS', async () => {
     const client = await pool.write(connId).client();
     await client.db(dbName).collection(coll).drop().catch(() => {});
     await client.db(dbName).collection<{ _id: number }>(coll).insertMany([{ _id: 1 }, { _id: 2 }]);
 
-    const replaceSpy = vi.spyOn(Collection.prototype, 'replaceOne');
-    const updateSpy = vi.spyOn(Collection.prototype, 'updateOne');
-    const deleteSpy = vi.spyOn(Collection.prototype, 'deleteOne');
+    const updateSpy = vi.spyOn(Collection.prototype, 'findOneAndUpdate');
+    const findOneSpy = vi.spyOn(Collection.prototype, 'findOne');
+    const deleteSpy = vi.spyOn(Collection.prototype, 'findOneAndDelete');
 
-    await svc.replace({
-      connectionId: connId,
-      dbName,
-      collection: coll,
-      filterJson: '{"_id":1}',
-      docJson: '{"_id":1,"replaced":true}',
-    });
     await svc.updateOne({
       connectionId: connId,
       dbName,
@@ -1406,13 +1276,15 @@ describe('DocumentService — every driver call carries maxTimeMS', () => {
     });
     await svc.deleteOne({ connectionId: connId, dbName, collection: coll, filterJson: '{"_id":2}' });
 
-    expect((replaceSpy.mock.calls[0]![2] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
+    expect(((updateSpy.mock.calls[0] as unknown[])[2] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
       QUERY_TIMEOUT_MS,
     );
-    expect((updateSpy.mock.calls[0]![2] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
+    expect(((deleteSpy.mock.calls[0] as unknown[])[1] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
       QUERY_TIMEOUT_MS,
     );
-    expect((deleteSpy.mock.calls[0]![1] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
+    // updateOne's Pre-image read.
+    expect(findOneSpy.mock.calls).toHaveLength(1);
+    expect(((findOneSpy.mock.calls[0] as unknown[])[1] as { maxTimeMS?: number } | undefined)?.maxTimeMS).toBe(
       QUERY_TIMEOUT_MS,
     );
   });
@@ -1526,5 +1398,342 @@ describe('DocumentService — a schema-validator rejection is a VALIDATION error
     }
     expect(caught).toBeDefined();
     expect(caught?.details?.errInfo).toBeDefined();
+  });
+});
+
+// W08/updateMany — same confirm-token gate as deleteMany, plus two things
+// deleteMany's filter-only token doesn't need: an update-shape guard
+// (operator documents only, no pipelines, no replacements) and a hash
+// binding the token to the exact update body reviewed, not just the filter.
+describe('DocumentService.confirmUpdateMany / updateMany', () => {
+  let hp: { host: string; port: number };
+  let pool: MongoPool;
+  let svc: DocumentService;
+  let tmp: TempDb;
+  let vault: SecretsVault;
+  const connId = 'update-many-conn';
+  const dbName = 'update_many_db';
+
+  beforeAll(async () => {
+    const server = await getSharedServer();
+    hp = uriToHostPort(server.getUri());
+    tmp = createTempDb();
+    vault = new SecretsVault(tmp.db, createSafeStorageMock());
+    const conn = makeConnection(connId, hp, { defaultDb: dbName });
+    pool = new MongoPool({ repo: makeReader([conn]), vault });
+    svc = new DocumentService(pool);
+  }, 60_000);
+
+  afterAll(async () => {
+    svc.dispose();
+    await pool.disconnectAll();
+    tmp.cleanup();
+  });
+
+  it('happy path: confirms a count, then updates exactly the matched documents', async () => {
+    const coll = 'update_many_happy';
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    await client
+      .db(dbName)
+      .collection<{ _id: number; status: string }>(coll)
+      .insertMany([{ _id: 1, status: 'draft' }, { _id: 2, status: 'draft' }, { _id: 3, status: 'final' }]);
+
+    const filterJson = JSON.stringify({ status: 'draft' });
+    const updateJson = JSON.stringify({ $set: { status: 'active' } });
+    const { count, confirmToken } = await svc.confirmUpdateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson });
+    expect(count).toBe(2);
+
+    const result = await svc.updateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson, confirmToken });
+    expect(result).toEqual({ matchedCount: 2, modifiedCount: 2 });
+
+    const docs = await client.db(dbName).collection<{ _id: number; status: string }>(coll).find({}).sort({ _id: 1 }).toArray();
+    expect(docs.map((d) => d.status)).toEqual(['active', 'active', 'final']);
+  });
+
+  it('confirmUpdateMany refuses a replacement-style document (no $ keys), before counting', async () => {
+    const coll = 'update_many_replacement';
+    await expect(
+      svc.confirmUpdateMany({
+        connectionId: connId,
+        dbName,
+        collection: coll,
+        filterJson: '{}',
+        updateJson: JSON.stringify({ status: 'active' }),
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
+  it('confirmUpdateMany refuses a pipeline update (a top-level array)', async () => {
+    const coll = 'update_many_pipeline';
+    await expect(
+      svc.confirmUpdateMany({
+        connectionId: connId,
+        dbName,
+        collection: coll,
+        filterJson: '{}',
+        updateJson: JSON.stringify([{ $set: { status: 'active' } }]),
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
+  it('confirmUpdateMany refuses an empty update document', async () => {
+    const coll = 'update_many_empty_update';
+    await expect(
+      svc.confirmUpdateMany({ connectionId: connId, dbName, collection: coll, filterJson: '{}', updateJson: '{}' }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
+  it('a confirmDeleteMany token cannot authorize updateMany, even against the identical filter/collection', async () => {
+    const coll = 'update_many_cross_op_a';
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    await client.db(dbName).collection<{ _id: number; status: string }>(coll).insertOne({ _id: 1, status: 'draft' });
+
+    const filterJson = '{}';
+    const { confirmToken } = await svc.confirmDeleteMany({ connectionId: connId, dbName, collection: coll, filterJson });
+
+    await expect(
+      svc.updateMany({
+        connectionId: connId,
+        dbName,
+        collection: coll,
+        filterJson,
+        updateJson: JSON.stringify({ $set: { status: 'active' } }),
+        confirmToken,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+
+    const stored = await client.db(dbName).collection<{ _id: number; status: string }>(coll).findOne({ _id: 1 });
+    expect(stored!.status).toBe('draft');
+  });
+
+  it('a confirmUpdateMany token cannot authorize deleteMany, even against the identical filter/collection', async () => {
+    const coll = 'update_many_cross_op_b';
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    await client.db(dbName).collection<{ _id: number }>(coll).insertOne({ _id: 1 });
+
+    const filterJson = '{}';
+    const updateJson = JSON.stringify({ $set: { touched: true } });
+    const { confirmToken } = await svc.confirmUpdateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson });
+
+    await expect(
+      svc.deleteMany({ connectionId: connId, dbName, collection: coll, filterJson, confirmToken }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+
+    expect(await client.db(dbName).collection(coll).countDocuments({})).toBe(1);
+  });
+
+  it('rejects the token when the update body changes after Review, even though the filter/collection match', async () => {
+    const coll = 'update_many_hash_mismatch';
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    await client.db(dbName).collection<{ _id: number; status: string }>(coll).insertOne({ _id: 1, status: 'draft' });
+
+    const filterJson = '{}';
+    const { confirmToken } = await svc.confirmUpdateMany({
+      connectionId: connId,
+      dbName,
+      collection: coll,
+      filterJson,
+      updateJson: JSON.stringify({ $set: { status: 'reviewed-value' } }),
+    });
+
+    await expect(
+      svc.updateMany({
+        connectionId: connId,
+        dbName,
+        collection: coll,
+        filterJson,
+        // A different update body than the one the token was minted for.
+        updateJson: JSON.stringify({ $set: { status: 'edited-after-review' } }),
+        confirmToken,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+
+    const stored = await client.db(dbName).collection<{ _id: number; status: string }>(coll).findOne({ _id: 1 });
+    expect(stored!.status).toBe('draft');
+  });
+
+  it('consumes its own token on success, and rejects an expired token', async () => {
+    const coll = 'update_many_token_lifecycle';
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    await client.db(dbName).collection<{ _id: number }>(coll).insertOne({ _id: 1 });
+
+    const filterJson = '{}';
+    const updateJson = JSON.stringify({ $set: { touched: true } });
+    const { confirmToken } = await svc.confirmUpdateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson });
+    await svc.updateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson, confirmToken });
+
+    // Reusing the same (now-consumed) token must fail.
+    await expect(
+      svc.updateMany({ connectionId: connId, dbName, collection: coll, filterJson, updateJson, confirmToken }),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+});
+
+// Read-only connection guard for updateMany. Same server, only `readOnly`
+// differs — the write-grant-first ordering (unlike deleteMany's
+// token-then-grant order) must report READ_ONLY even against a bogus token,
+// proving the grant really is asked for before the token is inspected.
+describe('DocumentService.updateMany — read-only connection guard', () => {
+  let server: MongoMemoryServer;
+  let hp: { host: string; port: number };
+  let pool: MongoPool;
+  let svc: DocumentService;
+  let tmp: TempDb;
+  let vault: SecretsVault;
+  let verify: MongoClient;
+  const rwConnId = 'update-many-ro-guard-rw';
+  const roConnId = 'update-many-ro-guard-ro';
+  const dbName = 'update_many_ro_guard_db';
+
+  beforeAll(async () => {
+    server = await getSharedServer();
+    hp = uriToHostPort(server.getUri());
+    verify = new MongoClient(server.getUri());
+    await verify.connect();
+
+    tmp = createTempDb();
+    vault = new SecretsVault(tmp.db, createSafeStorageMock());
+    const rwConn = makeConnection(rwConnId, hp, { defaultDb: dbName });
+    const roConn = makeConnection(roConnId, hp, { defaultDb: dbName, readOnly: true });
+    pool = new MongoPool({ repo: makeReader([rwConn, roConn]), vault });
+    svc = new DocumentService(pool);
+  }, 60_000);
+
+  afterAll(async () => {
+    svc.dispose();
+    await pool.disconnectAll();
+    await verify.close();
+    tmp.cleanup();
+  });
+
+  it('confirmUpdateMany still works read-only (a read); updateMany refuses READ_ONLY even with a bogus token', async () => {
+    const coll = 'update_many_ro_guard';
+    await verify.db(dbName).collection(coll).drop().catch(() => {});
+    await verify.db(dbName).collection<{ a: number }>(coll).insertMany([{ a: 1 }, { a: 2 }]);
+
+    const { count } = await svc.confirmUpdateMany({
+      connectionId: roConnId,
+      dbName,
+      collection: coll,
+      filterJson: '{}',
+      updateJson: '{"$set":{"a":9}}',
+    });
+    expect(count).toBe(2);
+
+    await expect(
+      svc.updateMany({
+        connectionId: roConnId,
+        dbName,
+        collection: coll,
+        filterJson: '{}',
+        updateJson: '{"$set":{"a":9}}',
+        confirmToken: 'not-a-real-token',
+      }),
+    ).rejects.toMatchObject({ code: 'READ_ONLY' });
+    expect(await verify.db(dbName).collection(coll).countDocuments({ a: 9 })).toBe(0);
+
+    // The identical confirm+update flow against the writable connection still works.
+    const { confirmToken: rwToken } = await svc.confirmUpdateMany({
+      connectionId: rwConnId,
+      dbName,
+      collection: coll,
+      filterJson: '{}',
+      updateJson: '{"$set":{"a":9}}',
+    });
+    const res = await svc.updateMany({
+      connectionId: rwConnId,
+      dbName,
+      collection: coll,
+      filterJson: '{}',
+      updateJson: '{"$set":{"a":9}}',
+      confirmToken: rwToken,
+    });
+    expect(res.matchedCount).toBe(2);
+  });
+});
+
+// The Document Editor's save is a compare-and-set: the filter carries each
+// changed field's loaded value, so a concurrent change to one of those fields
+// makes the update match nothing, and a change to any other field does not.
+describe('DocumentService.updateOne — the Document Editor compare-and-set', () => {
+  let pool: MongoPool;
+  let svc: DocumentService;
+  let tmp: TempDb;
+  const connId = 'cas-conn';
+  const dbName = 'cas_db';
+  const coll = 'cas_docs';
+
+  beforeAll(async () => {
+    const server = await getSharedServer();
+    tmp = createTempDb();
+    const vault = new SecretsVault(tmp.db, createSafeStorageMock());
+    pool = new MongoPool({ repo: makeReader([makeConnection(connId, uriToHostPort(server.getUri()), { defaultDb: dbName })]), vault });
+    svc = new DocumentService(pool);
+  }, 60_000);
+
+  afterAll(async () => {
+    svc.dispose();
+    await pool.disconnectAll();
+    tmp.cleanup();
+  });
+
+  /** Seeds one document and returns it revived, as the editor holds it once opened. */
+  async function seed(): Promise<{ id: ObjectId; loaded: Record<string, unknown> }> {
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).drop().catch(() => {});
+    const id = new ObjectId();
+    await client.db(dbName).collection(coll).insertOne({ _id: id, name: 'a', qty: new Int32(1), addr: { city: 'X' } });
+    const loaded = ejsonParse<Record<string, unknown>>(JSON.stringify({
+      _id: { $oid: id.toHexString() }, name: 'a', qty: { $numberInt: '1' }, addr: { city: 'X' },
+    }));
+    return { id, loaded };
+  }
+
+  const save = (req: { filterJson: string; updateJson: string }) =>
+    svc.updateOne({ connectionId: connId, dbName, collection: coll, ...req });
+
+  it('matches nothing when an edited field changed underneath', async () => {
+    const { id, loaded } = await seed();
+    const req = buildUpdateRequest(loaded, { ...loaded, addr: { city: 'Y' } })!;
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).updateOne({ _id: id }, { $set: { 'addr.city': 'Z' } });
+
+    expect((await save(req)).matchedCount).toBe(0);
+    expect((await client.db(dbName).collection(coll).findOne({ _id: id }))!.addr).toEqual({ city: 'Z' });
+  });
+
+  it('saves over a change to a field the user did not touch, and both changes survive', async () => {
+    const { id, loaded } = await seed();
+    const req = buildUpdateRequest(loaded, { ...loaded, name: 'b' })!;
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).updateOne({ _id: id }, { $set: { qty: 7 } });
+
+    expect((await save(req)).matchedCount).toBe(1);
+    const stored = await client.db(dbName).collection(coll).findOne({ _id: id });
+    expect(stored).toMatchObject({ name: 'b', qty: 7 });
+  });
+
+  it('matches nothing when a field the draft adds appeared underneath', async () => {
+    const { id, loaded } = await seed();
+    const req = buildUpdateRequest(loaded, { ...loaded, note: 'mine' })!;
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).updateOne({ _id: id }, { $set: { note: 'theirs' } });
+
+    expect((await save(req)).matchedCount).toBe(0);
+  });
+
+  it('writes a nested edit as its dotted path, keeping a sibling changed underneath', async () => {
+    const { id, loaded } = await seed();
+    const client = await pool.write(connId).client();
+    await client.db(dbName).collection(coll).updateOne({ _id: id }, { $set: { 'addr.zip': '9' } });
+    const req = buildUpdateRequest(loaded, { ...loaded, addr: { city: 'Y' } })!;
+
+    expect((await save(req)).matchedCount).toBe(1);
+    expect((await client.db(dbName).collection(coll).findOne({ _id: id }))!.addr).toEqual({ city: 'Y', zip: '9' });
   });
 });

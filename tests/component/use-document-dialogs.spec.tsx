@@ -11,9 +11,11 @@
 // the stable `run`, not the fresh `{ run, isLoading }` literal `useQueryRunner`
 // returns each render; re-introducing the object dependency has no behavioral
 // tell, so a two-render identity check is the only thing that catches it.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act } from '@testing-library/react';
-import { renderHook } from '../helpers/render';
+import { notifications } from '@mantine/notifications';
+import { fireEvent, renderHook, screen, waitFor } from '../helpers/render';
+import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
 import { useDocumentDialogs } from '../../src/pages/Workspace/useDocumentDialogs';
 import type { CollectionTab } from '@shared/types';
 import type {
@@ -81,12 +83,13 @@ function mountDialogs(
   const view = renderHook(
     (props: { activeTabId: string | null }) => {
       renders += 1;
-      const queryRunner: UseQueryRunnerResult = { run, isLoading: false };
+      const queryRunner: UseQueryRunnerResult = { run, cancel: () => {}, isLoading: false };
       return useDocumentDialogs({
         activeCollectionRef,
         queryRunner,
         activeTabId: props.activeTabId,
         resolveRunnerTarget,
+        readOnly: false,
       });
     },
     { initialProps: { activeTabId } },
@@ -106,7 +109,7 @@ describe('useDocumentDialogs', () => {
     expect(result.current.deleteDoc).toEqual(DOC);
     expect(result.current.deleteSelected).toEqual([DOC]);
 
-    act(() => result.current.handleDeleted());
+    act(() => result.current.handleDeleted(undefined, 'Document deleted'));
 
     expect(result.current.deleteDoc).toBeNull();
     expect(result.current.deleteAllOpen).toBe(false);
@@ -156,6 +159,55 @@ describe('useDocumentDialogs', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  // Update-all mirrors delete-all's atom (`useDocumentDialogs` reads its
+  // target the same way DeleteConfirm does — live off the Focused Tab), so it
+  // gets the same three behaviors: opened/closed via its own toggle,
+  // re-running on completion, and closing (not surviving) a tab switch.
+  it('handleUpdatedAll closes update-all and re-runs the query', () => {
+    const run = vi.fn(() => Promise.resolve());
+    const { result } = mountDialogs(run, 't1', tab());
+
+    act(() => result.current.openUpdateAllModal());
+    expect(result.current.updateAllOpen).toBe(true);
+
+    act(() => result.current.handleUpdatedAll(undefined, '2 matched, 2 modified'));
+
+    expect(result.current.updateAllOpen).toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('closeUpdateAllModal closes update-all without re-running', () => {
+    const run = vi.fn(() => Promise.resolve());
+    const { result } = mountDialogs(run, 't1', tab());
+
+    act(() => result.current.openUpdateAllModal());
+    act(() => result.current.closeUpdateAllModal());
+
+    expect(result.current.updateAllOpen).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('openUpdateAllModal is a no-op when there is no active collection', () => {
+    const { result } = mountDialogs(undefined, 't1', null);
+
+    act(() => result.current.openUpdateAllModal());
+
+    expect(result.current.updateAllOpen).toBe(false);
+  });
+
+  it('closes update-all when the Focused Tab changes, without re-running', () => {
+    const run = vi.fn(() => Promise.resolve());
+    const { result, rerender } = mountDialogs(run, 't1', tab());
+
+    act(() => result.current.openUpdateAllModal());
+    expect(result.current.updateAllOpen).toBe(true);
+
+    rerender({ activeTabId: 't2' });
+
+    expect(result.current.updateAllOpen).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('handleInserted closes the drawer, drops the duplicate payload and re-runs', () => {
     const run = vi.fn(() => Promise.resolve());
     const { result } = mountDialogs(run, 't1', tab());
@@ -171,11 +223,11 @@ describe('useDocumentDialogs', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  // `EditDrawer`/`InsertDrawer` carry the same live-target hazard
-  // `DeleteConfirm` had before its own fix, but closing them on a tab change would
-  // silently discard unsaved input. ADR-001's remedy is to pin the target
-  // captured at open time instead, so these two assert the pin survives a
-  // tab change rather than asserting a close.
+  // The Document Editor's edit and insert modes both carry the same
+  // live-target hazard `DeleteConfirm` had before its own fix, but closing
+  // them on a tab change would silently discard unsaved input. ADR-001's
+  // remedy is to pin the target captured at open time instead, so these two
+  // assert the pin survives a tab change rather than asserting a close.
   it('openEdit pins the target captured at open time; a later activeTabId change does not retarget or discard the draft', () => {
     const { result, rerender, activeCollectionRef } = mountDialogs(undefined, 't1', tab());
 
@@ -356,5 +408,81 @@ describe('useDocumentDialogs', () => {
     expect(result.current.handlePartialInsert).toBe(before.handlePartialInsert);
     expect(result.current.handleDocSaved).toBe(before.handleDocSaved);
     expect(result.current.handleDeleted).toBe(before.handleDeleted);
+  });
+
+  describe('Undo toast', () => {
+    afterEach(() => {
+      notifications.clean();
+      uninstallAtelierMock();
+    });
+
+    it('a Reversible delete offers Undo that re-runs the tab it came from, even after focus moved', async () => {
+      const undo = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+      installAtelierMock({ audit: { undo } });
+      const run = vi.fn(() => Promise.resolve());
+      const t1 = tab();
+      const t2 = tab({ id: 't2', collection: 'users' });
+      const { result, activeCollectionRef } = mountDialogs(run, 't1', t1, [t1, t2]);
+
+      act(() => result.current.handleDeleted('a1', 'Document deleted'));
+      activeCollectionRef.current = t2;
+      fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      expect(undo).toHaveBeenCalledWith({ entryId: 'a1' });
+      expect(run).toHaveBeenLastCalledWith(undefined, runnerTargetOf(t1));
+    });
+
+    it('a delete-all over the undo ceiling still shows the deleted-count toast, with no Undo button', async () => {
+      const t1 = tab();
+      const { result } = mountDialogs(() => Promise.resolve(), 't1', t1);
+
+      act(() => result.current.handleDeleted(undefined, '1,001 documents deleted'));
+
+      await waitFor(() => expect(screen.getByText('1,001 documents deleted')).toBeTruthy());
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    });
+
+    it('a Reversible edit offers Undo that re-runs the pinned tab', async () => {
+      installAtelierMock({ audit: { undo: async () => ({ restored: 1, skipped: 0 }) } });
+      const run = vi.fn(() => Promise.resolve());
+      const t1 = tab();
+      const { result } = mountDialogs(run, 't1', t1);
+      act(() => result.current.openEdit(DOC));
+
+      act(() => result.current.handleDocSaved('a2'));
+      expect(await screen.findByText('Document updated')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      expect(run).toHaveBeenLastCalledWith(undefined, runnerTargetOf(t1));
+    });
+
+    it('a Reversible update-all offers Undo that re-runs the tab it came from, even after focus moved', async () => {
+      const undo = vi.fn(async () => ({ restored: 2, skipped: 0 }));
+      installAtelierMock({ audit: { undo } });
+      const run = vi.fn(() => Promise.resolve());
+      const t1 = tab();
+      const t2 = tab({ id: 't2', collection: 'users' });
+      const { result, activeCollectionRef } = mountDialogs(run, 't1', t1, [t1, t2]);
+
+      act(() => result.current.handleUpdatedAll('a3', '2 matched, 2 modified'));
+      activeCollectionRef.current = t2;
+      fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      expect(undo).toHaveBeenCalledWith({ entryId: 'a3' });
+      expect(run).toHaveBeenLastCalledWith(undefined, runnerTargetOf(t1));
+    });
+
+    it('an update-all with no Reversible entry still shows the matched/modified count, with no Undo button', async () => {
+      const t1 = tab();
+      const { result } = mountDialogs(() => Promise.resolve(), 't1', t1);
+
+      act(() => result.current.handleUpdatedAll(undefined, '5 matched, 5 modified'));
+
+      await waitFor(() => expect(screen.getByText('5 matched, 5 modified')).toBeTruthy());
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    });
   });
 });

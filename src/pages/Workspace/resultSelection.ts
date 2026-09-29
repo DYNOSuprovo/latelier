@@ -21,8 +21,8 @@ export interface ResultSelectionValue {
   /** Toggle a single index in/out of the selection (⌘/Ctrl+click). */
   toggle: (index: number) => void;
   /** Replace the selection with just this index, or clear if it's already
-   *  the sole selected row (plain click — preserves the pre-T0.4 single-row
-   *  highlight UX in TableView). */
+   *  the sole selected row (Table's keyboard Enter/Space activation — the
+   *  mouse path is the checkbox/⌘/Ctrl+click `toggle` above). */
   selectOnly: (index: number) => void;
   clear: () => void;
 }

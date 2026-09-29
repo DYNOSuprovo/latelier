@@ -19,6 +19,7 @@ export function useNavigatorDialogs(deps: {
   createCollDb: { connectionId: string; dbName: string } | null;
   renameTarget: { connectionId: string; dbName: string; collection: string } | null;
   dropCollTarget: { connectionId: string; dbName: string; collection: string } | null;
+  importTarget: { connectionId: string; dbName: string; collection: string } | null;
   dropDbTarget: { connectionId: string; dbName: string } | null;
   menuTrigger: HTMLElement | null;
   setMenu: React.Dispatch<React.SetStateAction<MenuState | null>>;
@@ -34,6 +35,9 @@ export function useNavigatorDialogs(deps: {
   setDropDbTarget: React.Dispatch<
     React.SetStateAction<{ connectionId: string; dbName: string } | null>
   >;
+  setImportTarget: React.Dispatch<
+    React.SetStateAction<{ connectionId: string; dbName: string; collection: string } | null>
+  >;
   setMenuTrigger: React.Dispatch<React.SetStateAction<HTMLElement | null>>;
   closeMenu: () => void;
   cancelCreateColl: () => void;
@@ -44,6 +48,8 @@ export function useNavigatorDialogs(deps: {
   handleCollectionDropped: () => void;
   cancelDropDb: () => void;
   handleDatabaseDropped: () => void;
+  closeImport: () => void;
+  handleImported: () => void;
 } {
   const { refreshDb, refreshAll, onCollectionRenamed, onCollectionDropped, onDatabaseDropped } =
     deps;
@@ -54,6 +60,7 @@ export function useNavigatorDialogs(deps: {
   const [renameTarget, setRenameTarget] = React.useState<{ connectionId: string; dbName: string; collection: string } | null>(null);
   const [dropCollTarget, setDropCollTarget] = React.useState<{ connectionId: string; dbName: string; collection: string } | null>(null);
   const [dropDbTarget, setDropDbTarget] = React.useState<{ connectionId: string; dbName: string } | null>(null);
+  const [importTarget, setImportTarget] = React.useState<{ connectionId: string; dbName: string; collection: string } | null>(null);
   // ContextMenu unmounts its trigger in the same batch as onClick, so useDialogFocusReturn would capture an already-detached element; this state outlives it.
   const [menuTrigger, setMenuTrigger] = React.useState<HTMLElement | null>(null);
 
@@ -96,18 +103,26 @@ export function useNavigatorDialogs(deps: {
     onDatabaseDropped?.(cid, db);
   }, [dropDbTarget, refreshAll, onDatabaseDropped]);
 
+  const closeImport = React.useCallback(() => setImportTarget(null), []);
+  // The dialog stays open on its report, so this refreshes without closing it.
+  const handleImported = React.useCallback(() => {
+    if (importTarget) refreshDb(importTarget.connectionId, importTarget.dbName);
+  }, [importTarget, refreshDb]);
+
   return {
     menu,
     createCollDb,
     renameTarget,
     dropCollTarget,
     dropDbTarget,
+    importTarget,
     menuTrigger,
     setMenu,
     setCreateCollDb,
     setRenameTarget,
     setDropCollTarget,
     setDropDbTarget,
+    setImportTarget,
     setMenuTrigger,
     closeMenu,
     cancelCreateColl,
@@ -118,5 +133,7 @@ export function useNavigatorDialogs(deps: {
     handleCollectionDropped,
     cancelDropDb,
     handleDatabaseDropped,
+    closeImport,
+    handleImported,
   };
 }

@@ -12,7 +12,7 @@ import { expectConsoleClean, expectStatusDot } from './helpers/uiAsserts';
 test.afterAll(stopAllMemoryServers);
 
 /**
- * W10 — Save a query from the BuilderPane footer; verify it appears in the
+ * W10 — Save a query from the QueryBar toolbar; verify it appears in the
  * Saved tab; verify a Recent entry was auto-recorded by the prior run.
  */
 test('saved+recent: Save modal persists; Saved + Recent tabs reflect activity', async () => {
@@ -37,7 +37,7 @@ test('saved+recent: Save modal persists; Saved + Recent tabs reflect activity', 
       await ws.queryBarRunButton.click();
       await expect(win.getByText('aaa')).toBeVisible({ timeout: 8000 });
 
-      // Click "Save" in the BuilderPane footer (data-hint-anchor="saved.create").
+      // Click the QueryBar toolbar's Save (data-hint-anchor="saved.create").
       await win.locator('[data-hint-anchor="saved.create"]').click();
 
       // SaveModal opens — placeholder "My query" identifies its name input.

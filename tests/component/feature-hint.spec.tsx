@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act, waitFor } from '../helpers/render';
 import { FeatureHint } from '../../src/hints/FeatureHint';
 import { HintsProvider } from '../../src/hints/HintsProvider';
 import { useFeatureHint } from '../../src/hints/useFeatureHint';
+import { useHints } from '../../src/hints/HintsContext';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
 
 function withTheme(ui: React.ReactElement) {
@@ -132,6 +133,77 @@ describe('HintsProvider + useFeatureHint', () => {
       vi.advanceTimersByTime(1500);
     });
     expect(screen.getByTestId('h').textContent).toBe('visible');
+  });
+
+  it('the lower-priority hint wins even when it registers second', async () => {
+    // `tabs.pin` (priority 20) mounts first here; `run.execute` (priority 0)
+    // registers after it. `HintsProvider` must still pick `run.execute` —
+    // priority beats registration order, otherwise the primary Run hint
+    // could lose to whichever secondary hint happened to mount first.
+    function Probe() {
+      const secondary = useFeatureHint('tabs.pin', true);
+      const primary = useFeatureHint('run.execute', true);
+      return (
+        <div>
+          <span data-testid="secondary">{secondary.visible ? 'visible' : 'hidden'}</span>
+          <span data-testid="primary">{primary.visible ? 'visible' : 'hidden'}</span>
+        </div>
+      );
+    }
+    render(
+      withTheme(
+        <HintsProvider>
+          <Probe />
+        </HintsProvider>,
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByTestId('primary').textContent).toBe('visible');
+    expect(screen.getByTestId('secondary').textContent).toBe('hidden');
+  });
+
+  it('with a run already recorded, editing the filter makes run.execute visible and it outranks a secondary hint', async () => {
+    // Mirrors `Workspace.tsx`'s wiring: a query-run key is recorded for the
+    // filter that was actually run (`ranKey`, standing in for `lastRun`
+    // being set); `run.execute`'s trigger reads the session count for the
+    // *current* query's key (`editedKey`, standing in for the filter after
+    // an edit). Zero means the query on screen has never itself been run,
+    // even though something else in this tab has.
+    const ranKey = 'find:c1:db:coll:{"a":1}';
+    const editedKey = 'find:c1:db:coll:{"a":2}';
+    function Probe() {
+      const h = useHints();
+      React.useEffect(() => {
+        h.recordSessionEvent('queryRun', ranKey);
+      }, [h]);
+      const runExecute = useFeatureHint(
+        'run.execute',
+        h.getSessionEventCount('queryRun', editedKey) === 0,
+      );
+      const secondary = useFeatureHint('tabs.pin', true);
+      return (
+        <div>
+          <span data-testid="run">{runExecute.visible ? 'visible' : 'hidden'}</span>
+          <span data-testid="secondary">{secondary.visible ? 'visible' : 'hidden'}</span>
+        </div>
+      );
+    }
+    render(
+      withTheme(
+        <HintsProvider>
+          <Probe />
+        </HintsProvider>,
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByTestId('run').textContent).toBe('visible');
+    expect(screen.getByTestId('secondary').textContent).toBe('hidden');
   });
 
   it('a dismissed hint stays hidden even when the trigger is true', async () => {

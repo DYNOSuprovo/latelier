@@ -2,6 +2,7 @@ import React from 'react';
 import { themeVars } from '../../../theme/themeVars';
 import { I } from '../../../icons';
 import { Button, Group, Modal, Tooltip } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { api, getErrorMessage, isIpcError } from '../../../api/atelier';
 import { notify } from '../../../theme/notifications';
 import type {
@@ -18,6 +19,7 @@ import {
   duplicateStage,
   moveStage,
   removeStage as removeStageOp,
+  restoreStage,
   setBody as setBodyOp,
   setOp as setOpOp,
   stageSig,
@@ -96,6 +98,24 @@ export function AggregationTab({
     if (!state.dirty) onPatch({ dirty: true });
   }, [state.dirty, onPatch]);
 
+  // docs/adr/0013 — removing a stage is local editor state, not a
+  // server-side delete: no confirm, just an Undo toast. Refs so the toast's
+  // action (clicked seconds later) reads the pipeline as it is then, not as
+  // it was at delete time.
+  const stagesRef = useLatest(stages);
+  const onPatchRef = useLatest(onPatch);
+  const markDirtyRef = useLatest(markDirty);
+  // The one outstanding undo toast for this tab, single-level: a second
+  // delete reuses the id so it replaces the first toast's Undo target
+  // instead of stacking a second one.
+  const undoToastIdRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (undoToastIdRef.current) notifications.hide(undoToastIdRef.current);
+    };
+  }, []);
+
   // ── Pipeline ops ─────────────────────────────────────────────────────
 
   const onAddStage = (op: StageOp | string, afterIndex?: number) => {
@@ -105,9 +125,28 @@ export function AggregationTab({
   };
 
   const onRemoveStage = (id: number) => {
+    const index = stages.findIndex((s) => s.id === id);
+    const removedStage = stages[index];
     const next = removeStageOp({ stages, activeStageId: state.activeStageId }, id);
     onPatch({ stages: next.stages, activeStageId: next.activeStageId });
     markDirty();
+    if (!removedStage) return;
+    undoToastIdRef.current = notify.info(`Removed stage ${index + 1} (${removedStage.op})`, {
+      id: undoToastIdRef.current ?? undefined,
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          const restored = restoreStage(
+            { stages: stagesRef.current, activeStageId: null },
+            removedStage,
+            index,
+          );
+          onPatchRef.current({ stages: restored.stages, activeStageId: restored.activeStageId });
+          markDirtyRef.current();
+          undoToastIdRef.current = null;
+        },
+      },
+    });
   };
 
   const onDuplicateStage = (id: number) => {

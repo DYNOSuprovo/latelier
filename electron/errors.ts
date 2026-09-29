@@ -16,6 +16,11 @@ export type AppErrorCode =
   | 'SECRETS_UNAVAILABLE'
   | 'SECRET_DECRYPT_FAILED'
   | 'READ_ONLY'
+  // Audit Log Undo refusals (X13 §6).
+  | 'AUDIT_NOT_REVERSIBLE'
+  | 'AUDIT_UNDO_EXPIRED'
+  | 'AUDIT_ALREADY_UNDONE'
+  | 'AUDIT_TARGET_CHANGED'
   | 'INTERNAL';
 
 export class AppError extends Error {

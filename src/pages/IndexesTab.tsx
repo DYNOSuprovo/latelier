@@ -19,22 +19,25 @@ import { confirmDestructive } from '../utils/confirm';
 import { DisclosureToggle } from '../components/DisclosureToggle';
 import { SubmitButton } from '../components/SubmitButton';
 import { useDialogFocusReturn } from '../hooks/useDialogFocusReturn';
-import { ownGet } from '../utils/ownProperty';
-import type { CollectionInfo, DbInfo } from '@shared/ipc';
 import type {
-  ConnectionRuntime,
-  ConnectionSummary,
   IndexCreateInput,
   IndexFieldDirection,
   IndexInfo,
 } from '@shared/types';
+import type { IndexSuggestion } from '../utils/indexSuggestion';
 
-interface Target {
-  dbName: string;
-  collection: string;
+/**
+ * A one-shot request from `ExplainDrawer`'s "Create an index for this
+ * query" (W16 Tier 4) to open the create-index drawer prefilled.
+ * `requestId` changes on every click, even when `suggestion` doesn't
+ * (two COLLSCAN refusals in a row are both `null`) — `IndexesTab`'s effect
+ * keys on it so a second click reopens the drawer instead of being a no-op
+ * against an unchanged prop.
+ */
+export interface IndexCreateRequest {
+  requestId: string;
+  suggestion: IndexSuggestion | null;
 }
-
-const LAST_TARGET_KEY = 'ui.indexes.lastTarget';
 
 function humanBytes(n: number): string {
   if (!Number.isFinite(n) || n === 0) return '0 B';
@@ -109,92 +112,64 @@ function IndexBadge({ label, tone }: { label: string; tone?: 'accent' | 'warn' }
 }
 
 export function IndexesTab({
-  conn,
-  runtime,
+  connectionId,
+  dbName,
+  collection,
+  initialCreate,
+  onInitialCreateConsumed,
 }: {
-  conn: ConnectionSummary;
-  runtime: ConnectionRuntime;
+  connectionId: string;
+  dbName: string;
+  collection: string;
+  /** See `IndexCreateRequest`. Omitted (or `null`) outside the ExplainDrawer flow. */
+  initialCreate?: IndexCreateRequest | null;
+  /**
+   * Called once the request above has opened the drawer, so the caller can
+   * null it out. Without this, navigating away from Structure and back
+   * (which unmounts and remounts this component — see `PanelBody`'s
+   * `collection.view === 'structure' &&` guard) would find the same
+   * `initialCreate` still set and reopen the drawer on a click from months
+   * ago. Omitted for the same reason `initialCreate` can be omitted.
+   */
+  onInitialCreateConsumed?: () => void;
 }) {
   const T = themeVars;
-  const [dbs, setDbs] = React.useState<DbInfo[] | null>(null);
-  const [collsByDb, setCollsByDb] = React.useState<Record<string, CollectionInfo[]>>({});
-  const [target, setTarget] = React.useState<Target | null>(null);
+  const target = React.useMemo(() => ({ dbName, collection }), [dbName, collection]);
   const [indexes, setIndexes] = React.useState<IndexInfo[] | null>(null);
   const [loadingIndexes, setLoadingIndexes] = React.useState(false);
   const [indexError, setIndexError] = React.useState<{ message: string; code?: string } | null>(
     null,
   );
-  const [dbError, setDbError] = React.useState<string | null>(null);
-  const [showSystem, setShowSystem] = React.useState(false);
   const [expandedRow, setExpandedRow] = React.useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [createPrefill, setCreatePrefill] = React.useState<IndexSuggestion | null>(null);
+  // Only set for the `initialCreate` open path — see that effect below for
+  // why the drawer's own default focus-return capture can't be trusted
+  // there. `null` for the plain "+ New index" click: `document.activeElement`
+  // at that mount is the button itself, which is exactly right already.
+  const [createReturnFocusTo, setCreateReturnFocusTo] = React.useState<HTMLElement | null>(null);
   const [dropName, setDropName] = React.useState<string | null>(null);
   // Captured alongside `dropName`, in the same click handler that sets it —
   // reading a ref's `.current` has to happen in an event handler or effect,
   // never during render (`react-hooks/refs`), so this can't be
   // `scrollRegionRef.current` inline in the JSX below.
   const [dropReturnFocus, setDropReturnFocus] = React.useState<HTMLElement | null>(null);
-  const initialPickRef = React.useRef(false);
-  // #74's focus-return target for a successful drop: the row is gone by then,
-  // but this scroll region is mounted for the tab's whole lifetime. Not the
-  // "Refresh" button, the obvious-looking alternative — it's `disabled={!target
-  // || loadingIndexes}`, and the success path kicks off a reload, so it is
-  // disabled at the exact moment focus would land there. A disabled focused
-  // button drops focus to <body> itself — the #55/#70 defect documented at
-  // ColumnChooser.tsx:78-82 — which is the bug this exists to fix.
+  // Focus-return target for a successful drop: the row is gone by then, but
+  // this scroll region is mounted for the tab's whole lifetime. Not the
+  // "Refresh" button, the obvious-looking alternative — it's `disabled={loadingIndexes}`,
+  // and the success path kicks off a reload, so it is disabled at the exact
+  // moment focus would land there. A disabled focused button drops focus to
+  // <body> itself — the same disabled-button focus loss documented at
+  // FieldsControl.tsx:84-91 — which is the bug this exists to fix.
   const scrollRegionRef = React.useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
-    void api.prefs
-      .get<boolean>('ui.showSystemDbs')
-      .then((v) => v !== null && setShowSystem(v))
-      .catch(() => { /* non-fatal */ });
-  }, []);
-
-  React.useEffect(() => {
-    void api.prefs
-      .get<Target>(LAST_TARGET_KEY)
-      .then((v) => v && setTarget(v))
-      .catch(() => { /* non-fatal */ });
-  }, []);
-
-  const loadDatabases = React.useCallback(async () => {
-    if (runtime.status !== 'connected') return;
-    try {
-      const rows = await api.meta.listDatabases({
-        connectionId: conn.id,
-        includeSystem: showSystem,
-      });
-      setDbs(rows);
-      setDbError(null);
-    } catch (err) {
-      setDbError(isIpcError(err) ? err.message : String(err));
-    }
-  }, [conn.id, runtime.status, showSystem]);
-
-  const loadCollections = React.useCallback(
-    async (dbName: string) => {
-      const cached = ownGet(collsByDb, dbName);
-      if (cached) return cached;
-      try {
-        const rows = await api.meta.listCollections({ connectionId: conn.id, dbName });
-        setCollsByDb((c) => ({ ...c, [dbName]: rows }));
-        return rows;
-      } catch {
-        setCollsByDb((c) => ({ ...c, [dbName]: [] }));
-        return [];
-      }
-    },
-    [conn.id, collsByDb],
-  );
-
   const loadIndexes = React.useCallback(
-    async (t: Target) => {
+    async (t: { dbName: string; collection: string }) => {
       setLoadingIndexes(true);
       setIndexError(null);
       try {
         const rows = await api.index.list({
-          connectionId: conn.id,
+          connectionId,
           dbName: t.dbName,
           collection: t.collection,
         });
@@ -210,86 +185,55 @@ export function IndexesTab({
         setLoadingIndexes(false);
       }
     },
-    [conn.id],
+    [connectionId],
   );
 
   /* eslint-disable react-hooks/set-state-in-effect */
   React.useEffect(() => {
-    void loadDatabases();
-  }, [loadDatabases]);
-
-  React.useEffect(() => {
-    if (!target) return;
-    void loadCollections(target.dbName);
     void loadIndexes(target);
     setExpandedRow(null);
-  }, [target, loadCollections, loadIndexes]);
-
-  React.useEffect(() => {
-    if (initialPickRef.current) return;
-    if (!dbs || dbs.length === 0) return;
-    if (target) {
-      initialPickRef.current = true;
-      return;
-    }
-    initialPickRef.current = true;
-    const firstDb = dbs[0]!.name;
-    void loadCollections(firstDb).then((rows) => {
-      const first = rows.find((c) => c.type !== 'view');
-      if (first) {
-        const next = { dbName: firstDb, collection: first.name };
-        setTarget(next);
-        void api.prefs.set(LAST_TARGET_KEY, next).catch(() => { /* ok */ });
-      }
-    });
-  }, [dbs, target, loadCollections]);
+  }, [target, loadIndexes]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const onPickDb = async (dbName: string) => {
-    const rows = await loadCollections(dbName);
-    const first = rows.find((c) => c.type !== 'view');
-    if (!first) {
-      setTarget({ dbName, collection: '' });
-      return;
-    }
-    const next = { dbName, collection: first.name };
-    setTarget(next);
-    void api.prefs.set(LAST_TARGET_KEY, next).catch(() => { /* ok */ });
-  };
+  // Opens the create-index drawer prefilled from ExplainDrawer's "Create an
+  // index for this query" (W16 Tier 4). `onInitialCreateConsumed` nulls the
+  // request at its source right away — see that prop's own doc comment for
+  // why a remount must not find it still set.
+  //
+  // `useDialogFocusReturn`'s default capture (`document.activeElement` at
+  // `CreateIndexDrawer`'s own first render) is wrong here and `returnFocusTo`
+  // has to override it: the click that led here was on a button inside
+  // `ExplainDrawer`, in the Documents view, which the Structure-view switch
+  // this same click triggers then unmounts. The previously-focused trigger
+  // is gone from the DOM by the time this drawer mounts, so the browser has
+  // already reset focus to `<body>` — capturing that gives Escape/Cancel a
+  // `trigger.focus()` that's a silent no-op instead of a real return target.
+  // `scrollRegionRef` is mounted for this tab's whole lifetime, same
+  // fallback `DropConfirmDialog`'s `returnFocusTo` uses below for the
+  // equivalent "the opener won't exist when this closes" case.
+  // Deliberately keyed on `requestId` alone, not the whole `initialCreate`
+  // object: two refused clicks in a row both carry `suggestion: null`, and
+  // keying on the object would rely on the caller giving each click a new
+  // object identity rather than on anything this effect actually checks.
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  React.useEffect(() => {
+    if (!initialCreate) return;
+    setCreatePrefill(initialCreate.suggestion);
+    setCreateReturnFocusTo(scrollRegionRef.current);
+    setDrawerOpen(true);
+    onInitialCreateConsumed?.();
+  }, [initialCreate?.requestId, onInitialCreateConsumed]);
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
-  const onPickCollection = (collection: string) => {
-    if (!target) return;
-    const next = { dbName: target.dbName, collection };
-    setTarget(next);
-    void api.prefs.set(LAST_TARGET_KEY, next).catch(() => { /* ok */ });
-  };
-
-  if (runtime.status !== 'connected') {
-    return (
-      <div style={{ padding: 32, textAlign: 'center', color: T.textMuted }}>
-        Not connected. Open the Overview tab to connect.
-      </div>
-    );
-  }
-
-  if (dbError) {
-    return (
-      <div style={{ padding: 20, color: T.warn }}>
-        {dbError}
-        <button
-          onClick={() => void loadDatabases()}
-          style={{ marginLeft: 8, background: 'none', border: 'none', color: T.accent, cursor: 'pointer' }}
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  const colls = target ? ownGet(collsByDb, target.dbName) ?? [] : [];
-
+  // `flex: 'none'` + `overflow: 'visible'`, not the `flex: 1; overflow:
+  // hidden` this used before it moved into the collection tab's Structure
+  // view (W16 Tier 2, ADR 0003): that assumed a flex parent with a definite
+  // height to fill and its own internal scroller. `StructureView` is a
+  // plain scrolling block instead — one scroller for the whole pane — so
+  // this lays out at its natural content height and lets the page provide
+  // the only scrollbar.
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+    <div style={{ flex: 'none', display: 'flex', flexDirection: 'column', overflow: 'visible', position: 'relative' }}>
       <div
         style={{
           display: 'flex',
@@ -300,63 +244,16 @@ export function IndexesTab({
           background: T.surface,
         }}
       >
-        <select
-          aria-label="Database"
-          value={target?.dbName ?? ''}
-          onChange={(e) => void onPickDb(e.target.value)}
-          style={{
-            border: `1px solid ${T.border}`,
-            borderRadius: T.rs,
-            background: T.surfaceRaised,
-            padding: '4px 8px',
-            fontSize: 12,
-            color: T.text,
-          }}
-        >
-          <option value="" disabled>
-            Database…
-          </option>
-          {dbs?.map((d) => (
-            <option key={d.name} value={d.name}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-
-        <select
-          aria-label="Collection"
-          value={target?.collection ?? ''}
-          onChange={(e) => onPickCollection(e.target.value)}
-          disabled={!target || colls.length === 0}
-          style={{
-            border: `1px solid ${T.border}`,
-            borderRadius: T.rs,
-            background: T.surfaceRaised,
-            padding: '4px 8px',
-            fontSize: 12,
-            color: T.text,
-            minWidth: 160,
-          }}
-        >
-          <option value="" disabled>
-            Collection…
-          </option>
-          {colls
-            .filter((c) => c.type !== 'view')
-            .map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-        </select>
-
         <div style={{ flex: 1 }} />
 
         <Button
           size="compact-xs"
           variant="filled"
-          onClick={() => setDrawerOpen(true)}
-          disabled={!target || !target.collection}
+          onClick={() => {
+            setCreatePrefill(null);
+            setCreateReturnFocusTo(null);
+            setDrawerOpen(true);
+          }}
         >
           + New index
         </Button>
@@ -364,9 +261,9 @@ export function IndexesTab({
         <Button
           size="compact-xs"
           variant="subtle"
-          onClick={() => target && void loadIndexes(target)}
+          onClick={() => void loadIndexes(target)}
           leftSection={I.sync}
-          disabled={!target || loadingIndexes}
+          disabled={loadingIndexes}
         >
           Refresh
         </Button>
@@ -377,15 +274,9 @@ export function IndexesTab({
         tabIndex={-1}
         role="region"
         aria-label="Indexes"
-        style={{ flex: 1, overflowY: 'auto' }}
+        style={{ overflowY: 'visible' }}
       >
-        {!target && (
-          <div style={{ padding: 24, color: T.textMuted, fontSize: 13, textAlign: 'center' }}>
-            Pick a database and collection to inspect its indexes.
-          </div>
-        )}
-
-        {target && indexError && (
+        {indexError && (
           <Alert
             role="alert"
             color="orange"
@@ -412,23 +303,30 @@ export function IndexesTab({
           </Alert>
         )}
 
-        {target && !indexError && loadingIndexes && !indexes && (
+        {!indexError && loadingIndexes && !indexes && (
           <div style={{ padding: 20, color: T.textMuted, fontSize: 13 }}>Loading indexes…</div>
         )}
 
-        {target && drawerOpen && (
+        {drawerOpen && (
           <CreateIndexDrawer
             target={target}
-            onCancel={() => setDrawerOpen(false)}
+            onCancel={() => {
+              setDrawerOpen(false);
+              setCreatePrefill(null);
+            }}
             onCreated={() => {
               setDrawerOpen(false);
+              setCreatePrefill(null);
               void loadIndexes(target);
             }}
-            connectionId={conn.id}
+            connectionId={connectionId}
+            initialFields={createPrefill?.keys.map((k) => ({ field: k.field, direction: k.direction }))}
+            reason={createPrefill?.reason}
+            returnFocusTo={createReturnFocusTo}
           />
         )}
 
-        {target && dropName && (
+        {dropName && (
           <DropConfirmDialog
             indexName={dropName}
             onCancel={() => setDropName(null)}
@@ -437,13 +335,13 @@ export function IndexesTab({
               void loadIndexes(target);
             }}
             returnFocusTo={dropReturnFocus}
-            connectionId={conn.id}
+            connectionId={connectionId}
             dbName={target.dbName}
             collection={target.collection}
           />
         )}
 
-        {target && !indexError && indexes && (
+        {!indexError && indexes && (
           <Table
             striped
             highlightOnHover
@@ -647,15 +545,36 @@ function CreateIndexDrawer({
   connectionId,
   onCancel,
   onCreated,
+  initialFields,
+  reason,
+  returnFocusTo,
 }: {
   target: { dbName: string; collection: string };
   connectionId: string;
   onCancel: () => void;
   onCreated: () => void;
+  /** Prefill from `suggestIndex` (ExplainDrawer's "Create an index for this query"). Omitted for the plain "+ New index" open. */
+  initialFields?: FieldRow[];
+  /** The prefill's rationale line, shown above the fields when `initialFields` is set. */
+  reason?: string;
+  /**
+   * Overrides `useDialogFocusReturn`'s default capture. Required for the
+   * `initialFields` open path — see that effect's own comment in
+   * `IndexesTab` for why the default (`document.activeElement` at this
+   * component's own first render) is `<body>` there, not a useful target.
+   * `null` for the plain "+ New index" open, where the default capture is
+   * already correct.
+   */
+  returnFocusTo?: HTMLElement | null;
 }) {
   const T = themeVars;
-  const close = useDialogFocusReturn(onCancel);
-  const [fields, setFields] = React.useState<FieldRow[]>(DEFAULT_FIELDS);
+  const close = useDialogFocusReturn(onCancel, returnFocusTo);
+  // The baseline both the initial value and the dirty check compare
+  // against — a prefilled drawer that the user hasn't touched must not
+  // read as dirty, or closing it prompts "Discard changes?" over nothing.
+  const baselineFields =
+    initialFields && initialFields.length > 0 ? initialFields : DEFAULT_FIELDS;
+  const [fields, setFields] = React.useState<FieldRow[]>(baselineFields);
   const [name, setName] = React.useState('');
   const [unique, setUnique] = React.useState(false);
   const [sparse, setSparse] = React.useState(false);
@@ -669,7 +588,7 @@ function CreateIndexDrawer({
   const [error, setError] = React.useState<string | null>(null);
 
   const isDirty =
-    JSON.stringify(fields) !== JSON.stringify(DEFAULT_FIELDS) ||
+    JSON.stringify(fields) !== JSON.stringify(baselineFields) ||
     name !== '' ||
     unique ||
     sparse ||
@@ -776,6 +695,19 @@ function CreateIndexDrawer({
     >
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <Section title="Fields">
+          {initialFields && reason && (
+            <div
+              data-testid="create-index-reason"
+              style={{
+                fontSize: 11,
+                color: T.textMuted,
+                marginBottom: 8,
+                lineHeight: 1.4,
+              }}
+            >
+              {reason}
+            </div>
+          )}
           {fields.map((f, i) => (
             <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <input

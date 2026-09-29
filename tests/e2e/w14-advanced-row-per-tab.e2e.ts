@@ -17,12 +17,12 @@ test.afterAll(stopAllMemoryServers);
  * mount site, so after the first tab whether the row was open bore no relation
  * to whether the Focused Tab had advanced values set.
  *
- * One flow: two collection tabs, a projection on the second, switch away and
+ * One flow: two collection tabs, a sort on the second, switch away and
  * back. Asserts on the presence of the `#query-bar-advanced` region and its
- * projection input — not on the advanced grid's internal markup, which W13
+ * sort input — not on the advanced grid's internal markup, which W13
  * reshaped once and W14 reshaped again.
  */
-test('advanced row follows the Focused Tab: open where a projection is set, collapsed where none is', async () => {
+test('advanced row follows the Focused Tab: open where a sort is set, collapsed where none is', async () => {
   const { host, port } = await startMemoryServer();
 
   await withApp(async (app) => {
@@ -71,25 +71,24 @@ test('advanced row follows the Focused Tab: open where a projection is set, coll
       // wrong reason, and this spec would pass against the bug.
       await expect(ws.tabByName('orders')).toHaveCount(1);
 
-      // Set a projection on B: expand the row, type, commit on Enter.
+      // Set a sort on B: expand the row and type — sort patches on change.
       await expect(ws.queryBarAdvanced).toHaveCount(0);
       await ws.queryBarAdvancedToggle.click();
       await expect(ws.queryBarAdvanced).toBeVisible();
-      await ws.queryBarProjection.fill('{ name: 1 }');
-      await ws.queryBarProjection.press('Enter');
-      await expect(ws.queryBarProjection).toHaveValue('{ name: 1 }');
+      await ws.queryBarSort.fill('{"name":1}');
+      await expect(ws.queryBarSort).toHaveValue('{"name":1}');
 
       // Switch away to A — which has no advanced values. Pre-#296 the row
-      // stayed open here, showing B's projection over A's query.
+      // stayed open here, showing B's sort over A's query.
       await ws.tabByName('orders').click();
       await expect(ws.tabByName('orders')).toHaveAttribute('aria-selected', 'true');
       await expect(ws.queryBarAdvanced).toHaveCount(0);
 
-      // Switch back to B — the row re-opens with its projection intact.
+      // Switch back to B — the row re-opens with its sort intact.
       await ws.tabByName('customers').click();
       await expect(ws.tabByName('customers')).toHaveAttribute('aria-selected', 'true');
       await expect(ws.queryBarAdvanced).toBeVisible();
-      await expect(ws.queryBarProjection).toHaveValue('{ name: 1 }');
+      await expect(ws.queryBarSort).toHaveValue('{"name":1}');
     });
   });
 });

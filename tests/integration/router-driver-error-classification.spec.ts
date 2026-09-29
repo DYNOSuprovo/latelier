@@ -85,7 +85,7 @@ describe('a driver error reaches the renderer classified, not as INTERNAL', () =
       { handle: (channel: string, fn: Handler) => handlers.set(channel, fn) } as never,
       testSenderCheck,
     );
-    registerQueryChannels(router, svc);
+    registerQueryChannels(router, svc, async () => null);
   }, 60_000);
 
   afterAll(async () => {

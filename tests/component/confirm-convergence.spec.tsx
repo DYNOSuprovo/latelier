@@ -30,7 +30,13 @@ function summary(overrides: Partial<SavedQuerySummary> = {}): SavedQuerySummary 
 
 function renderSaved() {
   return render(
-    <SavedTab connectionId="c1" dbName="shop" collection="orders" onRunHere={() => {}} />,
+    <SavedTab
+      connectionId="c1"
+      dbName="shop"
+      collection="orders"
+      onRunHere={() => {}}
+      onOpenInTab={() => {}}
+    />,
   );
 }
 

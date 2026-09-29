@@ -64,7 +64,7 @@ test('panel splitters highlight on hover and stay lit through a drag', async () 
     await win.reload();
     await win.waitForLoadState('domcontentloaded');
 
-    const separator = win.getByRole('separator', { name: 'Resize builder pane' });
+    const separator = win.getByRole('separator', { name: 'Resize Query Builder' });
     await expect(separator).toBeVisible({ timeout: 15_000 });
 
     // Resolve `--atelier-accent` through a probe rather than hardcoding a hex:

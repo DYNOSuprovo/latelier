@@ -42,6 +42,10 @@ test('delete connection: confirm dialog removes item from list', async () => {
       const dialog = win.getByRole('dialog', { name: 'Delete "To Delete"?' });
       await expect(dialog).toBeVisible({ timeout: 3000 });
 
+      // docs/adr/0013 — deleting a connection is type-to-confirm: the
+      // Delete button stays disabled until the name is typed back.
+      await dialog.getByRole('textbox', { name: 'Confirm connection name' }).fill('To Delete');
+
       // Confirm delete — the "Delete" button is inside the dialog.
       await dialog.getByRole('button', { name: 'Delete' }).click();
 

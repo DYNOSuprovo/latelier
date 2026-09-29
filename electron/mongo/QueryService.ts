@@ -1,19 +1,59 @@
+import fs from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import type { Sort } from 'mongodb';
-import type { FindInput, FindResultWire, ExplainInput } from '@shared/types';
+import { EJSON } from 'bson';
+import type { FindInput, FindResultWire, ExplainInput, QueryExportInput, QueryExportResult } from '@shared/types';
 import { DEFAULT_MAX_EJSON_BYTES, ejsonEncode, ejsonEncodeArrayJson, parseEjsonDocument } from './ejson.ts';
 import { classifyMongoOpError } from './errors.ts';
+import { SystemError, ValidationError } from '../errors.ts';
 import type { MongoPool } from './MongoPool.ts';
+import type { Logger } from '../log.ts';
 import type { RecentQueryService } from '../services/RecentQueryService.ts';
-import { PROBE_TIMEOUT_MS, QUERY_TIMEOUT_MS } from './timeouts.ts';
+import { ADMIN_LONG_TIMEOUT_MS, PROBE_TIMEOUT_MS, QUERY_TIMEOUT_MS } from './timeouts.ts';
+// The main process has no `src/` precedent, but `exportFormat.ts` is a pure
+// module (no React/Mantine — verified: it imports only `bson`, `utils/ejson`
+// and `views/tableColumns`'s types/`getValueAtPath`), and duplicating its CSV
+// cell/escape/formula rules here would let the page export and this one
+// silently drift. Confirmed buildable under both `tsc -b` and the real
+// `vite build` main bundle before relying on it.
+import {
+  csvHeaderLine,
+  csvRowLine,
+  revive,
+  type ExportColumn,
+} from '../../src/pages/Workspace/exportFormat.ts';
+
+// Hard cap on `query:export` — one matching-all export can't stream an
+// unbounded collection to disk. A constructor default (not a bare module
+// constant) so a test can pass a small cap instead of seeding 100k documents.
+export const DEFAULT_EXPORT_CAP = 100_000;
+
+/**
+ * One JSON-array element's text, indented to match a whole-array
+ * `JSON.stringify(docs, null, 2)`: every element's own lines gain one
+ * `'  '` (2-space) prefix. Verified byte-identical to
+ * `exportFormat.ts`'s `serializeJsonArray` for the same documents — see
+ * `tests/integration/query-export.spec.ts`.
+ */
+function jsonArrayElementText(value: unknown): string {
+  return JSON.stringify(value, null, 2)
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
+}
 
 export class QueryService {
   private pool: MongoPool;
   private recent: RecentQueryService;
   private active = new Map<string, AbortController>();
+  private exportCap: number;
+  private log: Logger | undefined;
 
-  constructor(pool: MongoPool, recent: RecentQueryService) {
+  constructor(pool: MongoPool, recent: RecentQueryService, exportCap = DEFAULT_EXPORT_CAP, log?: Logger) {
     this.pool = pool;
     this.recent = recent;
+    this.exportCap = exportCap;
+    this.log = log;
   }
 
   // every EJSON string off the wire is parsed with `parseEjsonDocument`,
@@ -136,6 +176,149 @@ export class QueryService {
       // leak cursors across long-running sessions.
       await cursor.close().catch(() => {});
     }
+  }
+
+  /**
+   * Export every document matching `input`'s filter/sort/projection to
+   * `filePath`, up to this service's `exportCap`. Streams the find cursor
+   * straight to disk rather than materializing the whole result — the same
+   * reason `find` itself refuses to return more than 1000 documents.
+   *
+   * Every document is first canonicalized with `ejsonEncode(doc, false)` —
+   * the same wire shape `find`'s `documentsJson` sends the renderer — before
+   * handing it to `exportFormat.ts`'s own CSV/Relaxed helpers, so this
+   * output matches the page export byte-for-byte for the same documents.
+   *
+   * `input.limit` (the builder's own limit, already compiled by the
+   * renderer) is honoured when set, capped at `exportCap`; a limited export
+   * is never `truncated` since the cursor never asks for more than the
+   * limit. Otherwise the cursor asks for `exportCap + 1` and `truncated`
+   * means that extra document was actually there.
+   */
+  async exportToFile(input: QueryExportInput, filePath: string): Promise<QueryExportResult> {
+    if (input.format === 'csv' && !input.columns) {
+      throw new ValidationError('columns are required for a CSV export');
+    }
+    const columns = input.columns as ExportColumn[] | undefined;
+
+    const filter = parseEjsonDocument<Record<string, unknown>>(input.filter, 'filter');
+    const sort = input.sort ? parseEjsonDocument<Sort>(input.sort, 'sort') : undefined;
+    const projection = input.projection
+      ? parseEjsonDocument<Record<string, unknown>>(input.projection, 'projection')
+      : undefined;
+
+    const cap = this.exportCap;
+    // A user limit at or under the cap is the actual reason the export
+    // stops short — that is not truncation, it's what was asked for. A
+    // limit over the cap (or no limit at all) means the cap itself is the
+    // binding constraint, so the cursor asks for one extra document to
+    // learn whether the cap is what actually stopped the export (as
+    // opposed to simply running out of matches before reaching it).
+    const boundByCap = input.limit === undefined || input.limit > cap;
+    const cursorLimit = boundByCap ? cap + 1 : input.limit!;
+
+    const db = await this.pool.readDb(input.connectionId, input.dbName);
+    const coll = db.collection(input.collection);
+    const cursor = coll.find(filter, {
+      sort,
+      projection,
+      limit: cursorLimit,
+      maxTimeMS: ADMIN_LONG_TIMEOUT_MS,
+    });
+
+    // Disk failures (`fs.open`/`write`) are not Mongo driver errors, so they
+    // must not be relabelled `MONGO_ERROR` by `classifyMongoOpError` below.
+    // Wrapping them as a `SystemError` here means they're already an
+    // `AppError` by the time they reach that call, which passes an
+    // `AppError` through unchanged (mirrors `app.ts`'s `saveFile`, the only
+    // other place this app writes a user-chosen file path).
+    const fsError = (action: string, err: unknown) =>
+      new SystemError('INTERNAL', `failed to ${action} export file: ${(err as Error).message}`);
+
+    let handle: FileHandle | undefined;
+    // `'w'` truncates/creates on a successful `fs.open` — only from that
+    // point on does a failure risk leaving a *partial* file behind. If
+    // `fs.open` itself throws (e.g. a permission error), nothing was
+    // touched at `filePath`, so the catch below must not unlink it — that
+    // path might be a save-dialog target the user picked over an existing
+    // file that has nothing to do with this export.
+    let opened = false;
+    let written = 0;
+    let truncated = false;
+    let jsonArrayStarted = false;
+    const write = async (text: string): Promise<void> => {
+      try {
+        await handle!.write(text);
+      } catch (err) {
+        throw fsError('write', err);
+      }
+    };
+    try {
+      try {
+        handle = await fs.open(filePath, 'w');
+      } catch (err) {
+        throw fsError('open', err);
+      }
+      opened = true;
+      if (input.format === 'csv') {
+        await write(csvHeaderLine(columns!) + '\n');
+      }
+      for await (const doc of cursor) {
+        if (boundByCap && written >= cap) {
+          truncated = true;
+          break;
+        }
+        const wire = ejsonEncode(doc, false);
+        if (input.format === 'csv') {
+          await write(csvRowLine(wire, columns!) + '\n');
+        } else if (input.format === 'jsonl') {
+          const line = input.relaxed
+            ? (EJSON.stringify(revive(wire) as object, undefined, undefined, { relaxed: true }) as string)
+            : JSON.stringify(wire);
+          await write(line + '\n');
+        } else {
+          const plain = input.relaxed
+            ? EJSON.serialize(revive(wire) as object, { relaxed: true })
+            : wire;
+          const element = jsonArrayElementText(plain);
+          await write((jsonArrayStarted ? ',\n' : '[\n') + element);
+          jsonArrayStarted = true;
+        }
+        written++;
+      }
+      if (input.format === 'json') {
+        await write(jsonArrayStarted ? '\n]' : '[]');
+      }
+      // Closed here rather than in `finally`: a close that fails can mean the
+      // last writes never reached disk, which is a failed export, not a
+      // finished one — so it goes through the catch below like any write.
+      const finished = handle;
+      handle = undefined;
+      try {
+        await finished.close();
+      } catch (err) {
+        throw fsError('close', err);
+      }
+    } catch (err) {
+      // The export has already failed; a cleanup step failing too can't
+      // change that, but it is what leaves a partial file behind, so it is
+      // logged rather than dropped.
+      if (handle) {
+        await handle.close().catch((e: unknown) => this.logCleanup('closing the export file', e));
+      }
+      handle = undefined;
+      if (opened) {
+        await fs.unlink(filePath).catch((e: unknown) => this.logCleanup('removing the partial export file', e));
+      }
+      throw classifyMongoOpError(err);
+    } finally {
+      await cursor.close().catch((e: unknown) => this.logCleanup('closing the export cursor', e));
+    }
+    return { path: filePath, written, truncated };
+  }
+
+  private logCleanup(step: string, err: unknown): void {
+    this.log?.warn('query.export', `${step} failed`, { message: err instanceof Error ? err.message : String(err) });
   }
 
   cancel(token: string): void {

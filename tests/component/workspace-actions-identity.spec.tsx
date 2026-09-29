@@ -126,7 +126,7 @@ describe('workspaceActions provider-value identity', () => {
     const before = capturedActions.at(-1);
     expect(before).toBeDefined();
 
-    // Opening the Insert drawer flips local dialog state inside
+    // Opening the insert dialog flips local dialog state inside
     // `useDocumentDialogs`, forcing WorkspaceInner to re-render — a render
     // that touches none of `workspaceActions`' own dependencies.
     fireEvent.click(screen.getByRole('button', { name: 'Insert document' }));

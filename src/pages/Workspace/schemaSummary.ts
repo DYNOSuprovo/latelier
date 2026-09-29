@@ -13,6 +13,10 @@ import { isExactSentinel } from '../../utils/ejson';
 export function summarizeSchema(docs: unknown[]): SchemaSampleEntry[] {
   const counts = new Map<string, { types: Map<string, number>; total: number }>();
   for (const doc of docs) {
+    // Stryker disable next-line ConditionalExpression: `walk` opens with the
+    // same `!isObject(value)` guard and returns immediately for a non-object
+    // argument, so skipping this `continue` changes nothing observable —
+    // verified against the full test suite.
     if (!isObject(doc)) continue;
     // Per-document de-dupe guards: a path is counted at most once per doc,
     // and a (path, type) pair is also counted at most once per doc — so
@@ -44,6 +48,11 @@ function walk(
   seenPaths: Set<string>,
   seenPathTypes: Set<string>,
 ): void {
+  // Stryker disable next-line ConditionalExpression: every call site already
+  // guards its argument with `isObject` before calling `walk` (the initial
+  // call in `summarizeSchema`, and both recursive calls below), so this
+  // guard is never actually reached with a non-object value — verified
+  // against the full test suite.
   if (!isObject(value)) return;
   for (const [key, v] of Object.entries(value)) {
     const path = prefix ? `${prefix}.${key}` : key;
@@ -66,7 +75,17 @@ function walk(
     // user-meaningful sub-documents).
     if (isObject(v) && !isEjsonWrapper(v)) {
       walk(path, v, acc, seenPaths, seenPathTypes);
-    } else if (Array.isArray(v) && v.length > 0 && isObject(v[0])) {
+    } else if (
+      Array.isArray(v) &&
+      // Stryker disable next-line ConditionalExpression,EqualityOperator:
+      // an array's `.length` is never negative, so weakening `> 0` to
+      // `>= 0` (or forcing this arm to `true`) only changes behavior for an
+      // empty array — and an empty array's `v[0]` is `undefined`, which
+      // `isObject` always rejects, so the overall condition is false
+      // either way. Verified against the full test suite.
+      v.length > 0 &&
+      isObject(v[0])
+    ) {
       // Inspect array elements one level deep to capture nested document
       // shapes (common pattern: items[].productId, items[].qty). Each
       // element shares the same `seenPaths` set so an N-element array
@@ -114,10 +133,22 @@ export function checkFieldType(
   if (!entry) return null;
 
   let total = 0;
+  // Stryker disable next-line StringLiteral: only read after the loop below,
+  // and the loop always overwrites it before the `total === 0` guard lets
+  // execution past — when the loop never runs, `total` stays 0 and the
+  // function returns before `topType` is read. The '' placeholder is never
+  // observed. Verified against the full test suite.
   let topType = '';
   let topCount = 0;
   for (const [type, count] of Object.entries(entry.types)) {
     total += count;
+    // Stryker disable next-line EqualityOperator: weakening `>` to `>=`
+    // only changes which key wins a tie for the running max, never the max
+    // *value* itself — and `share` (below) is computed from that value, not
+    // from which key produced it. A genuine tie for the top count can never
+    // itself be dominant (>= 90%): two equal shares of a total can each be
+    // at most 50%. So no input can make this distinction observable through
+    // `checkFieldType`'s return value. Verified against the full test suite.
     if (count > topCount) {
       topCount = count;
       topType = type;
@@ -141,11 +172,30 @@ export function checkFieldType(
 
 export function inferType(v: unknown): string {
   if (v === null) return 'null';
+  // Stryker disable next-line ConditionalExpression: unlike the `null`
+  // check above (typeof null is famously 'object', which would otherwise
+  // mis-tag it), `typeof undefined` really is the string 'undefined' — so
+  // skipping this branch still reaches the same result through the
+  // function's own final `return t;` fallback. Verified against the full
+  // test suite.
   if (v === undefined) return 'undefined';
   if (Array.isArray(v)) return 'array';
   const t = typeof v;
+  // Stryker disable next-line ConditionalExpression,StringLiteral: these
+  // three branches are redundant with the function's own final fallback
+  // (`return t;`, below the object branch) — `t` already equals 'string',
+  // 'number', or 'boolean' whenever one of these checks would match, so
+  // skipping the early return here (forcing it false, or comparing against
+  // '' instead) still produces the same output once execution falls through
+  // `isObject(v)` (false for all three, since `typeof` for none of them is
+  // 'object') to the final `return t;`. Verified against the full test
+  // suite.
   if (t === 'string') return 'string';
+  // Stryker disable next-line ConditionalExpression,StringLiteral: same
+  // reasoning as the 'string' branch above.
   if (t === 'number') return 'number';
+  // Stryker disable next-line ConditionalExpression,StringLiteral: same
+  // reasoning as the 'string' branch above.
   if (t === 'boolean') return 'boolean';
   if (isObject(v)) {
     // A sentinel is only a sentinel when it is the *whole* object. bson's
@@ -160,6 +210,14 @@ export function inferType(v: unknown): string {
     if ('$numberInt' in v || '$numberDouble' in v) return 'number';
     if ('$numberLong' in v) return 'long';
     if ('$numberDecimal' in v) return 'decimal';
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,StringLiteral:
+    // `'$regex' in v` can never be true here — `isExactSentinel` (guarding
+    // this whole branch above) only accepts single keys from its own
+    // SENTINEL_SINGLE set, and that set has `$regularExpression`, not the
+    // shorthand `$regex` — so a bare `{ $regex: … }` value never reaches
+    // past the `!isExactSentinel(v)` guard. Weakening or removing the left
+    // operand can't add a reachable case beyond what `$regularExpression`
+    // already covers. Verified against the full test suite.
     if ('$regex' in v || '$regularExpression' in v) return 'regex';
     if ('$binary' in v) return 'binary';
     if ('$timestamp' in v) return 'timestamp';

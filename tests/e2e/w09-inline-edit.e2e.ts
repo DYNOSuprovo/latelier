@@ -12,11 +12,11 @@ import { expectConsoleClean, expectStatusDot } from './helpers/uiAsserts';
 test.afterAll(stopAllMemoryServers);
 
 /**
- * T2.6 — in-place cell editing in the Table view. Writes a single-field
- * `$set` directly via `api.doc.updateOne`, with no drawer involved — distinct
- * from W09/T0.3's EditDrawer "Update fields" mode, which goes through the
- * drawer's own textarea. Proves, end-to-end, that only the edited field
- * changes and every other field on the document survives untouched.
+ * T2.6 / W18 §8 — in-place cell editing in the Table view. Writes a
+ * single-field guarded `$set` (the Document Editor's own save path) via
+ * `api.doc.updateOne`, without opening the Document Editor. Proves, end to
+ * end, that only the edited field changes and every other field on the
+ * document survives untouched.
  */
 test('table inline edit: hover pencil -> edit one cell -> only that field changes', async () => {
   const { host, port } = await startMemoryServer();
@@ -60,7 +60,87 @@ test('table inline edit: hover pencil -> edit one cell -> only that field change
       await expect(win.getByText('shipped')).toBeVisible({ timeout: 8000 });
       // ...and the untouched fields survive: the load-bearing $set proof.
       await expect(win.getByText('multi-field')).toBeVisible();
-      await expect(win.getByText('5')).toBeVisible();
+      await expect(win.getByRole('gridcell', { name: /^5\b/ })).toBeVisible();
+    });
+  });
+});
+
+/**
+ * W18 §8 — a boolean cell shows an always-on toggle rather than the
+ * pencil-into-text-input flow: no separate "editing" state, no Enter/Escape
+ * — flipping the checkbox is the whole interaction, and it writes through
+ * the same guarded save path as the string case above.
+ */
+test('table inline edit: a boolean cell toggles and saves without opening an editor', async () => {
+  const { host, port } = await startMemoryServer();
+
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    await expectConsoleClean(win, async () => {
+      const conn = await seedActiveConnectionWithDocs(
+        win,
+        { ...baseConnInput(host, port), name: 'Boolean Inline Edit Target' },
+        {
+          dbName: 'shop',
+          collection: 'orders',
+          docs: [{ _id: 31, sku: 'flag-doc', active: true }],
+        },
+      );
+      await expectStatusDot(win, 'Boolean Inline Edit Target', 'connected');
+
+      const ws = new WorkspacePage(win);
+      await ws.openCollectionFromNavigator('shop', 'orders');
+
+      await ws.queryBarRunButton.click();
+      await expect(win.getByText('flag-doc')).toBeVisible({ timeout: 8000 });
+
+      await ws.viewTableButton.click();
+      const activeCell = win.getByTitle(/Drag to add "active/);
+      await expect(activeCell).toBeVisible({ timeout: 8000 });
+
+      // No pencil for a boolean cell — the toggle is always there.
+      await expect(activeCell.getByRole('button', { name: 'Edit cell value' })).toHaveCount(0);
+      const toggle = activeCell.getByRole('checkbox', { name: 'Edit active' });
+      await expect(toggle).toBeChecked();
+
+      await toggle.click();
+
+      // The toggle disables itself while the write is in flight (W18 §8's
+      // in-flight guard) and re-enables once the post-write re-run lands —
+      // not merely once the write itself settles, which would still be
+      // showing the optimistic value even on a failed save.
+      await expect(toggle).toBeEnabled({ timeout: 8000 });
+
+      // The load-bearing proof: the document actually persisted the flip,
+      // not just the optimistic checkbox state.
+      const doc = await win.evaluate(async (cid) => {
+        const api = (window as unknown as {
+          atelier: {
+            query: {
+              find: (i: {
+                connectionId: string;
+                dbName: string;
+                collection: string;
+                filter: string;
+                limit: number;
+                skip: number;
+              }) => Promise<{ documents: Array<{ active?: boolean }> }>;
+            };
+          };
+        }).atelier;
+        const res = await api.query.find({
+          connectionId: cid,
+          dbName: 'shop',
+          collection: 'orders',
+          filter: '{"_id":31}',
+          limit: 1,
+          skip: 0,
+        });
+        return res.documents[0];
+      }, conn.id);
+      expect(doc?.active).toBe(false);
     });
   });
 });

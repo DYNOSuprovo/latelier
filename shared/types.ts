@@ -164,7 +164,7 @@ export interface ParsedUri {
 // ─── Workspace tabs (W01) ───────────────────────────────────────────────────
 
 /** Sub-views shown inside a collection tab. */
-export type CollectionView = 'documents' | 'aggregation' | 'schema';
+export type CollectionView = 'documents' | 'aggregation' | 'structure';
 
 export type ResultViewMode = 'Tree' | 'JSON' | 'Table';
 export type BuilderTab = 'Builder' | 'Saved' | 'Recent';
@@ -188,8 +188,9 @@ export type ValType =
   | 'string' | 'number' | 'long' | 'decimal' | 'boolean' | 'date' | 'null' | 'regex' | 'objectid' | 'array';
 
 /**
- * Sort/limit/projection knobs, editable in exactly one place (the query bar's
- * advanced grid, W13 §7). `conditions`/`logic` retired by W13 — the
+ * Sort/limit/projection knobs, each editable in exactly one place: sort and
+ * limit in the query bar's advanced grid (W13 §7), projection in the Fields
+ * control (W14 §4). `conditions`/`logic` retired by W13 — the
  * filter is `CollectionTabState.queryRaw` / `SavedFindPayload.queryRaw` text,
  * not a compiled condition list. See `legacyBuilder.ts` for the pre-W13
  * shape this superseded.
@@ -246,6 +247,102 @@ export interface ExplainInput extends Omit<FindInput, 'limit' | 'skip' | 'cancel
 
 /** Verbosity union shared by find-explain and aggregation-explain callers. */
 export type ExplainVerbosity = ExplainInput['verbosity'];
+
+// ─── Export all matching (W03 / export-all) ──────────────────────────────────
+
+export interface QueryExportColumn {
+  header: string;
+  path: string;
+}
+
+export interface QueryExportInput {
+  connectionId: string;
+  dbName: string;
+  collection: string;
+  filter: string;
+  sort?: string;
+  projection?: string;
+  /** Builder's own `limit`, if set — capped server-side at the export hard cap. */
+  limit?: number;
+  format: 'json' | 'jsonl' | 'csv';
+  relaxed?: boolean;
+  /** Required when `format === 'csv'` — the Fields control's visible columns. */
+  columns?: QueryExportColumn[];
+  defaultName?: string;
+}
+
+export interface QueryExportResult {
+  path: string | null;
+  written: number;
+  truncated: boolean;
+}
+
+// ─── Import (JSON / JSONL / CSV into an existing collection) ────────────────
+
+export type ImportFormat = 'json' | 'jsonl' | 'csv';
+
+/** What a CSV column's cells become; `skip` leaves the column out of every document. */
+export type CsvColumnType = 'string' | 'number' | 'boolean' | 'date' | 'objectId' | 'skip';
+
+export interface CsvColumnMapping {
+  /** The file's header cell, checked against the file again at import. A dotted header nests. */
+  header: string;
+  type: CsvColumnType;
+  /** An empty cell stores `null`; otherwise it leaves the field out. */
+  emptyAsNull: boolean;
+}
+
+/** `data:previewCsv`: what the import dialog shows before a CSV import runs. */
+export interface CsvPreview {
+  /** Basename only. */
+  fileName: string;
+  headers: string[];
+  /** The first data rows, as parsed; a ragged row stays ragged. */
+  rows: string[][];
+  /** One per header: the type every non-empty cell in the file converts to. */
+  inferred: CsvColumnType[];
+}
+
+export interface DataImportInput {
+  connectionId: string;
+  dbName: string;
+  collection: string;
+  /** Absolute path the renderer got from `app.pickFile('data-import')`. */
+  path: string;
+  /** Renderer-generated UUID; lets `data:cancelImport` and progress events target this run. */
+  cancelToken?: string;
+  /** Required for a `.csv` file, refused for any other: one mapping per header, in file order. */
+  csv?: { columns: CsvColumnMapping[] };
+}
+
+export interface ImportReport {
+  /** Basename only — never the directory the file came from. */
+  fileName: string;
+  format: ImportFormat;
+  inserted: number;
+  failed: number;
+  /**
+   * The first failures. `at` is a 1-based line for JSONL, a 0-based array
+   * index for JSON, and a 1-based spreadsheet row for CSV (the header is row 1).
+   */
+  errors: { at: number; message: string }[];
+  /** More documents failed than `errors` lists. */
+  errorsTruncated: boolean;
+  /** Cancel was requested and the import stopped after its current batch. */
+  cancelled: boolean;
+  /** Present only when the import was recorded Reversible (≤10,000 landed), for Undo. */
+  auditId?: string;
+}
+
+/** Pushed once per batch while `data:import` runs. */
+export interface DataImportProgressEvent {
+  cancelToken: string;
+  processed: number;
+  inserted: number;
+  failed: number;
+  bytesRead: number;
+  totalBytes: number;
+}
 
 // ─── Result view types (W06) ─────────────────────────────────────────────────
 
@@ -406,12 +503,68 @@ export interface RecentQuery {
   errorCode?: string;
 }
 
-export interface PreviewFields {
+// ─── Audit log (X13) ─────────────────────────────────────────────────────────
+
+/** Mirrors the `audit_log.op` CHECK constraint (migration 012). */
+export type AuditOp =
+  | 'insertMany'
+  | 'updateOne'
+  | 'updateMany'
+  | 'deleteOne'
+  | 'deleteMany'
+  | 'collectionDrop'
+  | 'collectionRename'
+  | 'databaseDrop'
+  | 'import';
+
+export type AuditOutcome = 'ok' | 'error' | 'partial';
+
+/**
+ * What the audit modal renders — never a document body. `filter` is the EJSON
+ * text the Operation was sent; counts are absent when the Operation failed
+ * before the server reported them.
+ */
+export type AuditSummary =
+  | { op: 'insertMany'; insertedCount?: number }
+  | { op: 'updateOne' | 'updateMany'; filter: string; matchedCount?: number; modifiedCount?: number }
+  | { op: 'deleteOne' | 'deleteMany'; filter: string; deletedCount?: number }
+  | { op: 'collectionRename'; fromName: string; toName: string }
+  | { op: 'collectionDrop' | 'databaseDrop' }
+  /** `format` is absent when the import failed before its file was read. `cancelled` is absent unless true. */
+  | { op: 'import'; fileName: string; format?: ImportFormat; insertedCount?: number; failedCount?: number; cancelled?: boolean };
+
+export interface AuditEntry {
+  id: string;
   connectionId: string;
   dbName: string;
-  collection: string;
-  fields: string[];
-  updatedAt: string;
+  /** Null only for `databaseDrop`. */
+  collection: string | null;
+  op: AuditOp;
+  summary: AuditSummary;
+  outcome: AuditOutcome;
+  errorCode?: string;
+  ranAt: string;
+  durationMs: number;
+  /**
+   * Undo is still on offer: a Pre-image was captured, is still held, and has
+   * not been used. False once the entry is undone or its Pre-image is swept.
+   */
+  reversible: boolean;
+  undoneAt?: string;
+}
+
+export interface UndoResult {
+  restored: number;
+  skipped: number;
+}
+
+export interface AuditListInput {
+  connectionId: string;
+  dbName?: string;
+  collection?: string;
+  limit?: number;
+  /** `ranAt` cursor: only entries strictly older are returned. */
+  before?: string;
 }
 
 /**
@@ -713,11 +866,11 @@ export interface PersistedDrawerState {
 }
 
 export type FeatureHintId =
+  | 'run.execute'
   | 'refs.configure'
   | 'tabs.pin'
   | 'saved.create'
-  | 'palette.discover'
-  | 'preview.configure';
+  | 'palette.discover';
 
 export interface FeatureHintDismissalState {
   dismissedIds: FeatureHintId[];

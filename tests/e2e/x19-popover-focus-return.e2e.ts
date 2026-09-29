@@ -14,7 +14,7 @@ test.afterAll(stopAllMemoryServers);
 /**
  * #79 — a Popover that closes on a click landing on a non-focusable area
  * drops focus to `<body>` instead of returning it to the trigger. The
- * component suite (`column-chooser.spec.tsx`, `connection-switcher.spec.tsx`)
+ * component suite (`fields-control.spec.tsx`, `connection-switcher.spec.tsx`)
  * covers this with a synthetic `<div>` click, which jsdom + `userEvent`
  * reproduces faithfully for the *click-outside* detection. What only a real
  * window can answer is the timing: whether Chromium's own mousedown default
@@ -62,11 +62,11 @@ test('popover focus return: a click on a non-focusable area returns focus to the
       // and resetting the active row (PR #122's shard 4).
       await ws.viewTableButton.click();
 
-      // --- ColumnChooser: uncontrolled Popover, `returnFocus` fix. ---
-      const columnsTrigger = win.getByRole('button', { name: 'Columns', exact: true });
-      await expect(columnsTrigger).toBeVisible();
+      // --- FieldsControl: uncontrolled Popover, `returnFocus` fix. ---
+      const fieldsTrigger = win.getByRole('button', { name: 'Fields', exact: true });
+      await expect(fieldsTrigger).toBeVisible();
 
-      await columnsTrigger.click();
+      await fieldsTrigger.click();
       const moveDownButton = win.getByRole('button', { name: /^Move .* down$/ }).first();
       await expect(moveDownButton).toBeVisible();
       // Focus a control inside the dropdown first, so this proves the case
@@ -76,14 +76,14 @@ test('popover focus return: a click on a non-focusable area returns focus to the
 
       const plainPoint1 = await findNonFocusablePoint(win);
       await win.mouse.click(plainPoint1.x, plainPoint1.y);
-      await expect(columnsTrigger).toBeFocused({ timeout: 5000 });
+      await expect(fieldsTrigger).toBeFocused({ timeout: 5000 });
 
       // Guard: clicking another control instead keeps focus there, rather
       // than the fix unconditionally yanking it back to the trigger. Uses
       // the navigator's Refresh button — a real `<button>`, unlike the
       // Table/Tree/JSON switch, whose visible label sits over an sr-only
       // radio input and so never itself becomes `document.activeElement`.
-      await columnsTrigger.click();
+      await fieldsTrigger.click();
       await expect(win.getByRole('button', { name: /^Move .* down$/ }).first()).toBeVisible();
       await ws.navigatorRefreshButton.click();
       await expect(ws.navigatorRefreshButton).toBeFocused({ timeout: 5000 });
@@ -105,8 +105,8 @@ test('popover focus return: a click on a non-focusable area returns focus to the
       // Guard: clicking another control instead keeps focus there.
       await switcher.trigger.click();
       await expect(switcher.searchInput).toBeFocused({ timeout: 5000 });
-      await columnsTrigger.click();
-      await expect(columnsTrigger).toBeFocused({ timeout: 5000 });
+      await fieldsTrigger.click();
+      await expect(fieldsTrigger).toBeFocused({ timeout: 5000 });
     });
   });
 });

@@ -359,8 +359,15 @@ describe('useRovingFocus', () => {
       expect(scrollToIndex).toHaveBeenCalledTimes(4); // 1 sync + 3 re-scrolls
       expect(queue.pending()).toBe(1); // next frame's check still scheduled
 
-      // Now the row lands fully in view — the very next check must stop.
+      // Now the row lands fully in view. The next check sees it visible but
+      // has nothing to compare it against yet (the prior frames all read
+      // "unmounted"), so it confirms rather than stopping outright.
       mountRow('row-4', { top: 10, bottom: 30 }, { top: 0, bottom: 100 });
+      act(() => queue.flush());
+      expect(scrollToIndex).toHaveBeenCalledTimes(4); // still no extra re-scroll — visible, just not yet confirmed
+      expect(queue.pending()).toBe(1); // one more confirmation frame scheduled
+
+      // Same rect again next frame — visible twice running — settles.
       act(() => queue.flush());
       expect(scrollToIndex).toHaveBeenCalledTimes(4); // no extra re-scroll
       expect(queue.pending()).toBe(0); // and nothing left scheduled
@@ -391,8 +398,128 @@ describe('useRovingFocus', () => {
       expect(scrollToIndex).toHaveBeenCalledTimes(1); // the synchronous call
 
       act(() => queue.flush());
-      expect(scrollToIndex).toHaveBeenCalledTimes(1); // frame 1 sees it settled — no more
+      expect(scrollToIndex).toHaveBeenCalledTimes(1); // frame 1: visible, but unconfirmed — no re-scroll either way
+      expect(queue.pending()).toBe(1);
+
+      // Rect unchanged on the confirmation frame — settles without ever
+      // having re-scrolled.
+      act(() => queue.flush());
+      expect(scrollToIndex).toHaveBeenCalledTimes(1);
       expect(queue.pending()).toBe(0);
+    });
+
+    // The pinned case: the first landing looks visible on estimated row
+    // heights, but the estimate then changes underneath it (react-window's
+    // `ResizeObserver` fires with a real measurement) and the row is no
+    // longer visible. A stop condition that only checks "visible" declares
+    // victory on frame 1 and never notices; requiring two identical
+    // consecutive readings catches it.
+    it('re-scrolls when a landing that looked visible turns out to be a stale estimate', () => {
+      const scrollToIndex = vi.fn();
+      const { result } = renderHook(() =>
+        useRovingFocus({ count: 5, idPrefix: 'row-', scrollToIndex }),
+      );
+      mountRow('row-4', { top: 10, bottom: 30 }, { top: 0, bottom: 100 });
+
+      act(() => result.current.onKeyDown(keyEvent('End')));
+      expect(scrollToIndex).toHaveBeenCalledTimes(1); // synchronous call, visible on the stale estimate
+
+      // Before the confirmation frame, the real measurement lands and moves
+      // the row off-screen — same element, new geometry.
+      const row = document.getElementById('row-4')!;
+      const stubRect = (rect: Partial<DOMRect>) =>
+        vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: 0,
+          toJSON() {
+            return this;
+          },
+          ...rect,
+        } as DOMRect);
+      stubRect({ top: 110, bottom: 130 });
+
+      act(() => queue.flush());
+      expect(scrollToIndex).toHaveBeenCalledTimes(2); // caught the stale reading — re-scrolled
+      expect(queue.pending()).toBe(1);
+
+      // The real measurement holds still for two frames running now — settles.
+      stubRect({ top: 70, bottom: 90 });
+      act(() => queue.flush());
+      expect(queue.pending()).toBe(1); // frame 1 of the real landing — unconfirmed yet
+      act(() => queue.flush());
+      expect(scrollToIndex).toHaveBeenCalledTimes(2); // no further re-scroll — it was already visible
+      expect(queue.pending()).toBe(0);
+    });
+
+    it('does not settle while the row stays visible but its top keeps drifting', () => {
+      const scrollToIndex = vi.fn();
+      const { result } = renderHook(() =>
+        useRovingFocus({ count: 5, idPrefix: 'row-', scrollToIndex }),
+      );
+      mountRow('row-4', { top: 10, bottom: 30 }, { top: 0, bottom: 100 });
+      act(() => result.current.onKeyDown(keyEvent('End')));
+
+      // Baseline frame: establishes lastRect = {10, 30} without which
+      // `sameRect`'s `b !== null` check alone would explain the next
+      // frame's "not settled" reading — the top comparison would never run.
+      act(() => queue.flush());
+      expect(queue.pending()).toBe(1);
+
+      const row = document.getElementById('row-4')!;
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        top: 12,
+        bottom: 30, // unchanged — isolates the `top` half of sameRect
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: 0,
+        toJSON() {
+          return this;
+        },
+      } as DOMRect);
+
+      act(() => queue.flush());
+      expect(queue.pending()).toBe(1); // still visible, but top moved from the baseline — not confirmed
+    });
+
+    it('does not settle while the row stays visible but its bottom keeps drifting', () => {
+      const scrollToIndex = vi.fn();
+      const { result } = renderHook(() =>
+        useRovingFocus({ count: 5, idPrefix: 'row-', scrollToIndex }),
+      );
+      mountRow('row-4', { top: 10, bottom: 30 }, { top: 0, bottom: 100 });
+      act(() => result.current.onKeyDown(keyEvent('End')));
+
+      // Baseline frame: establishes lastRect = {10, 30} — see the top-drift
+      // test above for why this is required to isolate the bottom check.
+      act(() => queue.flush());
+      expect(queue.pending()).toBe(1);
+
+      const row = document.getElementById('row-4')!;
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        top: 10,
+        bottom: 32,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: 0,
+        toJSON() {
+          return this;
+        },
+      } as DOMRect);
+
+      act(() => queue.flush());
+      expect(queue.pending()).toBe(1); // still visible, but bottom moved from the baseline — not confirmed
     });
 
     it('treats a missing row element as not settled and keeps re-scrolling', () => {

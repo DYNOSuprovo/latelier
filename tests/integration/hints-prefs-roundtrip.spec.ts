@@ -5,8 +5,6 @@ import { createRouter } from '../../electron/ipc/router';
 import { registerPrefsChannels } from '../../electron/ipc/handlers/prefs';
 import { AppStateRepo } from '../../electron/db/repositories/AppStateRepo';
 import { AppStateService } from '../../electron/services/AppStateService';
-import { PreviewFieldsRepo } from '../../electron/db/repositories/PreviewFieldsRepo';
-import { PreviewFieldsService } from '../../electron/services/PreviewFieldsService';
 import { createTempDb, type TempDb } from '../helpers/db';
 import type { FeatureHintDismissalState } from '../../shared/types';
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
@@ -41,12 +39,7 @@ describe('hints prefs round-trip', () => {
     const wc = { send: vi.fn(), isDestroyed: () => false };
     const shim = ipcShim();
     const router = createRouter(shim.ipcMain, testSenderCheck);
-    registerPrefsChannels(
-      router,
-      service,
-      () => wc as never,
-      new PreviewFieldsService(new PreviewFieldsRepo(tmp.db)),
-    );
+    registerPrefsChannels(router, service, () => wc as never);
     return { service, shim };
   }
 

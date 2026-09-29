@@ -20,6 +20,7 @@ import {
 } from '../../components/ContextMenu';
 import { CreateCollectionDrawer } from './CreateCollectionDrawer';
 import { RenameCollectionModal } from './RenameCollectionModal';
+import { ImportDialog } from './ImportDialog';
 import { DropCollectionConfirm } from './DropCollectionConfirm';
 import { DropDatabaseConfirm } from './DropDatabaseConfirm';
 import { useNavigatorDialogs } from './useNavigatorDialogs';
@@ -64,6 +65,13 @@ export interface DbCollectionNavigatorProps {
     oldName: string,
     newName: string,
   ) => void;
+  /**
+   * Opens the reference-rules drawer for the Focused Tab's collection. Scoped
+   * to the active row: the drawer reads its rules off the currently open
+   * collection tab, not off whichever row the menu was opened from, so the
+   * "References…" item is disabled on any other row.
+   */
+  onOpenReferences?: () => void;
 }
 
 type TreeRow =
@@ -190,6 +198,7 @@ export function DbCollectionNavigator({
   onCollectionDropped,
   onDatabaseDropped,
   onCollectionRenamed,
+  onOpenReferences,
 }: DbCollectionNavigatorProps) {
   const T = themeVars;
   const { state: tree, dispatch } = useNavigatorTree();
@@ -475,12 +484,14 @@ export function DbCollectionNavigator({
     renameTarget,
     dropCollTarget,
     dropDbTarget,
+    importTarget,
     menuTrigger,
     setMenu,
     setCreateCollDb,
     setRenameTarget,
     setDropCollTarget,
     setDropDbTarget,
+    setImportTarget,
     setMenuTrigger,
     closeMenu,
     cancelCreateColl,
@@ -491,6 +502,8 @@ export function DbCollectionNavigator({
     handleCollectionDropped,
     cancelDropDb,
     handleDatabaseDropped,
+    closeImport,
+    handleImported,
   } = useNavigatorDialogs({
     refreshDb,
     refreshAll,
@@ -857,6 +870,29 @@ export function DbCollectionNavigator({
     { kind: 'item', label: 'Copy name', icon: I.copy, onClick: () => void copyToClipboard(row.coll.name, 'Collection name copied to the clipboard.') },
     { kind: 'item', label: 'Copy namespace', icon: I.copy, onClick: () => void copyToClipboard(`${row.dbName}.${row.coll.name}`, 'Namespace copied to the clipboard.') },
     { kind: 'sep' },
+    {
+      kind: 'item',
+      label: 'References…',
+      icon: I.link,
+      onClick: () => onOpenReferences?.(),
+      disabled: !row.isActive || !onOpenReferences,
+      disabledTitle: 'Open this collection first',
+    },
+    { kind: 'sep' },
+    // A view holds no documents of its own to import into.
+    ...(row.coll.type === 'view'
+      ? []
+      : [{
+          kind: 'item' as const,
+          label: 'Import documents…',
+          icon: I.upload,
+          onClick: () =>
+            setImportTarget({
+              connectionId: row.connectionId,
+              dbName: row.dbName,
+              collection: row.coll.name,
+            }),
+        }]),
     row.coll.type === 'view'
       ? {
           kind: 'item',
@@ -889,7 +925,7 @@ export function DbCollectionNavigator({
         }),
       destructive: true,
     },
-  ], [openFromRow, setRenameTarget, setDropCollTarget]);
+  ], [openFromRow, setRenameTarget, setDropCollTarget, setImportTarget, onOpenReferences]);
 
   const buildDbMenu = React.useCallback((row: Extract<TreeRow, { kind: 'db' }>): MenuItem[] => [
     {
@@ -1231,6 +1267,18 @@ export function DbCollectionNavigator({
           returnFocusTo={menuTrigger}
           onCancel={cancelDropColl}
           onDropped={handleCollectionDropped}
+        />
+      )}
+
+      {importTarget && (
+        <ImportDialog
+          connectionId={importTarget.connectionId}
+          dbName={importTarget.dbName}
+          collection={importTarget.collection}
+          readOnly={readOnlyOf(importTarget.connectionId)}
+          returnFocusTo={menuTrigger}
+          onClose={closeImport}
+          onImported={handleImported}
         />
       )}
 
@@ -1872,6 +1920,11 @@ function CollRow({
       aria-level={3}
       aria-selected={isActive}
       data-testid={`nav-coll-${row.dbName}-${coll.name}`}
+      // `refs.configure`'s anchor moved here from the header's now-removed
+      // References button: the row for the Focused Tab's own collection is
+      // the closest persistently-mounted stand-in for "where References now
+      // lives" (the context menu item itself only exists while open).
+      {...(isActive ? { 'data-hint-anchor': 'refs.configure' } : {})}
       // #58 — see ConnectionRow's comment: no `tabIndex`, real focus stays
       // on the container, this row is only named via `aria-activedescendant`.
       onClick={onClick}

@@ -158,7 +158,7 @@ describe('the drawer shortcut yields to an open dialog', () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('Prod'));
-    await screen.findByRole('button', { name: 'Collapse builder pane' });
+    await screen.findByRole('button', { name: 'Collapse Query Builder' });
 
     modals.openConfirmModal({
       title: 'Something',
@@ -171,8 +171,8 @@ describe('the drawer shortcut yields to an open dialog', () => {
 
     // The drawer behind the modal must be untouched — otherwise the shortcut
     // rearranges an obscured surface and drags focus out of the form.
-    expect(screen.getByRole('button', { name: 'Collapse builder pane' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Open builder pane' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Collapse Query Builder' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open Query Builder' })).toBeNull();
   });
 
   it('still toggles when the press comes from outside any dialog', async () => {
@@ -186,10 +186,10 @@ describe('the drawer shortcut yields to an open dialog', () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('Prod'));
-    await screen.findByRole('button', { name: 'Collapse builder pane' });
+    await screen.findByRole('button', { name: 'Collapse Query Builder' });
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
 
-    await screen.findByRole('button', { name: 'Open builder pane' });
+    await screen.findByRole('button', { name: 'Open Query Builder' });
   });
 });

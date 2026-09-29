@@ -14,6 +14,7 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
+  completionStatus,
   type CompletionSource,
 } from '@codemirror/autocomplete';
 import { searchKeymap } from '@codemirror/search';
@@ -153,6 +154,22 @@ export function ScriptEditor({
       if (u.docChanged) onChangeRef.current(u.state.doc.toString());
     });
 
+    // Mantine's dialogs close on Escape via a `capture: true` `window`
+    // listener (see `FieldAutocompleteInput`'s identical marker), which fires
+    // before this editor's own Escape binding (`completionKeymap`'s
+    // `closeCompletion`) ever runs — so `stopPropagation` from in here is too
+    // late to matter, and CLAUDE.md's "Escape closes the completion popup
+    // instead" trap goes uncaught for any caller inside a Mantine dialog.
+    // Marking `contentDOM` while a completion is open is the same escape
+    // hatch `FieldAutocompleteInput` already uses: Mantine checks the
+    // attribute on `event.target` and skips closing, leaving Escape to close
+    // just the popup; the following Escape (no completion open) reaches the
+    // dialog as normal.
+    const completionMarker = EditorView.updateListener.of((u) => {
+      if (completionStatus(u.state) !== null) u.view.contentDOM.setAttribute('data-mantine-stop-propagation', 'true');
+      else u.view.contentDOM.removeAttribute('data-mantine-stop-propagation');
+    });
+
     // A caller-supplied `completionSource` replaces `mongoCompletions`
     // entirely (rather than merging both) so results aren't duplicated —
     // e.g. the aggregation stage-body source below, whose bodies are
@@ -196,6 +213,7 @@ export function ScriptEditor({
           EditorView.contentAttributes.of(ariaLabel ? { 'aria-label': ariaLabel } : {}),
         ),
         updateListener,
+        completionMarker,
         EditorView.theme({
           '&': { height: '100%', fontSize: '13px' },
           '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },

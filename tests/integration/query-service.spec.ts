@@ -472,4 +472,31 @@ describe('QueryService', () => {
     expect(docs).toHaveLength(1);
     expect(docs[0]?.name).toBe('95');
   });
+
+  // W03 §9 — "query:cancel aborts an in-flight long query". `$where` with a
+  // server-side sleep is the standard way to make a find observably slow
+  // without a flaky timing assumption on collection size or missing index.
+  it('cancel(token) aborts an in-flight find quickly instead of waiting out the query', async () => {
+    const token = 'cancel-find-tok';
+    const t0 = Date.now();
+    const promise = svc.find({
+      connectionId: connId,
+      dbName,
+      collection: collName,
+      filter: '{"$where":"sleep(5000) || true"}',
+      limit: 10,
+      skip: 0,
+      cancelToken: token,
+    });
+    // Give the driver a tick to actually issue the query before cancelling.
+    await new Promise((r) => setTimeout(r, 50));
+    svc.cancel(token);
+
+    await expect(promise).rejects.toBeTruthy();
+    expect(Date.now() - t0).toBeLessThan(4000);
+  });
+
+  it('cancel(token) is a no-op for a token with nothing in flight', () => {
+    expect(() => svc.cancel('no-such-token')).not.toThrow();
+  });
 });

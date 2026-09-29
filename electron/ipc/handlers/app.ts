@@ -1,4 +1,4 @@
-import { dialog, shell, type BrowserWindow } from 'electron';
+import { dialog, shell, type BrowserWindow, type FileFilter } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -8,7 +8,7 @@ import { zodValidator } from '../validators.ts';
 import { SystemError, ValidationError } from '../../errors.ts';
 import type { DiagnosticService } from '../../services/DiagnosticService.ts';
 
-const PickFileInput = z.enum(['tls-ca', 'tls-client-cert', 'ssh-key']);
+const PickFileInput = z.enum(['tls-ca', 'tls-client-cert', 'ssh-key', 'data-import']);
 const OpenExternalInput = z.string().url();
 const SaveFileInput = z.object({
   defaultName: z.string().optional(),
@@ -29,11 +29,36 @@ const PURPOSE_FILTERS: Record<PickFilePurpose, Electron.FileFilter[]> = {
     { name: 'Private keys', extensions: ['pem', 'key', 'ppk'] },
     { name: 'All files', extensions: ['*'] },
   ],
+  // No "All files" entry: `data:import` refuses any other extension anyway.
+  'data-import': [
+    { name: 'JSON / JSON Lines / CSV', extensions: ['json', 'jsonl', 'ndjson', 'csv'] },
+  ],
 };
 
+const SAVE_FILTER_NAMES: Record<string, string> = { json: 'JSON', jsonl: 'JSON Lines', csv: 'CSV' };
+
+/**
+ * The save dialog's type filter follows the suggested file's extension: on
+ * macOS a filter that doesn't list the extension being saved rewrites or
+ * rejects it, so a CSV export must not be offered only a JSON filter.
+ */
+export function saveFilters(defaultName: string): FileFilter[] {
+  const ext = path.extname(defaultName).slice(1).toLowerCase();
+  const all = { name: 'All files', extensions: ['*'] };
+  const name = Object.hasOwn(SAVE_FILTER_NAMES, ext) ? SAVE_FILTER_NAMES[ext] : undefined;
+  return name ? [{ name, extensions: [ext] }, all] : [all];
+}
+
+/**
+ * `pickedImports` collects every path the open dialog returned for
+ * `data-import`: the data channels read a file only when it is in here, so
+ * the renderer can hand back a file the user picked but never name another.
+ * Required, not optional, for the same reason the router's sender check is.
+ */
 export function registerAppChannels(
   router: Router,
   getWindow: () => BrowserWindow | null,
+  pickedImports: Set<string>,
   diagnostic?: DiagnosticService,
 ): void {
   router.register(
@@ -46,7 +71,9 @@ export function registerAppChannels(
         filters: PURPOSE_FILTERS[purpose],
       });
       if (result.canceled || result.filePaths.length === 0) return { path: null };
-      return { path: result.filePaths[0]! };
+      const picked = result.filePaths[0]!;
+      if (purpose === 'data-import') pickedImports.add(picked);
+      return { path: picked };
     },
   );
 
@@ -77,10 +104,7 @@ export function registerAppChannels(
         win ?? (undefined as unknown as BrowserWindow),
         {
           defaultPath: defaultName ?? 'export.json',
-          filters: [
-            { name: 'JSON', extensions: ['json'] },
-            { name: 'All files', extensions: ['*'] },
-          ],
+          filters: saveFilters(defaultName ?? 'export.json'),
         },
       );
       if (result.canceled || !result.filePath) return { path: null };

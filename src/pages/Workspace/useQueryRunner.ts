@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CollectionTabState } from '@shared/types';
+import type { CollectionTabState, ValType } from '@shared/types';
 import { api, getErrorMessage } from '../../api/atelier';
+import { invalidateRecentValuesCache } from '../../features/fieldSuggestions/sources';
+import { toDisplayValue } from '../../utils/displayValue';
 import { queryRunKey } from '../../utils/queryRunKey';
 import { repairOnCommit } from '../../utils/shellSyntax';
 import {
@@ -9,7 +11,63 @@ import {
   effectivePageLimit,
   projectionProblem,
   sortProblem,
+  valTypeFromDisplayType,
 } from './builder';
+import { parseFilter, parseJsonArrayLenient, type CondNode, type FilterNode } from './filterTree';
+
+/**
+ * The only ops both suggested and recorded — mirrors
+ * `VALUE_SUGGESTION_OPS` in `BuilderPane.tsx` and `RECORDABLE_OPS` in
+ * `RecentFieldValueService`. Kept as its own copy rather than a shared
+ * import: it's a two-line set literal, and the three call sites (popover
+ * gating, this write path, and main's authoritative filter) each want to
+ * fail independently rather than share a module that could silently drift
+ * out of a process boundary.
+ */
+const RECORDABLE_OPS = new Set(['$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin']);
+
+function collectCondNodes(node: FilterNode, out: CondNode[]): void {
+  if (node.kind === 'cond') {
+    out.push(node);
+  } else if (node.kind === 'group') {
+    for (const child of node.children) collectCondNodes(child, out);
+  }
+}
+
+interface FieldValueEntry {
+  field: string;
+  value: string;
+  valType: ValType;
+  op: string;
+}
+
+/**
+ * Walks a successful run's filter for the conditions worth remembering.
+ * `$in`/`$nin` are element-wise: each array element becomes
+ * its own entry, typed from its own EJSON shape rather than the cond's
+ * `array` valType, since that's what the value popover suggests against.
+ */
+function fieldValueEntriesFromFilter(filterJson: string): FieldValueEntry[] {
+  const parsed = parseFilter(filterJson);
+  if (!parsed.ok) return [];
+  const conds: CondNode[] = [];
+  collectCondNodes(parsed.root, conds);
+  const entries: FieldValueEntry[] = [];
+  for (const cond of conds) {
+    if (cond.field.trim() === '' || !RECORDABLE_OPS.has(cond.op)) continue;
+    if (cond.op === '$in' || cond.op === '$nin') {
+      for (const el of parseJsonArrayLenient(cond.value)) {
+        const dv = toDisplayValue(el);
+        if (dv.type === 'object' || dv.type === 'array' || dv.type === 'undefined') continue;
+        if (dv.display.trim() === '') continue;
+        entries.push({ field: cond.field, value: dv.display, valType: valTypeFromDisplayType(dv.type), op: cond.op });
+      }
+    } else if (cond.value.trim() !== '') {
+      entries.push({ field: cond.field, value: cond.value, valType: cond.valType, op: cond.op });
+    }
+  }
+  return entries;
+}
 
 /** Minimum tab slice the runner needs, decoupled from `CollectionTab` for synthetic consumers. */
 export interface RunnerTarget {
@@ -43,6 +101,14 @@ export interface UseQueryRunnerResult {
   ) => Promise<void>;
   /** True once the loading delay elapses for a find still in flight against `active`. */
   isLoading: boolean;
+  /**
+   * Cancels the in-flight find for `target` (default `active`) via the
+   * existing `query:cancel` IPC path. A no-op if nothing is running for
+   * that target. Returns to idle immediately — the aborted find's own
+   * settling (success or error) is discarded, so a cancel never flashes an
+   * error banner and never overwrites what was already on screen.
+   */
+  cancel: (target?: RunnerTarget) => void;
 }
 
 export function useQueryRunner({
@@ -67,8 +133,13 @@ export function useQueryRunner({
   // another tab must not block on or bleed a spinner onto the focused one.
   const runningIdsRef = useRef<Set<string>>(new Set());
   // Monotonic per-target token so a slow background count() from an older
-  // run can't overwrite a newer run's totalCount.
+  // run can't overwrite a newer run's totalCount. Also the supersession
+  // guard: bumping it (cancel, or a newer run starting) makes the older
+  // run's find() settle as a no-op instead of patching stale state.
   const runTokenRef = useRef<Map<string, number>>(new Map());
+  // The cancelToken currently owning `target.id`'s in-flight find, so
+  // `cancel()` and a superseding `run()` know what to hand `query:cancel`.
+  const cancelTokensRef = useRef<Map<string, string>>(new Map());
   const loadingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
@@ -82,12 +153,56 @@ export function useQueryRunner({
     };
   }, []);
 
+  // Shared by `cancel()` and a superseding `run()`: stop tracking `id` as
+  // running right now (not waiting for the abort to settle), so the UI
+  // returns to idle immediately and a fresh run isn't blocked behind it.
+  const clearRunning = useCallback((id: string) => {
+    runningIdsRef.current.delete(id);
+    const timer = loadingTimersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      loadingTimersRef.current.delete(id);
+    }
+    setLoadingIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const cancel = useCallback(
+    (explicitTarget?: RunnerTarget) => {
+      const target = explicitTarget ?? activeRef.current;
+      if (!target) return;
+      const token = cancelTokensRef.current.get(target.id);
+      if (!token || !runningIdsRef.current.has(target.id)) return;
+      // Bump the token first so the in-flight find's own catch/then sees
+      // itself as stale and skips patching state once the abort settles.
+      runTokenRef.current.set(target.id, (runTokenRef.current.get(target.id) ?? 0) + 1);
+      clearRunning(target.id);
+      void api.query.cancel({ token }).catch((err: unknown) => console.warn('[query] cancel failed', err));
+    },
+    [clearRunning],
+  );
+
   const run = useCallback(
     async (override?: Partial<CollectionTabState>, explicitTarget?: RunnerTarget) => {
       const target = explicitTarget ?? activeRef.current;
-      if (!target || runningIdsRef.current.has(target.id)) return;
+      if (!target) return;
+      // A newer Run supersedes an older in-flight one for the same target:
+      // cancel it server-side and disown it here so its eventual settling
+      // is discarded rather than clobbering this run's result.
+      if (runningIdsRef.current.has(target.id)) {
+        const staleToken = cancelTokensRef.current.get(target.id);
+        if (staleToken) {
+          void api.query.cancel({ token: staleToken }).catch((err: unknown) => console.warn('[query] cancel failed', err));
+        }
+      }
       const runToken = (runTokenRef.current.get(target.id) ?? 0) + 1;
       runTokenRef.current.set(target.id, runToken);
+      const cancelToken = crypto.randomUUID();
+      cancelTokensRef.current.set(target.id, cancelToken);
       const patchState = patchRef.current;
       const recordEvent = recordRef.current;
       const requested: CollectionTabState = override
@@ -194,7 +309,11 @@ export function useQueryRunner({
           projection: compiled.projection,
           limit,
           skip,
+          cancelToken,
         });
+        // Superseded (cancelled, or a newer run already took over) while
+        // this find was in flight — its result is stale, discard it.
+        if (runToken !== runTokenRef.current.get(target.id)) return;
         const effectiveHasMore =
           findResult.hasMore &&
           (userLimit === null || skip + limit < userLimit);
@@ -206,6 +325,26 @@ export function useQueryRunner({
           },
           lastRunHasMore: effectiveHasMore,
         });
+        // Fire-and-forget: persists the values this run's conditions actually
+        // carried for the value-suggestion popover. Never
+        // blocks or fails the run itself — main re-filters by op and secret
+        // field path regardless of what's sent here.
+        const entries = fieldValueEntriesFromFilter(filter);
+        if (entries.length > 0) {
+          api.recent
+            .recordFieldValues({
+              connectionId: target.connectionId,
+              dbName: target.dbName,
+              collection: target.collection,
+              entries,
+            })
+            .then(() => {
+              invalidateRecentValuesCache(target.connectionId, target.dbName, target.collection);
+            })
+            // Value history is a convenience: a failed write must not fail
+            // the run, but it is reported rather than dropped.
+            .catch((err: unknown) => console.warn('[recent] recordFieldValues failed', err));
+        }
         recordEvent?.(
           'queryRun',
           queryRunKey({
@@ -236,6 +375,10 @@ export function useQueryRunner({
           })
           .catch(() => {});
       } catch (err) {
+        // Superseded (cancelled, or a newer run already took over): the
+        // abort's rejection is expected noise, not a result to show — a
+        // cancelled find must not flash an error banner over what's there.
+        if (runToken !== runTokenRef.current.get(target.id)) return;
         const code = (err as { code?: string }).code ?? 'INTERNAL';
         const message = getErrorMessage(err, 'Unknown error');
         const prevDocs = target.state.lastRun?.documents ?? [];
@@ -248,24 +391,21 @@ export function useQueryRunner({
           },
         });
       } finally {
-        runningIdsRef.current.delete(target.id);
-        const timer = loadingTimersRef.current.get(target.id);
-        if (timer) {
-          clearTimeout(timer);
-          loadingTimersRef.current.delete(target.id);
+        // Only the run that still owns `target.id` clears the running/
+        // loading state — a superseded run's `finally` must not stomp on
+        // the newer run (or a cancel) that already claimed it.
+        if (runToken === runTokenRef.current.get(target.id)) {
+          clearRunning(target.id);
+          if (cancelTokensRef.current.get(target.id) === cancelToken) {
+            cancelTokensRef.current.delete(target.id);
+          }
         }
-        setLoadingIds((prev) => {
-          if (!prev.has(target.id)) return prev;
-          const next = new Set(prev);
-          next.delete(target.id);
-          return next;
-        });
       }
     },
-    [loadingDelayMs],
+    [loadingDelayMs, clearRunning],
   );
 
   const isLoading = active ? loadingIds.has(active.id) : false;
 
-  return { run, isLoading };
+  return { run, cancel, isLoading };
 }

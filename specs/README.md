@@ -41,7 +41,7 @@ The project started as **MongoLab**. Iteration 1 — F01–F06, C01–C08, W01�
 | [C06](./C06-overview-tab.md) | Overview tab (real stats) | main + renderer |
 | [C07](./C07-collections-tab.md) | Collections tab (real listing) | main + renderer |
 | [C08](./C08-edit-delete-stubs.md) | Edit, delete, stub tabs, CmdK stub | renderer |
-| [C09](./C09-indexes-tab.md) | Indexes tab (real listing + create / drop) — *post-iteration-1* | main + renderer |
+| [C09](./C09-indexes-tab.md) | Indexes tab (real listing + create / drop) — *post-iteration-1, amended by W16 Tier 1, removed by W16 Tier 2* | main + renderer |
 | [C10](./C10-users-tab.md) | Users tab (real listing + create / update / drop) — *post-iteration-1* | main + renderer |
 | [C11](./C11-troubleshooting.md) | Connection troubleshooting drawer + inline explainers + docs — *post-iteration-1* | renderer + docs |
 | [C12](./C12-auto-remediation.md) | Auto-remediation buttons in the troubleshooting drawer — *post-iteration-1* | renderer |

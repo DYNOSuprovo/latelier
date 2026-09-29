@@ -10,6 +10,19 @@ afterEach(() => {
 });
 
 describe('DropDatabaseConfirm', () => {
+  it('states the drop cannot be undone', () => {
+    render(
+      <DropDatabaseConfirm
+        connectionId="c1"
+        dbName="app"
+        onCancel={() => undefined}
+        onDropped={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(/cannot be undone/)).toBeTruthy();
+  });
+
   it('keeps Drop disabled until the typed DB name matches, then calls api.database.drop', async () => {
     const calls: unknown[] = [];
     installAtelierMock({

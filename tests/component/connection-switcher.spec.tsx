@@ -1218,6 +1218,10 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
     expect(highlightedName()).toBe('Staging');
     await userEvent.click(within(listbox).getByRole('button', { name: 'Delete Staging' }));
     await screen.findByRole('dialog', { name: 'Delete "Staging"?' });
+    // docs/adr/0013 — Delete stays disabled until the name is typed back.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Confirm connection name' }), {
+      target: { value: 'Staging' },
+    });
     fireEvent.click(screen.getByText('Delete'));
 
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('c3'));
@@ -1253,6 +1257,9 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Delete "Prod — US East"?' });
     // the count is c1's own tab (1), not both Connections' combined (2).
     expect(within(dialog).getByText(/closes 1 open tab\b/)).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Confirm connection name' }), {
+      target: { value: 'Prod — US East' },
+    });
     fireEvent.click(screen.getByText('Delete'));
 
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('c1'));
@@ -1276,6 +1283,9 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
     const listbox = await screen.findByRole('listbox', { name: 'Connections' });
     await userEvent.click(within(listbox).getByRole('button', { name: 'Delete Solo' }));
     await screen.findByRole('dialog', { name: 'Delete "Solo"?' });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Confirm connection name' }), {
+      target: { value: 'Solo' },
+    });
     fireEvent.click(screen.getByText('Delete'));
 
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('c1'));
@@ -1758,6 +1768,9 @@ describe('ConnectionSwitcher — expanded table', () => {
 
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
     await screen.findByRole('dialog', { name: 'Delete "Staging"?' });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Confirm connection name' }), {
+      target: { value: 'Staging' },
+    });
     fireEvent.click(screen.getByText(/^Delete$/));
 
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('c3'));

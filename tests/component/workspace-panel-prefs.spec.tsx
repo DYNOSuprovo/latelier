@@ -241,7 +241,7 @@ describe('workspace panel prefs (T4)', () => {
     // rects for everything (see tests/helpers/jsdomSetup.ts's comment on
     // `getBoundingClientRect`), which the library's pointer path hit-tests against, but its
     // keyboard path resizes off stored percentages and needs no real layout.
-    const builderHandle = await screen.findByRole('separator', { name: 'Resize builder pane' });
+    const builderHandle = await screen.findByRole('separator', { name: 'Resize Query Builder' });
     fireEvent.keyDown(builderHandle, { key: 'ArrowRight' });
     await waitFor(() =>
       expect(set).toHaveBeenCalledWith('ui.workspace.innerHSplit', expect.any(Number)),
@@ -275,7 +275,7 @@ describe('workspace panel prefs (T4)', () => {
       expect(set).toHaveBeenCalledWith('ui.workspace.sidebarCollapsed', true),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Collapse builder pane' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse Query Builder' }));
     await waitFor(() =>
       expect(set).toHaveBeenCalledWith('ui.workspace.builderCollapsed', true),
     );

@@ -267,6 +267,47 @@ describe('DeleteConfirm — delete-all-matching (filter-scoped)', () => {
     expect(deleteMany).not.toHaveBeenCalled();
   });
 
+  it('states the pending delete is within the undo limit at 999 matches', async () => {
+    installAtelierMock({
+      doc: { confirmDeleteMany: async () => ({ count: 999, confirmToken: 'tok-1' }) },
+    });
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[]}
+        filter='{"status":"pending"}'
+        onClose={() => undefined}
+        onDeleted={() => undefined}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/within the 1,000-document undo limit/i)).toBeTruthy());
+    expect(screen.queryByText(/cannot be undone/)).toBeNull();
+  });
+
+  it('states the pending delete is beyond the undo limit at 1001 matches', async () => {
+    installAtelierMock({
+      doc: { confirmDeleteMany: async () => ({ count: 1001, confirmToken: 'tok-1' }) },
+    });
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[]}
+        filter='{"status":"pending"}'
+        onClose={() => undefined}
+        onDeleted={() => undefined}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/cannot be undone/)).toBeTruthy());
+  });
+
   it('surfaces a confirmDeleteMany rejection via the alert and leaves Delete disabled', async () => {
     installAtelierMock({
       doc: {
@@ -295,4 +336,96 @@ describe('DeleteConfirm — delete-all-matching (filter-scoped)', () => {
       true,
     );
   });
+
+describe('DeleteConfirm — Undo hand-off', () => {
+  it('passes the Reversible entry id of a single-document delete to onDeleted', async () => {
+    installAtelierMock({ doc: { deleteOne: async () => ({ deletedCount: 1, auditId: 'a1' }) } });
+    const onDeleted = vi.fn();
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[{ _id: '1' }]}
+        onClose={() => {}}
+        onDeleted={onDeleted}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('a1', 'Document deleted'));
+  });
+
+  it('says nothing was deleted, rather than claiming a delete, when deleteOne matched nothing', async () => {
+    installAtelierMock({ doc: { deleteOne: async () => ({ deletedCount: 0 }) } });
+    const onDeleted = vi.fn();
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[{ _id: '1' }]}
+        onClose={() => {}}
+        onDeleted={onDeleted}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(onDeleted).toHaveBeenCalledWith(undefined, 'Nothing was deleted: the document was already gone'),
+    );
+  });
+
+  it('passes the Reversible entry id of a delete-all-matching to onDeleted', async () => {
+    const confirmDeleteMany = vi.fn(async () => ({ count: 5, confirmToken: 'tok-xyz' }));
+    const deleteMany = vi.fn(async () => ({ deletedCount: 5, auditId: 'a2' }));
+    installAtelierMock({ doc: { confirmDeleteMany, deleteMany } });
+    const onDeleted = vi.fn();
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[]}
+        filter='{"status":"pending"}'
+        onClose={() => {}}
+        onDeleted={onDeleted}
+      />,
+    );
+
+    await waitFor(() => expect(confirmDeleteMany).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('orders'), { target: { value: 'orders' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('a2', '5 documents deleted'));
+  });
+
+  it('uses the singular for a delete-all that matched exactly one document', async () => {
+    const confirmDeleteMany = vi.fn(async () => ({ count: 1, confirmToken: 'tok-xyz' }));
+    const deleteMany = vi.fn(async () => ({ deletedCount: 1 }));
+    installAtelierMock({ doc: { confirmDeleteMany, deleteMany } });
+    const onDeleted = vi.fn();
+
+    render(
+      <DeleteConfirm
+        connectionId="c1"
+        dbName="app"
+        collection="orders"
+        docs={[]}
+        filter='{"status":"pending"}'
+        onClose={() => {}}
+        onDeleted={onDeleted}
+      />,
+    );
+
+    await waitFor(() => expect(confirmDeleteMany).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('orders'), { target: { value: 'orders' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(undefined, '1 document deleted'));
+  });
+});
 });

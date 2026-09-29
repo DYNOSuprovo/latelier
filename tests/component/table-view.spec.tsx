@@ -15,7 +15,7 @@ import userEvent from '@testing-library/user-event';
 import { notifications } from '@mantine/notifications';
 import { itReturnsFocusToPopoverTrigger } from '../helpers/popoverFocusReturn';
 import { TableView } from '../../src/pages/Workspace/views/TableView';
-import { ColumnChooser } from '../../src/pages/Workspace/ColumnChooser';
+import { FieldsControl } from '../../src/pages/Workspace/FieldsControl';
 import { CollectionWorkspaceProvider } from '../../src/pages/Workspace/CollectionWorkspaceProvider';
 import type { CollectionWorkspaceActions } from '../../src/pages/Workspace/context';
 import type { CollectionTabState, ReferenceRule } from '@shared/types';
@@ -91,7 +91,7 @@ function renderTable(
 }
 
 /**
- * Real `useState` harness for the ColumnChooser <-> TableView round-trip
+ * Real `useState` harness for the FieldsControl <-> TableView round-trip
  * (AC3/AC4): patches from the chooser must come back through props and
  * actually change what TableView renders. A static-prop render can't
  * observe this (known gotcha) — see also treeview/table-view specs for the
@@ -119,7 +119,7 @@ function renderStatefulTable(initial: CollectionTabState) {
     };
     return (
       <CollectionWorkspaceProvider state={state} actions={actions} meta={emptyWorkspaceMeta()}>
-        <ColumnChooser />
+        <FieldsControl />
         <TableView
           documents={documents}
           columns={state.columns}
@@ -258,6 +258,33 @@ describe('TableView — rendering and interaction', () => {
       fireEvent.click(cells[1], { metaKey: true });
       expect(rows[0].getAttribute('data-selected')).toBe('true');
       expect(rows[1].getAttribute('data-selected')).toBe('true');
+    });
+
+    // N4.1 — a plain click used to select the row outright; it now only
+    // makes it the active row, leaving selection to the checkbox or
+    // ⌘/Ctrl+click, so the same gesture means the same thing in every view.
+    it('a plain click on a row makes it active but does not select it', () => {
+      const docs = [{ _id: 1, name: 'a' }, { _id: 2, name: 'b' }];
+      const { container, getAllByTitle } = renderTable(docs);
+      const grid = container.querySelector('[role="grid"]')!;
+      const rows = container.querySelectorAll('[data-selected]');
+      const cells = getAllByTitle(/Drag to add "name/);
+
+      fireEvent.click(cells[1]);
+
+      expect(rows[0].getAttribute('data-selected')).toBe('false');
+      expect(rows[1].getAttribute('data-selected')).toBe('false');
+      expect(grid.getAttribute('aria-activedescendant')).toBe('table-row-1');
+    });
+
+    it('the gutter checkbox selects a row without moving it via a plain click, and names the document', () => {
+      const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'a' }];
+      const { getByRole } = renderTable(docs);
+      const checkbox = getByRole('button', { name: 'Select document 99439011' });
+
+      fireEvent.click(checkbox);
+      expect(checkbox.getAttribute('aria-pressed')).toBe('true');
+      expect(getByRole('button', { name: 'Deselect document 99439011' })).toBe(checkbox);
     });
 
     it('double-click on a cell copies its value to the clipboard', () => {
@@ -423,7 +450,7 @@ describe('TableView — rendering and interaction', () => {
       expect(queryByTestId('table-header-apple')).toBeTruthy();
       expect(container.textContent).toContain('a-val');
 
-      fireEvent.click(getByRole('button', { name: /columns/i }));
+      fireEvent.click(getByRole('button', { name: /fields/i }));
       const appleCheckbox = getByRole('checkbox', { name: 'apple' });
       fireEvent.click(appleCheckbox);
 
@@ -438,7 +465,7 @@ describe('TableView — rendering and interaction', () => {
     it('reordering via drag changes the header order', () => {
       const { getByRole, getByTestId } = renderStatefulTable(stateWithDocs());
 
-      fireEvent.click(getByRole('button', { name: /columns/i }));
+      fireEvent.click(getByRole('button', { name: /fields/i }));
       // Scope to the chooser's own popover dropdown — TableView's cells are
       // also `draggable`, so an unscoped document-wide query would be
       // ambiguous between the two.
@@ -473,7 +500,7 @@ describe('TableView — rendering and interaction', () => {
         }),
       );
 
-      fireEvent.click(getByRole('button', { name: /columns/i }));
+      fireEvent.click(getByRole('button', { name: /fields/i }));
       const input = getByRole('textbox', { name: /computed column path/i });
       fireEvent.change(input, { target: { value: 'address.city' } });
       fireEvent.click(getByRole('button', { name: /add column/i }));
@@ -538,6 +565,21 @@ describe('TableView — rendering and interaction', () => {
 
       expect(rows[0].getAttribute('data-selected')).toBe('false');
       expect(rows[1].getAttribute('data-selected')).toBe('true');
+    });
+
+    it('E on the grid opens the editor on the active row; a modified E or one from a nested control does not', () => {
+      const openEdit = vi.fn();
+      const docs = [{ _id: 1, name: 'a' }, { _id: 2, name: 'b' }];
+      const { container } = renderTable(docs, { actions: { openEdit } });
+      const grid = container.querySelector('[role="grid"]')!;
+
+      fireEvent.keyDown(grid, { key: 'ArrowDown' });
+      fireEvent.keyDown(grid, { key: 'e', metaKey: true });
+      fireEvent.keyDown(container.querySelector('[aria-label="Expand document"]')!, { key: 'e' });
+      expect(openEdit).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(grid, { key: 'e' });
+      expect(openEdit).toHaveBeenCalledWith(docs[1]);
     });
 
     // The mutation this guards against: dropping `e.target !== e.currentTarget`
@@ -730,7 +772,7 @@ describe('TableView — rendering and interaction', () => {
       const grid = container.querySelector('[role="grid"]')! as HTMLElement;
       const strip1 = grid.querySelectorAll('[role="row"]')[1] as HTMLElement;
 
-      fireEvent.click(strip1); // selects row 1 and makes it the active row too.
+      fireEvent.click(strip1, { metaKey: true }); // ⌘+click selects row 1 and makes it the active row too.
       act(() => grid.focus());
 
       const row1 = container.querySelector('#table-row-1') as HTMLElement;
@@ -931,6 +973,98 @@ describe('TableView — rendering and interaction', () => {
       await userEvent.click(trigger);
       // No focusInside: this dropdown has no focusable content.
       return { trigger };
+    });
+  });
+
+  // Table rows previously exposed Edit/Duplicate/Delete only via a
+  // right-click context menu, unlike Tree/JSON's always-visible per-row
+  // buttons. This adds a matching visible Edit/Delete pair plus a "More
+  // actions" button that opens the same context menu, keeping it reachable
+  // by keyboard and under horizontal scroll.
+  describe('per-row actions column', () => {
+    it('Edit and Delete buttons are named with the document and call the workspace actions', () => {
+      const openEdit = vi.fn();
+      const openDelete = vi.fn();
+      const docs = [{ _id: 1, sku: 'a' }];
+      const { getByRole } = renderTable(docs, { actions: { openEdit, openDelete } });
+
+      fireEvent.click(getByRole('button', { name: 'Edit document 1' }));
+      expect(openEdit).toHaveBeenCalledWith(docs[0]);
+
+      fireEvent.click(getByRole('button', { name: 'Delete document 1' }));
+      expect(openDelete).toHaveBeenCalledWith(docs[0]);
+    });
+
+    it('is not a data column: FieldsControl lists no "Actions" entry', () => {
+      const { getByRole, queryByRole } = renderStatefulTable(
+        emptyState({
+          lastRun: {
+            documents: [{ _id: 1, sku: 'a' }],
+            durationMs: 1,
+            ranAt: '2026-01-01T00:00:00Z',
+          },
+        }),
+      );
+
+      fireEvent.click(getByRole('button', { name: /fields/i }));
+      expect(queryByRole('checkbox', { name: /actions/i })).toBeNull();
+    });
+
+    it('clicking Edit or "More actions" does not move the active row or change selection', () => {
+      const docs = [{ _id: 1, sku: 'a' }, { _id: 2, sku: 'b' }];
+      const { getByRole, container } = renderTable(docs);
+      // Excludes the header strip — it also carries `role="row"` (its
+      // `columnheader` children need a valid row parent) but never
+      // `data-selected`, only document rows do.
+      const rows = () =>
+        Array.from(
+          container.querySelectorAll('[data-selected] [role="row"]'),
+        ) as HTMLElement[];
+      const grid = getByRole('grid');
+
+      act(() => grid.focus());
+      expect(grid.getAttribute('aria-activedescendant')).toBe('table-row-0');
+
+      // `aria-activedescendant` tracks the roving index itself, unlike the
+      // visual outline — which also depends on the grid still holding real
+      // DOM focus, and clicking any real button (this one included) moves
+      // focus onto it regardless of `stopPropagation`. So this is the
+      // signal that survives the click and actually proves the row 1
+      // buttons never called `onSelect` for row 1.
+      fireEvent.click(getByRole('button', { name: 'Edit document 2' }));
+      expect(grid.getAttribute('aria-activedescendant')).toBe('table-row-0');
+      expect(rows()[1].getAttribute('aria-selected')).toBe('false');
+
+      fireEvent.click(getByRole('button', { name: 'More actions for document 2' }));
+      expect(grid.getAttribute('aria-activedescendant')).toBe('table-row-0');
+      expect(rows()[1].getAttribute('aria-selected')).toBe('false');
+    });
+
+    it('"More actions" opens the same cell-level menu the right-click path opens, including Duplicate', () => {
+      const openDuplicate = vi.fn();
+      const docs = [{ _id: 1, sku: 'a' }];
+      const { getByRole } = renderTable(docs, { actions: { openDuplicate } });
+
+      fireEvent.click(getByRole('button', { name: 'More actions for document 1' }));
+
+      const menu = getByRole('group', { name: 'Cell actions' });
+      expect(within(menu).getByText('Duplicate document')).toBeTruthy();
+
+      fireEvent.click(within(menu).getByText('Duplicate document'));
+      expect(openDuplicate).toHaveBeenCalledWith(docs[0]);
+    });
+
+    it('focusing the Edit button on a non-active row makes the actions column visible', () => {
+      const docs = [{ _id: 1, sku: 'a' }];
+      const { getByRole } = renderTable(docs);
+      const editBtn = getByRole('button', { name: 'Edit document 1' }) as HTMLElement;
+      const actionsCell = editBtn.closest('[role="gridcell"]') as HTMLElement;
+
+      expect(actionsCell.style.opacity).toBe('0');
+      fireEvent.focus(editBtn);
+      expect(actionsCell.style.opacity).toBe('1');
+      fireEvent.blur(editBtn);
+      expect(actionsCell.style.opacity).toBe('0');
     });
   });
 });

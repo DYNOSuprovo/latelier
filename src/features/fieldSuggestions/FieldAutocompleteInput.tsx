@@ -13,7 +13,7 @@ import type { Suggestion, SuggestionContext } from './types';
  *               the caret isn't sitting inside an open brace.
  *   • 'token' — the bare field-name word around the caret, ignoring the
  *               punctuation an MQL document is made of (`{`, `"`, `:`, `,`).
- *               Suits the query bar's projection / sort inputs, where a field
+ *               Suits the projection and sort inputs, where a field
  *               name sits inside a document rather than owning the value.
  */
 export type AutocompleteMode = 'whole' | 'csv' | 'brace' | 'token';

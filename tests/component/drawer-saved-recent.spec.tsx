@@ -1,11 +1,10 @@
-// W15 §13.3 / §13.4 / §13.5 / §13.7 — the Saved strip, the Saved tab
-// and the Recent tab: honest labels, a query you can identify, copy actions
-// that report, and chrome that survives loading and error.
+// W15 §13.4 / §13.5 / §13.7 — the Saved tab and the Recent tab: honest
+// labels, a query you can identify, copy actions that report, and chrome
+// that survives loading and error.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '../helpers/render';
 import { SavedTab } from '../../src/pages/Workspace/views/SavedTab';
 import { RecentTab } from '../../src/pages/Workspace/views/RecentTab';
-import { SavedStrip } from '../../src/pages/Workspace/SavedStrip';
 import { notifications } from '@mantine/notifications';
 import { modals } from '@mantine/modals';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
@@ -75,77 +74,17 @@ function renderRecent() {
   );
 }
 
-function renderSaved() {
+function renderSaved(overrides: { onRunHere?: () => void; onOpenInTab?: (s: SavedQuerySummary) => void } = {}) {
   return render(
-    <SavedTab connectionId="c1" dbName="shop" collection="orders" onRunHere={() => {}} />,
+    <SavedTab
+      connectionId="c1"
+      dbName="shop"
+      collection="orders"
+      onRunHere={overrides.onRunHere ?? (() => {})}
+      onOpenInTab={overrides.onOpenInTab ?? (() => {})}
+    />,
   );
 }
-
-// ─── §13.3 the Saved strip ───────────────────────────────────────────────────
-
-describe('W15 §13.3 — SavedStrip drops the per-row ↗ and its legend', () => {
-  it('renders no per-row control claiming to show a named item in the Saved tab', async () => {
-    installAtelierMock({
-      saved: { list: async () => [summary({ id: 'a' }), summary({ id: 'b', name: 'Big spenders' })] },
-    });
-
-    render(
-      <SavedStrip
-        connectionId="c1"
-        dbName="shop"
-        collection="orders"
-        onRunHere={() => {}}
-        onOpenInTab={() => {}}
-        onOpenSavedTab={() => {}}
-      />,
-    );
-
-    await screen.findByText('Big spenders');
-    expect(screen.queryByRole('button', { name: /Show "Big spenders" in Saved tab/ })).toBeNull();
-    // The legend explaining the two icons goes with it.
-    expect(screen.queryByText(/runs here/)).toBeNull();
-  });
-
-  it('offers exactly one control for the strip, and it opens the Saved tab', async () => {
-    const onOpenSavedTab = vi.fn();
-    installAtelierMock({ saved: { list: async () => [summary({ id: 'a' })] } });
-
-    render(
-      <SavedStrip
-        connectionId="c1"
-        dbName="shop"
-        collection="orders"
-        onRunHere={() => {}}
-        onOpenInTab={() => {}}
-        onOpenSavedTab={onOpenSavedTab}
-      />,
-    );
-
-    // One item — below the 4-row strip limit, where the old code hid this
-    // button entirely and left the per-row ↗ as the only way through.
-    const seeAll = await screen.findByRole('button', { name: /see all/ });
-    fireEvent.click(seeAll);
-    expect(onOpenSavedTab).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not offer to bookmark a "builder configuration" — W13 deleted the builder model', async () => {
-    installAtelierMock({ saved: { list: async () => [] } });
-
-    render(
-      <SavedStrip
-        connectionId="c1"
-        dbName="shop"
-        collection="orders"
-        onRunHere={() => {}}
-        onOpenInTab={() => {}}
-        onOpenSavedTab={() => {}}
-      />,
-    );
-
-    await screen.findByText(/No saved queries yet/);
-    expect(document.body.textContent).not.toContain('builder configuration');
-  });
-});
 
 // ─── §13.4 Recent rows ───────────────────────────────────────────────────────
 
@@ -271,6 +210,70 @@ describe('W15 §13.5 — Saved and Recent keep their chrome through loading and 
     expect(del.getAttribute('title')).toBe('Delete');
     // Row actions are distinguishable from one another, per row.
     expect(screen.getByRole('button', { name: 'Run "Unpaid orders" in this tab' })).toBeTruthy();
+  });
+});
+
+// SavedTab is the only surface listing saved aggregation/script items now
+// that SavedStrip is gone, so it has to be able to open them, not just find
+// queries.
+describe('SavedTab opens every saved kind, not just find', () => {
+  it('a find row runs in place via onRunHere', async () => {
+    const onRunHere = vi.fn();
+    installAtelierMock({
+      saved: {
+        list: async () => [summary({ kind: 'find', name: 'Unpaid orders' })],
+        get: async () => ({ ...summary({ kind: 'find' }), payload: { kind: 'find', builder: { projection: [], sort: '', limit: '' }, queryRaw: '{}' } } as never),
+      },
+    });
+    renderSaved({ onRunHere });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run "Unpaid orders" in this tab' }));
+
+    await waitFor(() => expect(onRunHere).toHaveBeenCalledTimes(1));
+  });
+
+  it('an aggregation row opens as its own tab via onOpenInTab, not onRunHere', async () => {
+    const onRunHere = vi.fn();
+    const onOpenInTab = vi.fn();
+    const agg = summary({ kind: 'aggregation', name: 'Top spenders' });
+    installAtelierMock({ saved: { list: async () => [agg] } });
+    renderSaved({ onRunHere, onOpenInTab });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open "Top spenders" in a new tab' }));
+
+    expect(onOpenInTab).toHaveBeenCalledWith(agg);
+    expect(onRunHere).not.toHaveBeenCalled();
+  });
+
+  it('a script row opens as its own tab via onOpenInTab, not onRunHere', async () => {
+    const onRunHere = vi.fn();
+    const onOpenInTab = vi.fn();
+    const script = summary({ kind: 'script', name: 'Backfill emails' });
+    installAtelierMock({ saved: { list: async () => [script] } });
+    renderSaved({ onRunHere, onOpenInTab });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open "Backfill emails" in a new tab' }));
+
+    expect(onOpenInTab).toHaveBeenCalledWith(script);
+    expect(onRunHere).not.toHaveBeenCalled();
+  });
+
+  it('labels each row by kind so find, aggregation and script are distinguishable', async () => {
+    installAtelierMock({
+      saved: {
+        list: async () => [
+          summary({ id: 'q1', kind: 'find', name: 'Unpaid orders' }),
+          summary({ id: 'q2', kind: 'aggregation', name: 'Top spenders' }),
+          summary({ id: 'q3', kind: 'script', name: 'Backfill emails' }),
+        ],
+      },
+    });
+    renderSaved();
+
+    await screen.findByText('Unpaid orders');
+    expect(screen.getByText('Find')).toBeTruthy();
+    expect(screen.getByText('Aggregation')).toBeTruthy();
+    expect(screen.getByText('Script')).toBeTruthy();
   });
 });
 

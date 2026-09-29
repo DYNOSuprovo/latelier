@@ -77,8 +77,12 @@ export function SchemaView({
 
   const entries = state.entries ?? [];
 
+  // `flex: 'none'` + `overflow: 'visible'`: this now sits stacked below
+  // IndexesTab inside StructureView's own single scroller (W16 Tier 2, ADR
+  // 0003) rather than filling a flex parent with its own internal scroll.
+  // See the matching note in IndexesTab.tsx.
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ flex: 'none', display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
       {/* Header */}
       <div
         style={{
@@ -148,7 +152,7 @@ export function SchemaView({
       )}
 
       {/* Field list */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
+      <div style={{ overflow: 'visible' }}>
         {entries.length === 0 ? (
           <div
             style={{

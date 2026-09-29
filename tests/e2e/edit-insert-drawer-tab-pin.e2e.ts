@@ -14,16 +14,16 @@ test.afterAll(stopAllMemoryServers);
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 /**
- * `EditDrawer`/`InsertDrawer` used to read connectionId/dbName/collection
+ * The edit and insert surfaces used to read connectionId/dbName/collection
  * live from the Focused Tab at render time, the same hazard fixed for
  * `DeleteConfirm` — but closing them on a tab switch (that remedy) would
  * silently discard the user's unsaved edit/draft, which is its own
  * regression. ADR-001's fix instead pins the target captured at open time,
- * so the drawer keeps writing to the collection it was opened against no
+ * so the dialog keeps writing to the collection it was opened against no
  * matter what tab is focused when Save/Insert is clicked. This proves it end
  * to end against the real Electron app and a real `mongod`.
  */
-test('EditDrawer keeps saving to the tab it was opened on after switching Focused Tab mid-edit', async () => {
+test('the Document Editor keeps saving to the tab it was opened on after switching Focused Tab mid-edit', async () => {
   const { host, port } = await startMemoryServer();
 
   await withApp(async (app) => {
@@ -66,25 +66,26 @@ test('EditDrawer keeps saving to the tab it was opened on after switching Focuse
       await ws.tabByName('orders').click();
       await expect(ws.tabByName('orders')).toHaveAttribute('aria-selected', 'true');
       await win.locator('button[title="Edit document"]').first().click();
-      await expect(win.getByText('Edit document')).toBeVisible({ timeout: 5000 });
+      const editor = win.getByRole('dialog', { name: 'Edit document' });
+      await expect(editor).toBeVisible({ timeout: 5000 });
 
-      const editTextarea = win.locator('textarea').last();
-      await editTextarea.fill('{"_id": "shared-1", "sku": "after-edit"}');
+      const sku = editor.getByRole('textbox', { name: 'sku' });
+      await sku.fill('after-edit');
 
-      // ⌘2/Ctrl+2 jumps to the second tab — users — while the drawer opened
+      // ⌘2/Ctrl+2 jumps to the second tab — users — while the editor opened
       // against orders is still up, mid-edit.
       await win.keyboard.press(`${MOD}+2`);
       await expect(ws.tabByName('users')).toHaveAttribute('aria-selected', 'true', {
         timeout: 5000,
       });
 
-      // The drawer must survive the switch (ADR-001 consequence 1) instead
+      // The editor must survive the switch (ADR-001 consequence 1) instead
       // of unmounting and losing the draft.
-      await expect(win.getByText('Edit document')).toBeVisible();
-      await expect(editTextarea).toHaveValue('{"_id": "shared-1", "sku": "after-edit"}');
+      await expect(editor).toBeVisible();
+      await expect(sku).toHaveValue('after-edit');
 
-      await win.getByRole('button', { name: /^Save$/ }).last().click();
-      await expect(win.getByText('Edit document')).not.toBeVisible({ timeout: 8000 });
+      await editor.getByRole('button', { name: 'Save' }).click();
+      await expect(editor).not.toBeVisible({ timeout: 8000 });
 
       const docs = await win.evaluate(async (cid) => {
         const api = (window as unknown as {
@@ -126,7 +127,7 @@ test('EditDrawer keeps saving to the tab it was opened on after switching Focuse
       expect(docs.usersSku).toBe('other');
 
       // The refresh half of the same pin. The write is only half the
-      // contract: the tab the drawer was opened on must also *show* the
+      // contract: the tab the editor was opened on must also *show* the
       // written document. `handleDocSaved` used to call `run()` with no
       // target, which refreshes the Focused Tab — users here — leaving
       // orders rendering its pre-save documents until the user hit Run
@@ -142,11 +143,11 @@ test('EditDrawer keeps saving to the tab it was opened on after switching Focuse
 });
 
 /**
- * Same hazard, InsertDrawer side: a draft started on one tab must insert
- * into that tab's collection even after focus moves to another tab before
- * Insert is clicked.
+ * Same hazard, the Document Editor's insert mode: a draft started on one tab
+ * must insert into that tab's collection even after focus moves to another
+ * tab before Insert is clicked.
  */
-test('InsertDrawer keeps inserting into the tab it was opened on after switching Focused Tab mid-draft', async () => {
+test('the Document Editor (insert mode) keeps inserting into the tab it was opened on after switching Focused Tab mid-draft', async () => {
   const { host, port } = await startMemoryServer();
 
   await withApp(async (app) => {
@@ -181,24 +182,24 @@ test('InsertDrawer keeps inserting into the tab it was opened on after switching
       await ws.tabByName('orders').click();
       await expect(ws.tabByName('orders')).toHaveAttribute('aria-selected', 'true');
       await win.getByRole('button', { name: /Insert document/ }).click();
-      await expect(win.getByText('Insert document', { exact: true })).toBeVisible({
-        timeout: 5000,
-      });
+      const insertDialog = win.getByRole('dialog', { name: 'Insert document' });
+      await expect(insertDialog).toBeVisible({ timeout: 5000 });
 
-      const insertTextarea = win.locator('textarea').last();
-      await insertTextarea.fill('{"_id": "fresh", "sku": "drafted-on-orders"}');
+      // Fields is the default view (W18 §2); switch to JSON to paste the
+      // whole document.
+      await insertDialog.getByRole('radiogroup', { name: 'View' }).getByText('JSON', { exact: true }).click();
+      const insertBox = insertDialog.getByRole('textbox', { name: 'Document JSON' });
+      await insertBox.fill('{"_id": "fresh", "sku": "drafted-on-orders"}');
 
       await win.keyboard.press(`${MOD}+2`);
       await expect(ws.tabByName('users')).toHaveAttribute('aria-selected', 'true', {
         timeout: 5000,
       });
       // Survives the switch instead of unmounting.
-      await expect(win.getByText('Insert document', { exact: true })).toBeVisible();
+      await expect(insertDialog).toBeVisible();
 
       await win.getByRole('button', { name: /^Insert$/ }).click();
-      await expect(win.getByText('Insert document', { exact: true })).not.toBeVisible({
-        timeout: 8000,
-      });
+      await expect(insertDialog).not.toBeVisible({ timeout: 8000 });
 
       const counts = await win.evaluate(async (cid) => {
         const api = (window as unknown as {
@@ -241,11 +242,11 @@ test('InsertDrawer keeps inserting into the tab it was opened on after switching
 
 /**
  * ADR-001 consequence (1): dropping the `activeCollection &&` guard from
- * both drawer render sites means a drawer opened on a collection tab must
+ * both dialog render sites means an editor opened on a collection tab must
  * survive a switch to a tab with no active collection (a Script tab) instead
  * of unmounting.
  */
-test('EditDrawer survives switching to a Script tab (no active collection) instead of unmounting', async () => {
+test('the Document Editor survives switching to a Script tab (no active collection) instead of unmounting', async () => {
   const { host, port } = await startMemoryServer();
 
   await withApp(async (app) => {
@@ -265,31 +266,32 @@ test('EditDrawer survives switching to a Script tab (no active collection) inste
       await ws.queryBarRunButton.click();
       await expect(win.getByText('before-edit')).toBeVisible({ timeout: 8000 });
 
-      // Open the Script tab *before* the drawer — Mantine's `Drawer` overlay
-      // blocks pointer events to everything outside it (same as
-      // `DeleteConfirm`'s modal, per an earlier reachability finding), so
-      // "+ Script" can't be clicked once the drawer is open. Opening it up
-      // front, then jumping to it by keyboard once the drawer is up, is the
-      // reachable path a user actually has.
+      // Open the Script tab *before* the editor — the Modal's overlay blocks
+      // pointer events to everything outside it (same as `DeleteConfirm`'s
+      // modal, per an earlier reachability finding), so "+ Script" can't be
+      // clicked once the editor is open. Opening it up front, then jumping to
+      // it by keyboard once the editor is up, is the reachable path a user
+      // actually has.
       await ws.newScriptTab.click();
       await expect(win.locator('[data-testid="script-editor"]')).toBeVisible({ timeout: 5000 });
       await ws.tabByName('orders').click();
       await expect(ws.tabByName('orders')).toHaveAttribute('aria-selected', 'true');
 
       await win.locator('button[title="Edit document"]').first().click();
-      await expect(win.getByText('Edit document')).toBeVisible({ timeout: 5000 });
-      const editTextarea = win.locator('textarea').last();
-      await editTextarea.fill('{"_id": "o1", "sku": "still-editing"}');
+      const editor = win.getByRole('dialog', { name: 'Edit document' });
+      await expect(editor).toBeVisible({ timeout: 5000 });
+      const sku = editor.getByRole('textbox', { name: 'sku' });
+      await sku.fill('still-editing');
 
-      // ⌘2/Ctrl+2 jumps to the Script tab while the drawer opened against
+      // ⌘2/Ctrl+2 jumps to the Script tab while the editor opened against
       // orders is still up — a keyboard shortcut, so the overlay above
       // doesn't block it the way a click on "+ Script" would.
       await win.keyboard.press(`${MOD}+2`);
       await expect(win.locator('[data-testid="script-editor"]')).toBeVisible({ timeout: 5000 });
 
-      // The drawer is still open with the draft intact, not unmounted.
-      await expect(win.getByText('Edit document')).toBeVisible();
-      await expect(editTextarea).toHaveValue('{"_id": "o1", "sku": "still-editing"}');
+      // The editor is still open with the draft intact, not unmounted.
+      await expect(editor).toBeVisible();
+      await expect(sku).toHaveValue('still-editing');
     });
   });
 });

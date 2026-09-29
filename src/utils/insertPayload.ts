@@ -1,9 +1,10 @@
 /**
- * T2.7 — classify a parsed EJSON insert payload so `InsertDrawer` can route
- * a single document to `doc:insert` and a top-level array to `doc:insertMany`.
- * Pure and framework-free so it's unit-testable independent of React (and
- * lives in a plain `.ts` module because component files here can't export
- * non-component constants under `react-refresh/only-export-components`).
+ * Classify a parsed EJSON insert payload so the Document Editor's insert
+ * mode can route a single document to `doc:insert` and a top-level array to
+ * `doc:insertMany`. Pure and framework-free so it's unit-testable
+ * independent of React (and lives in a plain `.ts` module because component
+ * files here can't export non-component constants under
+ * `react-refresh/only-export-components`).
  */
 
 export type InsertPayloadClassification =

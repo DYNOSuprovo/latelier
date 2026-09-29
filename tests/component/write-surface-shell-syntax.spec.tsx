@@ -1,167 +1,36 @@
 // Shell Syntax reaches the write surfaces.
 //
-// ADR 0004 held `EditDrawer` and `InsertDrawer` strict on the grounds that a
+// ADR 0004 held the write surfaces strict on the grounds that a
 // misread value here corrupts a document rather than returning wrong rows.
 // What makes the leniency safe is the ADR's *other* rule — a destructive
 // operation always shows the Canonical EJSON it will actually run — so the
 // assertions below are as much about what is on screen before the write as
 // about the write itself.
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '../helpers/render';
-import { ObjectId } from 'bson';
-import { EditDrawer } from '../../src/pages/Workspace/EditDrawer';
-import { InsertDrawer } from '../../src/pages/Workspace/InsertDrawer';
+import { render, screen, fireEvent, waitFor, within } from '../helpers/render';
+import { DocumentEditor } from '../../src/pages/Workspace/DocumentEditor';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
+import type { ScriptEditorProps } from '../../src/components/ScriptEditor';
+
+// The JSON view mounts a real CodeMirror 6 `ScriptEditor`, which needs
+// layout APIs jsdom doesn't implement (see `document-editor.spec.tsx`). This
+// suite only needs a controlled text box with onChange/onBlur, not the
+// completion popup, so the stub stays minimal (mirrors `stage-accordion.spec.tsx`).
+vi.mock('../../src/components/ScriptEditor', () => ({
+  ScriptEditor: ({ value, onChange, onBlur, testId, ariaLabel }: ScriptEditorProps) => (
+    <textarea
+      data-testid={testId}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => onBlur?.()}
+    />
+  ),
+}));
 
 afterEach(() => {
   uninstallAtelierMock();
   vi.restoreAllMocks();
-});
-
-const ID = new ObjectId('64a7f0e1b1d4e8f2c3a45678');
-
-function renderEdit(): { replaced: Array<{ docJson: string }>; updated: Array<{ updateJson: string }> } {
-  const replaced: Array<{ docJson: string }> = [];
-  const updated: Array<{ updateJson: string }> = [];
-  installAtelierMock({
-    doc: {
-      replace: async (input) => {
-        replaced.push(input as { docJson: string });
-        return { matchedCount: 1, modifiedCount: 1 };
-      },
-      updateOne: async (input) => {
-        updated.push(input as { updateJson: string });
-        return { matchedCount: 1, modifiedCount: 1 };
-      },
-    },
-  });
-  render(
-    <EditDrawer
-      connectionId="c1"
-      dbName="db"
-      collection="coll"
-      doc={{ _id: ID, name: 'foo' }}
-      onClose={() => undefined}
-      onSaved={() => undefined}
-    />,
-  );
-  return { replaced, updated };
-}
-
-function editBuffer(): HTMLTextAreaElement {
-  return screen.getByRole('textbox') as HTMLTextAreaElement;
-}
-
-describe('EditDrawer — Shell Syntax input', () => {
-  it('rewrites Shell Syntax to Canonical EJSON in the box, on blur', () => {
-    renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: "{_id: ObjectId('64a7f0e1b1d4e8f2c3a45678'), name: 'foo'}" } });
-    fireEvent.blur(editBuffer());
-
-    expect(editBuffer().value).toBe(
-      '{"_id": {"$oid":"64a7f0e1b1d4e8f2c3a45678"}, "name": "foo"}',
-    );
-  });
-
-  it('opens Save for a buffer that is only Shell Syntax, before any commit', () => {
-    // Without this the feature is unusable: `isValidEjson` says no, Save is
-    // disabled, and a disabled button does not take the click that would
-    // blur the textarea and fix it.
-    renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: "{name: 'foo'}" } });
-
-    expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
-    // …and the enabling is *derived per render*, not the side effect of a
-    // commit that already rewrote the buffer. The distinction is the whole
-    // asymmetry with the Filter Bar, which keeps Run gated until a commit
-    // fires, so a seam that unified the two would have to break one of them.
-    expect(editBuffer().value).toBe("{name: 'foo'}");
-  });
-
-  it('writes Canonical EJSON even when Save is pressed before any blur', async () => {
-    const { replaced } = renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: "{_id: ObjectId('64a7f0e1b1d4e8f2c3a45678'), name: 'bar'}" } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    await waitFor(() => expect(replaced).toHaveLength(1));
-    expect(replaced[0]!.docJson).toContain('"$oid"');
-    expect(replaced[0]!.docJson).not.toContain('ObjectId(');
-    // …and the user is looking at what was written, not at what they typed.
-    expect(editBuffer().value).toContain('"$oid"');
-  });
-
-  // The ordinary order of events — the user tabs out, *then* saves — as one
-  // sequence rather than as two tests that each cover half of it. The repair
-  // has already committed by the time Save runs, so the second
-  // `repairOnCommit` sees text that parses strictly and returns `unchanged`;
-  // this is what proves the second call is idempotent rather than merely
-  // harmless when it is the only one.
-  it('saves the repaired text after a blur has already committed it', async () => {
-    const { replaced } = renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: '{age: 1}' } });
-    fireEvent.blur(editBuffer());
-
-    expect(editBuffer().value).toBe('{"age": 1}');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(replaced).toHaveLength(1));
-
-    // Not the buffer's own text: the replace path re-stringifies the parsed
-    // value, so the wire carries normalized Canonical EJSON with the `_id` the
-    // buffer no longer mentions re-injected from the original document.
-    expect(replaced[0]!.docJson).toBe(
-      '{"age":{"$numberInt":"1"},"_id":{"$oid":"64a7f0e1b1d4e8f2c3a45678"}}',
-    );
-    // The repaired text — never the Shell Syntax — is what stays on screen.
-    expect(editBuffer().value).toBe('{"age": 1}');
-  });
-
-  it('carries the transform through the $set path too', async () => {
-    const { updated } = renderEdit();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Update fields ($set)' }));
-    fireEvent.change(editBuffer(), { target: { value: "{status: 'active',}" } });
-    fireEvent.click(screen.getByRole('button', { name: 'Apply update' }));
-
-    await waitFor(() => expect(updated).toHaveLength(1));
-    expect(updated[0]!.updateJson).toBe('{"$set":{"status":"active"}}');
-  });
-
-  it('leaves text it cannot read exactly as typed, and names the reason', () => {
-    renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: '{status: active}' } });
-    fireEvent.blur(editBuffer());
-
-    expect(editBuffer().value).toBe('{status: active}');
-    const notice = screen.getByRole('alert').textContent ?? '';
-    expect(notice).toContain('active');
-    expect(notice).toMatch(/^Line 1, column 10: /);
-  });
-
-  it('does not write anything it could not read', async () => {
-    const { replaced } = renderEdit();
-
-    fireEvent.change(editBuffer(), { target: { value: '{status: active}' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    await new Promise((r) => setTimeout(r, 20));
-    expect(replaced).toHaveLength(0);
-  });
-
-  it('leaves text that is already Canonical EJSON byte-identical', () => {
-    renderEdit();
-    const HAND_ARRANGED = '{\n  "_id": {"$oid":"64a7f0e1b1d4e8f2c3a45678"},\n  "name":   "foo"\n}';
-
-    fireEvent.change(editBuffer(), { target: { value: HAND_ARRANGED } });
-    fireEvent.blur(editBuffer());
-
-    expect(editBuffer().value).toBe(HAND_ARRANGED);
-  });
 });
 
 function renderInsert(): Array<{ docJson?: string; docsJson?: string }> {
@@ -179,7 +48,8 @@ function renderInsert(): Array<{ docJson?: string; docsJson?: string }> {
     },
   });
   render(
-    <InsertDrawer
+    <DocumentEditor
+      mode="insert"
       collection="coll"
       connectionId="c1"
       dbName="db"
@@ -187,14 +57,19 @@ function renderInsert(): Array<{ docJson?: string; docsJson?: string }> {
       onInserted={() => undefined}
     />,
   );
+  // Fields is the default view (W18 §2); this suite is about the JSON
+  // view's Shell Syntax repair, so every case switches there first.
+  fireEvent.click(screen.getByRole('radio', { name: 'JSON' }));
   return calls;
 }
 
 function insertBuffer(): HTMLTextAreaElement {
-  return screen.getByRole('textbox') as HTMLTextAreaElement;
+  return screen.getByRole('textbox', { name: 'Document JSON' }) as HTMLTextAreaElement;
 }
 
-describe('InsertDrawer — Shell Syntax input', () => {
+const insertButton = () => screen.getByRole('button', { name: /^Insert/ });
+
+describe('DocumentEditor — insert mode — Shell Syntax input (JSON view)', () => {
   it('rewrites Shell Syntax in the box, on blur', () => {
     renderInsert();
 
@@ -210,13 +85,13 @@ describe('InsertDrawer — Shell Syntax input', () => {
     const calls = renderInsert();
 
     fireEvent.change(insertBuffer(), { target: { value: "{name: 'foo',}" } });
-    fireEvent.click(screen.getByRole('button', { name: /^Insert/ }));
+    fireEvent.click(insertButton());
 
     await waitFor(() => expect(calls).toHaveLength(1));
-    // No spacing: the payload is re-stringified from the parsed value
-    // (a review finding), so the wire carries normalized Canonical EJSON whatever
-    // the user typed. The repair's in-place spacing survives where it is
-    // meant to — in the buffer, asserted below — not on the wire.
+    // No spacing: the payload is re-stringified from the parsed value, so
+    // the wire carries normalized Canonical EJSON whatever the user typed.
+    // The repair's in-place spacing survives where it is meant to — in the
+    // buffer, asserted below — not on the wire.
     expect(calls[0]!.docJson).toBe('{"name":"foo"}');
     expect(insertBuffer().value).toBe('{"name": "foo"}');
   });
@@ -264,16 +139,50 @@ describe('InsertDrawer — Shell Syntax input', () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText('Invalid EJSON')).toBeNull();
-    expect(screen.getByRole('button', { name: /^Insert/ })).toHaveProperty('disabled', true);
+    expect(insertButton()).toHaveProperty('disabled', true);
   });
 
   it('does not insert anything it could not read', async () => {
     const calls = renderInsert();
 
     fireEvent.change(insertBuffer(), { target: { value: '{name: nope}' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Insert/ }));
+    fireEvent.click(insertButton());
 
     await new Promise((r) => setTimeout(r, 20));
     expect(calls).toHaveLength(0);
+  });
+});
+
+// The write payload must be Canonical EJSON. `stripIdForDuplicate` (the
+// Duplicate-document seed) hands this editor the *readable* form: a date as
+// `{"$date":"<ISO>"}` and an int32 as a bare number. Fields view revives it
+// (typed BSON instances) and the save path re-stringifies with
+// `ejsonStringify`, so no round trip through the JSON view's Shell Syntax
+// reader is needed for this to hold — it is asserted here anyway, once, as
+// a regression guard on the same seam.
+describe('DocumentEditor — insert mode — the write payload is Canonical EJSON', () => {
+  it('canonicalizes a readable duplicate seed before it crosses IPC', async () => {
+    const insert = vi.fn().mockResolvedValue({ insertedId: 'new' });
+    installAtelierMock({ doc: { insert } });
+
+    render(
+      <DocumentEditor
+        mode="insert"
+        collection="coll"
+        connectionId="c1"
+        dbName="db"
+        initialDocJson={'{\n  "age": 67,\n  "createdAt": {\n    "$date": "2025-01-31T00:48:48.524Z"\n  }\n}'}
+        onClose={() => undefined}
+        onInserted={() => undefined}
+      />,
+    );
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^Insert/ }));
+
+    await waitFor(() => expect(insert).toHaveBeenCalledTimes(1));
+    const { docJson } = insert.mock.calls[0]![0] as { docJson: string };
+    expect(docJson).toContain('"createdAt":{"$date":{"$numberLong":"1738284528524"}}');
+    expect(docJson).toContain('"age":{"$numberInt":"67"}');
+    expect(docJson).not.toContain('2025-01-31T00:48:48.524Z');
   });
 });

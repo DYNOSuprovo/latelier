@@ -21,7 +21,7 @@ import type { WorkspaceStateService, TabStatePatch } from '../../services/Worksp
 const TabStateShape = z
   .object({
     // ─── CollectionTabState ────────────────────────────────────────
-    activeView: z.enum(['documents', 'aggregation', 'schema']).optional(),
+    activeView: z.enum(['documents', 'aggregation', 'structure']).optional(),
     view: z.enum(['Tree', 'JSON', 'Table']).optional(),
     builder: z.record(z.string(), z.unknown()).optional(),
     queryRaw: z.string().optional(),

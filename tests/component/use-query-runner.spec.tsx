@@ -273,6 +273,110 @@ describe('useQueryRunner', () => {
     expect(errCall?.[1].lastRun.documents).toBe(previousDocs);
   });
 
+  it('cancel aborts the in-flight find via api.query.cancel and returns to idle without touching lastRun', async () => {
+    let rejectFind: ((err: unknown) => void) | undefined;
+    const findPromise = new Promise<never>((_res, rej) => {
+      rejectFind = rej;
+    });
+    const findSpy = vi.fn<IpcApi['query']['find']>(() => findPromise);
+    const cancelSpy = vi.fn(async () => {});
+    installAtelierMock({
+      query: { find: findSpy, count: async () => ({ count: 0 }), cancel: cancelSpy },
+    });
+
+    const previousDocs = [{ _id: 'old' }];
+    const patch = vi.fn();
+    const target = makeTarget({
+      lastRun: { documents: previousDocs, durationMs: 1, ranAt: new Date().toISOString() },
+    });
+    const { result } = renderHook(() =>
+      useQueryRunner({ active: target, patchCollectionState: patch, loadingDelayMs: 0 }),
+    );
+
+    let runPromise: Promise<void> = Promise.resolve();
+    act(() => {
+      runPromise = result.current.run();
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(true));
+
+    const [{ cancelToken }] = findSpy.mock.calls[0];
+    act(() => {
+      result.current.cancel();
+    });
+
+    expect(cancelSpy).toHaveBeenCalledWith({ token: cancelToken });
+    expect(result.current.isLoading).toBe(false);
+
+    // The aborted find rejecting afterwards must not surface as an error —
+    // this run was disowned the instant cancel() fired.
+    await act(async () => {
+      rejectFind!(Object.assign(new Error('aborted'), { code: 'INTERNAL' }));
+      await runPromise;
+    });
+    expect(patch.mock.calls.some((c) => c[1].lastRun !== undefined)).toBe(false);
+  });
+
+  it('a newer run supersedes an older in-flight one: cancels it and its late result is discarded', async () => {
+    let resolveFind1: ((v: { documents: unknown[]; durationMs: number; hasMore: boolean }) => void) | undefined;
+    const find1 = new Promise<{ documents: unknown[]; durationMs: number; hasMore: boolean }>((res) => {
+      resolveFind1 = res;
+    });
+    const findSpy = vi
+      .fn<IpcApi['query']['find']>()
+      .mockImplementationOnce(() => find1)
+      .mockImplementationOnce(async () => ({ documents: [{ _id: 'new' }], durationMs: 2, hasMore: false }));
+    const cancelSpy = vi.fn(async () => {});
+    installAtelierMock({
+      query: { find: findSpy, count: async () => ({ count: 0 }), cancel: cancelSpy },
+    });
+
+    const patch = vi.fn();
+    const target = makeTarget();
+    const { result } = renderHook(() =>
+      useQueryRunner({ active: target, patchCollectionState: patch, loadingDelayMs: 0 }),
+    );
+
+    let firstRun: Promise<void> = Promise.resolve();
+    act(() => {
+      firstRun = result.current.run();
+    });
+    await waitFor(() => expect(findSpy).toHaveBeenCalledTimes(1));
+    const firstToken = findSpy.mock.calls[0][0].cancelToken;
+
+    // A second run fires while the first is still in flight — it must
+    // cancel the first server-side and not be blocked by it.
+    await act(async () => {
+      await result.current.run();
+    });
+    expect(cancelSpy).toHaveBeenCalledWith({ token: firstToken });
+    expect(findSpy).toHaveBeenCalledTimes(2);
+    const newestPatch = patch.mock.calls.findLast((c) => c[1].lastRun !== undefined);
+    expect(newestPatch?.[1].lastRun.documents).toEqual([{ _id: 'new' }]);
+
+    // The stale first find finally resolves — it must not overwrite the
+    // newer run's result.
+    await act(async () => {
+      resolveFind1!({ documents: [{ _id: 'stale' }], durationMs: 1, hasMore: false });
+      await firstRun;
+    });
+    const finalPatch = patch.mock.calls.findLast((c) => c[1].lastRun !== undefined);
+    expect(finalPatch?.[1].lastRun.documents).toEqual([{ _id: 'new' }]);
+  });
+
+  it('cancel is a no-op when nothing is running', async () => {
+    const cancelSpy = vi.fn(async () => {});
+    installAtelierMock({
+      query: { find: async () => ({ documents: [], durationMs: 0, hasMore: false }), cancel: cancelSpy },
+    });
+    const { result } = renderHook(() =>
+      useQueryRunner({ active: makeTarget(), patchCollectionState: vi.fn(), loadingDelayMs: 0 }),
+    );
+
+    act(() => result.current.cancel());
+
+    expect(cancelSpy).not.toHaveBeenCalled();
+  });
+
   it('pagination override merges into state — page used by skip computation', async () => {
     const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
       documents: [],
@@ -620,5 +724,112 @@ describe('useQueryRunner', () => {
 
     expect(findSpy.mock.calls[0]?.[0].sort).toBeUndefined();
     expect(patch.mock.calls.some((c) => c[1].builder !== undefined)).toBe(false);
+  });
+
+  // A successful run fire-and-forgets the filter's conditions
+  // to `recent:recordFieldValues` for the value-suggestion popover.
+  describe('value-suggestion recording', () => {
+    it('records a scalar $eq condition after a successful run', async () => {
+      const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
+        documents: [],
+        durationMs: 1,
+        hasMore: false,
+      }));
+      const recordFieldValues = vi.fn(async () => ({ recorded: 1 }));
+      installAtelierMock({
+        query: { find: findSpy, count: async () => ({ count: 0 }) },
+        recent: { recordFieldValues: recordFieldValues as never } as never,
+      });
+
+      const patch = vi.fn();
+      const { result } = renderHook(() =>
+        useQueryRunner({
+          active: makeTarget({ queryRaw: '{"status":{"$eq":"shipped"}}' }),
+          patchCollectionState: patch,
+          loadingDelayMs: 0,
+        }),
+      );
+
+      await act(async () => {
+        await result.current.run();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(recordFieldValues).toHaveBeenCalledWith({
+        connectionId: 'c1',
+        dbName: 'app',
+        collection: 'users',
+        entries: [{ field: 'status', value: 'shipped', valType: 'string', op: '$eq' }],
+      });
+    });
+
+    it('splits an $in condition element-wise and drops an empty element', async () => {
+      const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
+        documents: [],
+        durationMs: 1,
+        hasMore: false,
+      }));
+      const recordFieldValues = vi.fn(async () => ({ recorded: 1 }));
+      installAtelierMock({
+        query: { find: findSpy, count: async () => ({ count: 0 }) },
+        recent: { recordFieldValues: recordFieldValues as never } as never,
+      });
+
+      const patch = vi.fn();
+      const { result } = renderHook(() =>
+        useQueryRunner({
+          active: makeTarget({ queryRaw: '{"tags":{"$in":["","x"]}}' }),
+          patchCollectionState: patch,
+          loadingDelayMs: 0,
+        }),
+      );
+
+      await act(async () => {
+        await result.current.run();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(recordFieldValues).toHaveBeenCalledWith({
+        connectionId: 'c1',
+        dbName: 'app',
+        collection: 'users',
+        entries: [{ field: 'tags', value: 'x', valType: 'string', op: '$in' }],
+      });
+    });
+
+    it('does not call recordFieldValues when the filter has no recordable condition', async () => {
+      const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
+        documents: [],
+        durationMs: 1,
+        hasMore: false,
+      }));
+      const recordFieldValues = vi.fn(async () => ({ recorded: 0 }));
+      installAtelierMock({
+        query: { find: findSpy, count: async () => ({ count: 0 }) },
+        recent: { recordFieldValues: recordFieldValues as never } as never,
+      });
+
+      const patch = vi.fn();
+      const { result } = renderHook(() =>
+        useQueryRunner({
+          active: makeTarget({ queryRaw: '{"tags":{"$exists":true}}' }),
+          patchCollectionState: patch,
+          loadingDelayMs: 0,
+        }),
+      );
+
+      await act(async () => {
+        await result.current.run();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(recordFieldValues).not.toHaveBeenCalled();
+    });
   });
 });

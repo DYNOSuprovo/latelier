@@ -97,6 +97,7 @@ function mountActions(
   tab: CollectionTab | null = collectionTab(),
   script: ScriptTab | null = null,
   run: (override?: Partial<CollectionTabState>) => Promise<void> = () => Promise.resolve(),
+  cancel: () => void = () => {},
 ) {
   const activeCollectionRef = { current: tab } as React.RefObject<CollectionTab | null>;
   const activeScriptRef = { current: script } as React.RefObject<ScriptTab | null>;
@@ -107,6 +108,7 @@ function mountActions(
       activeScriptRef,
       tabs: tabs as unknown as WorkspaceTabsState,
       run,
+      cancel,
     }),
   );
   return { ...view, tabs, activeCollectionRef, activeScriptRef };
@@ -198,6 +200,15 @@ describe('useCollectionTabActions', () => {
     act(() => result.current.runActiveCollection({ page: 1 }));
 
     expect(run).toHaveBeenCalledWith({ page: 1 });
+  });
+
+  it('cancelActiveCollection forwards to the stable cancel', () => {
+    const cancel = vi.fn();
+    const { result } = mountActions(collectionTab(), null, () => Promise.resolve(), cancel);
+
+    act(() => result.current.cancelActiveCollection());
+
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('patchActiveCollectionWith forwards the raw updater to tabs.patchCollectionStateWith', () => {

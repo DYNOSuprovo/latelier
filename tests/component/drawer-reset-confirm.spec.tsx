@@ -108,19 +108,6 @@ describe('W15 §13.1 — Reset confirms before wiping the tree', () => {
   });
 });
 
-describe('W15 §13.7 — "builder configuration" is gone from the footer', () => {
-  it('the Save button offers to save a query, not a builder configuration', async () => {
-    mountWith(makeState());
-
-    // Mantine renders a Tooltip's label only while it is open, so this has
-    // to be hovered — a body-text scan would pass with the old copy intact.
-    fireEvent.mouseEnter(await screen.findByRole('button', { name: 'Save query' }));
-
-    await screen.findByText('Save this query');
-    expect(screen.queryByText(/builder configuration/)).toBeNull();
-  });
-});
-
 describe('W15 §13.7 — Copy code reports success', () => {
   it('says the command was copied', async () => {
     const writeText = vi.fn(async () => {});

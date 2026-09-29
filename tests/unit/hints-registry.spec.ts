@@ -4,7 +4,13 @@ import type { FeatureHintId } from '../../shared/types';
 import { queryRunKey } from '../../src/utils/queryRunKey';
 
 describe('HINT_REGISTRY', () => {
-  const ids: FeatureHintId[] = ['refs.configure', 'tabs.pin', 'saved.create', 'palette.discover', 'preview.configure'];
+  const ids: FeatureHintId[] = [
+    'run.execute',
+    'refs.configure',
+    'tabs.pin',
+    'saved.create',
+    'palette.discover',
+  ];
 
   it('contains every FeatureHintId exactly once', () => {
     for (const id of ids) {
@@ -19,6 +25,14 @@ describe('HINT_REGISTRY', () => {
       expect(c.title.length).toBeLessThanOrEqual(60);
       expect(c.body.length).toBeLessThanOrEqual(200);
       expect(c.title.trim()).toBe(c.title);
+    }
+  });
+
+  it('gives the primary-path Run hint the lowest priority number', () => {
+    const runPriority = HINT_REGISTRY['run.execute'].priority;
+    for (const id of ids) {
+      if (id === 'run.execute') continue;
+      expect(runPriority).toBeLessThan(HINT_REGISTRY[id].priority);
     }
   });
 });
@@ -87,6 +101,48 @@ describe('queryRunKey', () => {
   it('separates by collection', () => {
     expect(queryRunKey({ ...base })).not.toBe(
       queryRunKey({ ...base, collection: 'users' }),
+    );
+  });
+
+  it('does not mutate the caller-provided projection array', () => {
+    const projection = ['Zip', 'Name', 'age'];
+    const before = [...projection];
+    queryRunKey({ ...base, projection });
+    expect(projection).toEqual(before);
+  });
+
+  it('joins every field into an exact, stable key for a fully-specified input', () => {
+    // Locks down the literal separator and every field's blank/zero default,
+    // not just pairwise equality — a wrong fallback (`&&` for `??`, or a
+    // different fallback literal) changes this exact string.
+    const key = queryRunKey({
+      ...base,
+      filter: '{"x":1}',
+      sort: '{"x":1}',
+      limit: 10,
+      skip: 5,
+      projection: ['b', 'a'],
+    });
+    const SEP = '\x1f';
+    expect(key).toBe(
+      ['c1', 'db', 'orders', '{"x":1}', `m${SEP}a${SEP}b`, '{"x":1}', 10, 5].join(SEP),
+    );
+  });
+
+  it('joins every field into an exact key when the optional fields are all absent', () => {
+    const key = queryRunKey({ ...base });
+    const SEP = '\x1f';
+    expect(key).toBe(['c1', 'db', 'orders', '', `m${SEP}`, '', '', 0].join(SEP));
+  });
+
+  it('sorts three distinct fields into exact code-unit order', () => {
+    // Upper-case 'A' (0x41) sorts before either lower-case letter, and among
+    // the lower-case ones 'b' (0x62) precedes 'c' (0x63) — every branch of
+    // the comparator's three-way ternary is exercised by these two pairs.
+    const key = queryRunKey({ ...base, projection: ['cherry', 'Apple', 'banana'] });
+    const SEP = '\x1f';
+    expect(key).toBe(
+      ['c1', 'db', 'orders', '', `m${SEP}Apple${SEP}banana${SEP}cherry`, '', '', 0].join(SEP),
     );
   });
 });

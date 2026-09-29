@@ -6,14 +6,36 @@ import {
 } from 'react-window';
 import { I } from '../../../icons';
 import { ejsonStringify } from '../../../utils/ejson';
-import { docKey } from '../../../utils/displayValue';
+import { docKey, isRecord } from '../../../utils/displayValue';
 import { tokenizeJson, type Token, type TokenKind } from '../../../utils/jsonHighlight';
 import { copyToClipboard } from '../../../utils/clipboard';
+import { anchorFromRect, isEditKey } from '../../../utils/contextMenuKey';
 import { useCollectionWorkspace } from '../context';
 import { useResultSelection } from '../resultSelection';
+import { getDocId } from './docId';
+import { SelectToggle } from './SelectToggle';
+import { DocActionsPopup } from './RowActionsMenu';
+import { useDocMenu } from './useDocMenu';
 
 interface JsonViewProps {
   documents: unknown[];
+}
+
+/**
+ * Strip the Fields control's hidden top-level fields from a document before
+ * it is serialized for display. Rendering-only: every action on the
+ * document (Copy, Edit, Delete/Select) is handed the original `doc`, never
+ * this redacted copy — hiding a field must never change what gets sent to
+ * Mongo or the clipboard. Only top-level paths are handled, matching what
+ * `columnConfig.hidden` (Table's Fields control) currently stores.
+ */
+function redactHidden(doc: unknown, hidden: Set<string>): unknown {
+  if (hidden.size === 0 || !isRecord(doc)) return doc;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(doc)) {
+    if (!hidden.has(key)) out[key] = value;
+  }
+  return out;
 }
 
 function tokenColor(kind: TokenKind): string {
@@ -184,11 +206,19 @@ interface DocCardProps {
   isSelected: boolean;
   isCopied: boolean;
   collapsedKeys: Set<string>;
+  hiddenFields: Set<string>;
   onToggleCollapse: (key: string) => void;
   onToggle: (idx: number) => void;
   onCopy: (doc: unknown, idx: number) => void;
   onEdit: (doc: unknown) => void;
   onDelete: (doc: unknown) => void;
+  // Opens the shared `RowActionsMenu` (Duplicate — Edit/Delete already have
+  // their own always-visible buttons on this card).
+  onOpenRowMenu: (
+    doc: unknown,
+    anchor: { x: number; y: number },
+    focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
+  ) => void;
 }
 
 function DocCard({
@@ -197,23 +227,43 @@ function DocCard({
   isSelected,
   isCopied,
   collapsedKeys,
+  hiddenFields,
   onToggleCollapse,
   onToggle,
   onCopy,
   onEdit,
   onDelete,
+  onOpenRowMenu,
 }: DocCardProps) {
   const json = React.useMemo(() => {
+    const visible = redactHidden(doc, hiddenFields);
     try {
-      return ejsonStringify(doc, 2);
+      return ejsonStringify(visible, 2);
     } catch {
-      return JSON.stringify(doc, null, 2);
+      return JSON.stringify(visible, null, 2);
     }
-  }, [doc]);
+  }, [doc, hiddenFields]);
+
+  // A plain click no longer does anything to selection — it used to toggle
+  // this card into/out of the multi-selection, which surprised anyone who'd
+  // learned Table or Tree's own click behavior first. ⌘/Ctrl+click still
+  // toggles it, matching the other two views; the visible checkbox below is
+  // the plain-click-free way in.
+  const handleCardClick = (e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey) onToggle(idx);
+  };
 
   return (
     <div
-      onClick={() => onToggle(idx)}
+      onClick={handleCardClick}
+      // JSON has no roving row focus; the card is "focused" when one of its
+      // own controls is, and `E` there opens the editor like it does on a
+      // Table or Tree row. Only buttons live inside, so no typing reaches it.
+      onKeyDown={(e) => {
+        if (!isEditKey(e)) return;
+        e.preventDefault();
+        onEdit(doc);
+      }}
       // `group`, deliberately not `button`. `button` is "children
       // presentational" in ARIA, and this card holds real <button>s — the
       // corner actions below, and the JSON body's own collapse toggles at
@@ -226,9 +276,6 @@ function DocCard({
       // a handler, not specifically an interactive one — the `role="group"`
       // context menus in TableView carry an onClick and came back clean on the
       // #18 scan. So the wide-area click survives without either finding.
-      //
-      // The keyboard path is the dedicated Select button below, which is a
-      // leaf; this div is mouse convenience on top of it.
       role="group"
       aria-label={`Document ${idx + 1}`}
       style={{
@@ -236,35 +283,12 @@ function DocCard({
         borderRadius: 'var(--atelier-radius-sm)',
         background: isSelected ? 'var(--atelier-accent-soft)' : 'var(--atelier-surface-raised)',
         padding: '8px 10px',
-        cursor: 'pointer',
+        cursor: 'default',
         position: 'relative',
       }}
     >
       <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 4 }}>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle(idx);
-          }}
-          aria-pressed={isSelected}
-          aria-label={isSelected ? 'Deselect document' : 'Select document'}
-          title={isSelected ? 'Deselect document' : 'Select document'}
-          style={{
-            background: isSelected ? 'var(--atelier-accent-soft)' : 'var(--atelier-surface)',
-            border: `1px solid ${isSelected ? 'var(--atelier-accent-border)' : 'var(--atelier-border)'}`,
-            borderRadius: 'var(--atelier-radius-xs)',
-            padding: '2px 5px',
-            margin: 0,
-            font: 'inherit',
-            cursor: 'pointer',
-            color: isSelected ? 'var(--atelier-accent)' : 'var(--atelier-text-ghost)',
-            display: 'flex',
-            alignItems: 'center',
-          }}
-        >
-          {I.check}
-        </button>
+        <SelectToggle selected={isSelected} docLabel={getDocId(doc)} onToggle={() => onToggle(idx)} />
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -324,6 +348,30 @@ function DocCard({
         >
           {I.trash}
         </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const viaKeyboard = e.detail === 0;
+            onOpenRowMenu(doc, anchorFromRect(e.currentTarget.getBoundingClientRect()), {
+              returnFocusTo: viaKeyboard ? e.currentTarget : undefined,
+              focusMenuOnOpen: viaKeyboard,
+            });
+          }}
+          title="More actions"
+          aria-label={`More actions for document ${getDocId(doc)}`}
+          style={{
+            background: 'var(--atelier-surface)',
+            border: '1px solid var(--atelier-border)',
+            borderRadius: 'var(--atelier-radius-xs)',
+            padding: '2px 5px',
+            cursor: 'pointer',
+            color: 'var(--atelier-text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          {I.more}
+        </button>
       </div>
       <HighlightedJson
         json={json}
@@ -342,11 +390,13 @@ interface JsonRowProps {
   selectedIndices: Set<number>;
   copiedIdx: number | null;
   collapsedKeys: Set<string>;
+  hiddenFields: Set<string>;
   onToggleCollapse: (key: string) => void;
   onToggle: (idx: number) => void;
   onCopy: (doc: unknown, idx: number) => void;
   onEdit: (doc: unknown) => void;
   onDelete: (doc: unknown) => void;
+  onOpenRowMenu: DocCardProps['onOpenRowMenu'];
 }
 
 function JsonRow({
@@ -356,11 +406,13 @@ function JsonRow({
   selectedIndices,
   copiedIdx,
   collapsedKeys,
+  hiddenFields,
   onToggleCollapse,
   onToggle,
   onCopy,
   onEdit,
   onDelete,
+  onOpenRowMenu,
 }: RowComponentProps<JsonRowProps>) {
   const doc = documents[index];
   return (
@@ -371,20 +423,30 @@ function JsonRow({
         isSelected={selectedIndices.has(index)}
         isCopied={copiedIdx === index}
         collapsedKeys={collapsedKeys}
+        hiddenFields={hiddenFields}
         onToggleCollapse={onToggleCollapse}
         onToggle={onToggle}
         onCopy={onCopy}
         onEdit={onEdit}
         onDelete={onDelete}
+        onOpenRowMenu={onOpenRowMenu}
       />
     </div>
   );
 }
 
 export function JsonView({ documents }: JsonViewProps) {
-  const { actions } = useCollectionWorkspace();
+  const { state, actions, meta } = useCollectionWorkspace();
   const onEditDoc = actions.openEdit;
   const onDeleteDoc = actions.openDelete;
+  const onDuplicateDoc = actions.openDuplicate;
+  // Fields control: same top-level `columnConfig.hidden` Table already
+  // reads (`tableColumns.ts`'s `resolveColumns`) — display-only, so Copy/Edit/
+  // Delete below always act on the untouched `doc`, never this set.
+  const hiddenFields = React.useMemo(
+    () => new Set(state.columnConfig?.hidden ?? []),
+    [state.columnConfig?.hidden],
+  );
   // T0.4 — selection lifted to the shared cross-view context (index-based,
   // scoped to the enclosing <ResultViewer>); falls back to local state when
   // rendered standalone (no provider mounted).
@@ -393,6 +455,17 @@ export function JsonView({ documents }: JsonViewProps) {
   const toggleSelect = selection.toggle;
   const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null);
   const [collapsedKeys, setCollapsedKeys] = React.useState<Set<string>>(() => new Set());
+  // Collapse keys are `${docKey}:${node.id}`, where node.id is assigned in
+  // token order over the *redacted* JSON — hiding or showing a field shifts
+  // every id after it, so a stale collapsedKeys set would collapse the wrong
+  // subtree. Reset rather than try to remap ids across a hidden-fields
+  // change. "Adjust state during render" pattern (see TreeView's
+  // prevDocuments reset), not a useEffect, to avoid a cascading render cycle.
+  const [prevHiddenFields, setPrevHiddenFields] = React.useState(hiddenFields);
+  if (prevHiddenFields !== hiddenFields) {
+    setPrevHiddenFields(hiddenFields);
+    setCollapsedKeys(new Set());
+  }
   const toggleCollapse = React.useCallback((key: string) => {
     setCollapsedKeys((prev) => {
       const next = new Set(prev);
@@ -413,6 +486,10 @@ export function JsonView({ documents }: JsonViewProps) {
     });
   }, []);
 
+  // "More actions" per-card menu — Duplicate only, since Edit/Delete already
+  // have their own always-visible buttons on the card.
+  const { docMenu, docMenuRef, openDocMenu: handleOpenRowMenu, closeDocMenu } = useDocMenu();
+
   // Cards are variable-height (driven by the doc's serialized size). The
   // estimate is intentionally generous; useDynamicRowHeight refines on render.
   const rowHeight = useDynamicRowHeight({ defaultRowHeight: 180 });
@@ -426,37 +503,65 @@ export function JsonView({ documents }: JsonViewProps) {
       selectedIndices,
       copiedIdx,
       collapsedKeys,
+      hiddenFields,
       onToggleCollapse: toggleCollapse,
       onToggle: toggleSelect,
       onCopy: copyDoc,
       onEdit: onEditDoc,
       onDelete: onDeleteDoc,
+      onOpenRowMenu: handleOpenRowMenu,
     }),
     [
       documents,
       selectedIndices,
       copiedIdx,
       collapsedKeys,
+      hiddenFields,
       toggleCollapse,
       toggleSelect,
       copyDoc,
       onEditDoc,
       onDeleteDoc,
+      handleOpenRowMenu,
     ],
   );
 
   return (
-    <List<JsonRowProps>
-      rowComponent={JsonRow}
-      rowCount={documents.length}
-      rowHeight={rowHeight}
-      rowProps={rowProps}
-      overscanCount={4}
-      style={{
-        flex: 1,
-        minHeight: 0,
-        padding: '8px 12px',
-      }}
-    />
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {hiddenFields.size > 0 && (
+        <div
+          style={{
+            padding: '4px 12px 0',
+            fontSize: 11,
+            color: 'var(--atelier-text-muted)',
+          }}
+        >
+          {hiddenFields.size === 1 ? '1 field hidden' : `${hiddenFields.size} fields hidden`}
+        </div>
+      )}
+      <List<JsonRowProps>
+        rowComponent={JsonRow}
+        rowCount={documents.length}
+        rowHeight={rowHeight}
+        rowProps={rowProps}
+        overscanCount={4}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          padding: '8px 12px',
+        }}
+      />
+      {docMenu && (
+        <DocActionsPopup
+          menu={docMenu}
+          menuRef={docMenuRef}
+          onEdit={onEditDoc}
+          onDuplicate={onDuplicateDoc}
+          onDelete={onDeleteDoc}
+          isReadOnly={meta.isReadOnly}
+          onClose={closeDocMenu}
+        />
+      )}
+    </div>
   );
 }

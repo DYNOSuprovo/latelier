@@ -16,7 +16,7 @@ import React from 'react';
  * A mount effect was proposed first, on the grounds that React runs child effects
  * before parent effects and Mantine's focus trap defers its own focus move via
  * `setTimeout` — so focus is still on the trigger at capture time. That holds
- * for `EditDrawer`, but not for the type-to-confirm dialogs: React applies
+ * for the Document Editor, but not for the type-to-confirm dialogs: React applies
  * `autoFocus` during the commit's layout phase, *before* any `useEffect`, so a
  * mount effect in `DropCollectionConfirm`/`RenameCollectionModal`/the tab drop
  * confirms captures the dialog's own `TextInput` and later "restores" focus to
@@ -33,7 +33,7 @@ import React from 'react';
  *   clicked elsewhere and back onto the trigger. The check here is by dialog
  *   role rather than by a ref to *this* dialog's root: it is a strict superset
  *   of that check, it costs no `ref` threaded through a dozen dialogs, and it
- *   keeps a nested overlay counted as ours — `EditDrawer`'s discard prompt is a
+ *   keeps a nested overlay counted as ours — the Document Editor's discard prompt is a
  *   separate portal, so whether focus is still on the prompt when `close()`
  *   runs is a timing detail this shouldn't depend on.
  * - `ConnectionExpandedTable` wires focus return to `onClose` rather than an

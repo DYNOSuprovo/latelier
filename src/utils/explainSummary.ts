@@ -28,6 +28,7 @@ export interface ExplainSummary {
 
 function nextStage(stage: Record<string, unknown>): unknown {
   if (isRecord(stage.inputStage)) return stage.inputStage;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: `> 0` vs `>= 0`/forced-`true` only differ when stage.inputStages is a real (Array.isArray) array of length 0 — and for any real array, arr[0] is always undefined at that length, so the `return stage.inputStages[0]` this guards is `undefined` either way this branch is reached or the `return undefined` below runs instead. Verified: both paths return the same value for an empty array.
   if (Array.isArray(stage.inputStages) && stage.inputStages.length > 0) {
     return stage.inputStages[0];
   }
@@ -71,6 +72,7 @@ function extractWinningPlan(inner: Record<string, unknown>): Record<string, unkn
 
   // Sharded: winningPlan.shards[] each carry their own winningPlan.
   let winningPlan: Record<string, unknown> = rootPlan;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: the `Array.isArray(...)` conjunct here is real (unmutated) — for any of its `length > 0`/`length >= 0`/forced-`true` variants, the only case they can disagree with real behavior is a real, empty array, and for an empty array `winningPlan.shards[0]` is always `undefined`, which fails the `isRecord(shard0)` check right below regardless of whether this outer branch runs at all. Verified: entering this block on an empty array is a no-op.
   if (Array.isArray(winningPlan.shards) && winningPlan.shards.length > 0) {
     const shard0: unknown = winningPlan.shards[0];
     if (isRecord(shard0) && isRecord(shard0.winningPlan)) {
@@ -94,6 +96,7 @@ export function summarizeExplain(plan: unknown): ExplainSummary | null {
   if (!inner) return null;
 
   const winningPlan = extractWinningPlan(inner);
+  // Stryker disable next-line ConditionalExpression: redundant with the `stages.length === 0` return below — collectStageChain(null, stages) leaves `stages` at its initial `[]` (isRecord(null) is false, so it returns immediately without pushing), so a null winningPlan reaches that later `return null` regardless of whether this guard runs. Verified by inspection of collectStageChain's own guard.
   if (!winningPlan) return null;
 
   const stages: string[] = [];

@@ -386,7 +386,7 @@ export function ConnectionSwitcher({
   // Not Mantine's `returnFocus`, which saves its return target in a passive
   // effect after open: the search field's `autoFocus` can win that race, and
   // in the component suite (no transitions) it does — Mantine saves the search
-  // field and Escape lands on <body>. `ColumnChooser` & co. can use the prop
+  // field and Escape lands on <body>. `FieldsControl` & co. can use the prop
   // because nothing in their dropdowns autofocuses.
   //
   // Deferred rather than checked in the effect body: a click on a

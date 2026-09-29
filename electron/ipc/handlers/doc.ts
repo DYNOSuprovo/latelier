@@ -11,11 +11,6 @@ const InsertManySchema = CollectionTargetSchema.extend({
   docsJson: NonEmpty,
 });
 
-const ReplaceSchema = CollectionTargetSchema.extend({
-  filterJson: NonEmpty,
-  docJson: NonEmpty,
-});
-
 const UpdateOneSchema = CollectionTargetSchema.extend({
   filterJson: NonEmpty,
   updateJson: NonEmpty,
@@ -30,6 +25,12 @@ const DeleteManySchema = CollectionTargetSchema.extend({
   confirmToken: NonEmpty,
 });
 
+const ConfirmUpdateManySchema = UpdateOneSchema;
+
+const UpdateManySchema = UpdateOneSchema.extend({
+  confirmToken: NonEmpty,
+});
+
 export function registerDocChannels(router: Router, svc: DocumentService): void {
   router.register(
     IPC_CHANNELS.docInsert,
@@ -41,12 +42,6 @@ export function registerDocChannels(router: Router, svc: DocumentService): void 
     IPC_CHANNELS.docInsertMany,
     zodValidator(InsertManySchema),
     (input) => svc.insertMany(input),
-  );
-
-  router.register(
-    IPC_CHANNELS.docReplace,
-    zodValidator(ReplaceSchema),
-    (input) => svc.replace(input),
   );
 
   router.register(
@@ -71,5 +66,17 @@ export function registerDocChannels(router: Router, svc: DocumentService): void 
     IPC_CHANNELS.docDeleteMany,
     zodValidator(DeleteManySchema),
     (input) => svc.deleteMany(input),
+  );
+
+  router.register(
+    IPC_CHANNELS.docConfirmUpdateMany,
+    zodValidator(ConfirmUpdateManySchema),
+    (input) => svc.confirmUpdateMany(input),
+  );
+
+  router.register(
+    IPC_CHANNELS.docUpdateMany,
+    zodValidator(UpdateManySchema),
+    (input) => svc.updateMany(input),
   );
 }

@@ -37,6 +37,8 @@ export interface ShellSectionProps {
   setNewTabOpen: (open: boolean) => void;
   panelPrefs: ReturnType<typeof useWorkspacePanelPrefs>;
   connectionDialogs: ReturnType<typeof useConnectionDialogs>;
+  /** Opens the reference-rules drawer for the Focused Tab's collection. */
+  onOpenReferences: () => void;
 }
 
 export function ShellSection({
@@ -58,6 +60,7 @@ export function ShellSection({
   setNewTabOpen,
   panelPrefs,
   connectionDialogs,
+  onOpenReferences,
 }: ShellSectionProps) {
   const T = themeVars;
   const { sidebarCollapsed, toggleSidebar, leftWidth, setLeftWidth, commitLeftWidth } = panelPrefs;
@@ -165,6 +168,7 @@ export function ShellSection({
                     newCollection: newName,
                   });
                 }}
+                onOpenReferences={onOpenReferences}
               />
               <div
                 style={{

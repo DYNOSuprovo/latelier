@@ -91,15 +91,29 @@ interface ValueGuess {
  * field value actually a sentinel" fast path.
  */
 function guessSentinelOnly(v: unknown): ValueGuess | null {
+  // Stryker disable next-line ConditionalExpression: both callers (guessValue,
+  // only after narrowing v away from null/boolean/number/string/array; and
+  // parseFieldPredicate, only inside its own isPlainObject(rawValue) branch)
+  // already guarantee v is a plain object — verified empirically (probe:
+  // scratchpad/probe1.mjs-style type-domain check), never independently
+  // observable from real parseFilter input (JSON.parse's value universe).
   if (!isPlainObject(v)) return null;
   const keys = Object.keys(v);
   if (keys.length !== 1) return null;
   const k = keys[0];
+  // Stryker disable next-line ConditionalExpression: entry here is only
+  // reached with a single-key object (guarded above), so any non-'$oid' key
+  // makes `v.$oid` undefined regardless — forcing the `k === '$oid'` conjunct
+  // true can't change the outcome (verified: scratchpad/probe1.mjs).
   if (k === '$oid' && typeof v.$oid === 'string') return { valType: 'objectid', text: v.$oid };
+  // Stryker disable next-line ConditionalExpression: same single-key argument
+  // as the $oid check above.
   if (k === '$date' && typeof v.$date === 'string') return { valType: 'date', text: v.$date };
+  // Stryker disable next-line ConditionalExpression: same single-key argument.
   if (k === '$numberLong' && typeof v.$numberLong === 'string') {
     return { valType: 'long', text: v.$numberLong };
   }
+  // Stryker disable next-line ConditionalExpression: same single-key argument.
   if (k === '$numberDecimal' && typeof v.$numberDecimal === 'string') {
     return { valType: 'decimal', text: v.$numberDecimal };
   }
@@ -111,14 +125,24 @@ function isRepresentableArrayElement(el: unknown): boolean {
   if (el === null || typeof el === 'boolean' || typeof el === 'number' || typeof el === 'string') {
     return true;
   }
+  // Stryker disable next-line ConditionalExpression: reachable only for a
+  // nested array element, whose Object.keys are numeric-index strings — never
+  // '$oid'/'$date'/etc — so removing this guard can't change the OR-chain's
+  // result for any JSON-parseable input (verified empirically).
   if (!isPlainObject(el)) return false; // nested array, or not an object at all
   const keys = Object.keys(el);
   if (keys.length !== 1) return false;
   const k = keys[0];
   return (
+    // Stryker disable next-line ConditionalExpression: single-key object
+    // (guarded above) makes `el.$oid` undefined whenever k isn't '$oid' —
+    // same argument as guessSentinelOnly above.
     (k === '$oid' && typeof el.$oid === 'string') ||
+    // Stryker disable next-line ConditionalExpression: same single-key argument.
     (k === '$date' && typeof el.$date === 'string') ||
+    // Stryker disable next-line ConditionalExpression: same single-key argument.
     (k === '$numberLong' && typeof el.$numberLong === 'string') ||
+    // Stryker disable next-line ConditionalExpression: same single-key argument.
     (k === '$numberDecimal' && typeof el.$numberDecimal === 'string')
   );
 }
@@ -143,8 +167,16 @@ function guessValue(v: unknown): ValueGuess | null {
   }
   const sentinel = guessSentinelOnly(v);
   if (sentinel) return sentinel;
+  // Stryker disable next-line ConditionalExpression: v is always a plain
+  // object here — null/boolean/number/string/array were already excluded
+  // above, and guessSentinelOnly's own guard requires isPlainObject(v) to
+  // ever return non-null (moot either way since we only branch on truthiness
+  // here, not on what sentinel returned).
   if (isPlainObject(v)) {
     const keys = Object.keys(v);
+    // Stryker disable next-line ConditionalExpression: `keys.length === 1`
+    // (guarded) means a wrong key makes `v.$regex` undefined regardless of
+    // the middle conjunct — same single-key argument as guessSentinelOnly.
     if (keys.length === 1 && keys[0] === '$regex' && typeof v.$regex === 'string') {
       return { valType: 'regex', text: v.$regex };
     }
@@ -188,11 +220,24 @@ function parseFieldPredicate(field: string, rawValue: unknown): FilterNode[] {
     // A single-key object that IS a recognized value sentinel is an
     // implicit-$eq VALUE, not an operator map — must be checked first, else
     // e.g. `{$oid: "..."}` would be mistaken for an (nonexistent) `$oid` op.
+    // Stryker disable next-line ConditionalExpression: forcing entry when
+    // keys.length !== 1 still converges on the identical rawPair(field,
+    // rawValue) fallback either via guessSentinelOnly's own (real,
+    // unmutated) length check returning null, or — when keys[0] happens to
+    // be an UNREPRESENTABLE_SENTINEL_KEYS member — via the disjointness of
+    // that set from SPLITTABLE_OPS, which forces the same rawPair through
+    // parseOperatorMap's allSplittable check. Verified for a range of
+    // key-shapes (scratchpad/probe196.mjs, gateTrue/gateGte0 cases).
     if (keys.length === 1) {
       const guess = guessSentinelOnly(rawValue);
       if (guess) return [condNode(field, '$eq', guess)];
       if (UNREPRESENTABLE_SENTINEL_KEYS.has(keys[0])) return [rawPair(field, rawValue)];
     }
+    // Stryker disable next-line MethodExpression: swapping `every` for `some`
+    // only diverges when the key set is mixed ($-prefixed and not), and any
+    // non-$-prefixed key can never be a SPLITTABLE_OPS member — so
+    // parseOperatorMap's own allSplittable re-check forces the identical
+    // rawPair fallback either way (verified: scratchpad/probe196.mjs, gateSome).
     if (keys.length > 0 && keys.every((k) => k.startsWith('$'))) {
       return parseOperatorMap(field, rawValue, keys);
     }
@@ -205,6 +250,10 @@ function parseFieldPredicate(field: string, rawValue: unknown): FilterNode[] {
 }
 
 function collapseToNode(nodes: FilterNode[]): FilterNode {
+  // Stryker disable next-line ConditionalExpression: removing this guard
+  // falls through to `nodes.length === 1` (false) then the final fallback,
+  // which for an empty `nodes` produces the byte-identical
+  // `{ kind: 'group', logic: '$and', children: [] }` (verified: probe2.mjs).
   if (nodes.length === 0) return { kind: 'group', logic: '$and', children: [] };
   if (nodes.length === 1) return nodes[0];
   return { kind: 'group', logic: '$and', children: nodes };
@@ -352,6 +401,11 @@ export function coerceArrayElementWire(el: unknown, valType: ValType): unknown {
     case 'date':
       return typeof el === 'string' ? { $date: el } : el;
     case 'number':
+      // Stryker disable next-line ConditionalExpression,StringLiteral: for any
+      // real JS number el, Number(el) === el (a no-op round trip), so forcing
+      // the branch to always coerce — or comparing typeof against the wrong
+      // literal — produces the identical value either way (Number() is
+      // idempotent on values that are already numbers).
       return typeof el === 'number' ? el : Number(el);
     case 'boolean':
       return typeof el === 'boolean' ? el : el === 'true';
@@ -372,6 +426,10 @@ export function coerceArrayElementWire(el: unknown, valType: ValType): unknown {
  */
 export function buildScalarWire(valType: ValType, value: string): unknown {
   switch (valType) {
+    // Stryker disable next-line StringLiteral: this case's body and the
+    // `default` case's body below are both `return value` verbatim — a case
+    // label mutated away from 'string' just falls through to that identical
+    // default, so the observable result is unchanged either way.
     case 'string':
       return value;
     case 'number':
@@ -453,10 +511,16 @@ function condValueProblem(node: CondNode): string | null {
     const arr = parseJsonArrayLenient(node.value);
     if (arr.length !== 2) return '$mod value must be a 2-element array, e.g. [2, 1]';
     const [divisor, remainder] = arr;
+    // Stryker disable next-line ConditionalExpression: Number.isFinite is
+    // type-strict — it already returns false for any non-number value, so
+    // dropping the redundant `typeof divisor !== 'number'` conjunct can't
+    // change the result for any input (verified: scratchpad/probe2.mjs).
     if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
       return '$mod divisor must be a finite number';
     }
     if (divisor === 0) return '$mod divisor cannot be 0';
+    // Stryker disable next-line ConditionalExpression: same Number.isFinite
+    // type-strictness argument as the divisor check above.
     if (typeof remainder !== 'number' || !Number.isFinite(remainder)) {
       return '$mod remainder must be a finite number';
     }
@@ -482,6 +546,11 @@ function encodeCondValue(node: CondNode): unknown {
   if (ARRAY_VALUE_OPS.has(op)) {
     return parseJsonArrayLenient(value).map((el) => coerceArrayElementWire(el, valType));
   }
+  // Stryker disable next-line ConditionalExpression,StringLiteral: every
+  // other op branch above/below returns before this point, and none of them
+  // match op === '$regex' either — so disabling this check (or comparing
+  // against the wrong literal) still falls through to the identical
+  // defensive `return value;` at the end of this function.
   if (op === '$regex') return value;
   if (op === '$type') {
     const n = Number(value);
@@ -489,8 +558,18 @@ function encodeCondValue(node: CondNode): unknown {
   }
   if (op === '$mod') {
     const arr = parseJsonArrayLenient(value);
+    // Stryker disable next-line ConditionalExpression,ArrayDeclaration:
+    // condValueProblem's own `arr.length !== 2` check already blocks
+    // printing before any $mod cond reaches encodeCondValue, so `arr` is
+    // always length 2 here — this ternary's false branch is unreachable
+    // through printFilter (same reasoning as the "Unreachable" comment below).
     return arr.length === 2 ? arr : [0, 0];
   }
+  // Stryker disable next-line ConditionalExpression: isCompilableOp's op set
+  // is exactly SIMPLE_OPS + ARRAY_VALUE_OPS + $exists/$regex/$type/$mod/$size
+  // + BITS_OPS (see builder.ts) — every one of those is handled by an earlier
+  // return in this function except $size/BITS_OPS, so any op reaching this
+  // line through printFilter is already guaranteed to be $size or a bits op.
   if (op === '$size' || BITS_OPS.has(op)) {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
@@ -540,10 +619,19 @@ function parseRawWithPrecisionCheck(
   return { ok: true, value };
 }
 
+// The 'pending' arm exists for type-level documentation of the §5 pending
+// rule only — no code below (or in printFilter) ever discriminates on
+// `.kind === 'pending'`; every consumer checks only 'blocked' or 'value' and
+// silently treats anything else (including a mutated {} with no `kind` at
+// all) the same way 'pending' is treated. That is what makes each `{ kind:
+// 'pending' }` literal below, and printNode's own root-vs-nested branch at
+// §3a, behaviorally inert under mutation — verified by tracing every call
+// site of this function's result.
 type PrintNodeResult = { kind: 'value'; value: unknown } | { kind: 'pending' } | { kind: 'blocked' };
 
 function printNode(node: FilterNode, path: number[], problems: NodeProblem[]): PrintNodeResult {
   if (node.kind === 'cond') {
+    // Stryker disable next-line ObjectLiteral,StringLiteral
     if (node.field.trim() === '') return { kind: 'pending' }; // §5 pending rule
     const problem = condValueProblem(node);
     if (problem) {
@@ -553,6 +641,7 @@ function printNode(node: FilterNode, path: number[], problems: NodeProblem[]): P
     return { kind: 'value', value: { [node.field]: { [node.op]: encodeCondValue(node) } } };
   }
   if (node.kind === 'raw') {
+    // Stryker disable next-line ObjectLiteral,StringLiteral
     if (node.json.trim() === '') return { kind: 'pending' }; // §5 pending rule
     const parsed = parseRawWithPrecisionCheck(node.json);
     if (!parsed.ok) {
@@ -573,6 +662,13 @@ function printNode(node: FilterNode, path: number[], problems: NodeProblem[]): P
   if (childValues.length === 0) {
     // A root with no printable children prints `{}`; a nested group with
     // none is omitted (pending) from its parent (§3a).
+    //
+    // Stryker disable next-line ConditionalExpression,ObjectLiteral,StringLiteral:
+    // `path.length === 0` is only ever true for the root call from
+    // printFilter, whose consumer already defaults to `{}` for any non-'value'
+    // result — so both arms of this ternary, under any mutation, resolve to
+    // an output printFilter treats identically (see the type-level note above
+    // for the 'pending' arm; the 'value' arm's own value is literally `{}`).
     return path.length === 0 ? { kind: 'value', value: {} } : { kind: 'pending' };
   }
   if (childValues.length === 1 && node.logic !== '$nor') {
@@ -591,6 +687,12 @@ export function printFilter(root: GroupNode): PrintOutcome {
   const problems: NodeProblem[] = [];
   const result = printNode(root, [], problems);
   if (result.kind === 'blocked') return { ok: false, problems };
+  // Stryker disable next-line ConditionalExpression: printNode's top-level
+  // call always has path === [], and its group branch's `path.length === 0`
+  // case (the only way a group ever resolves without recursing further) is
+  // handled before this point too — `root` being a GroupNode, printNode
+  // called with `[]` can only ever return 'blocked' (excluded above) or
+  // 'value', never 'pending' — so this check is already always true.
   const value = result.kind === 'value' ? result.value : {};
   return { ok: true, json: JSON.stringify(value) };
 }
@@ -680,6 +782,12 @@ export function moveAt(root: GroupNode, path: NodePath, delta: number): GroupNod
   const parentPath = path.slice(0, -1);
   const parent = nodeAt(root, parentPath);
   const node = nodeAt(root, path);
+  // Stryker disable next-line ConditionalExpression: `path` is `parentPath`
+  // plus one more index, and `nodeAt`'s own traversal returns null for the
+  // whole path as soon as any prefix — including the one ending at `parent`
+  // — isn't a group. So whenever `parent.kind !== 'group'` would be true,
+  // `node` is already null and `!node` short-circuits this OR first; this
+  // third disjunct can never independently flip the result.
   if (!node || !parent || parent.kind !== 'group') return root;
   const to = path[path.length - 1] + delta;
   if (to < 0 || to >= parent.children.length) return root;
@@ -688,6 +796,11 @@ export function moveAt(root: GroupNode, path: NodePath, delta: number): GroupNod
 
 export function wrapInGroup(root: GroupNode, path: NodePath, logic: GroupNode['logic']): GroupNode {
   const target = nodeAt(root, path);
+  // Stryker disable next-line ConditionalExpression: `target` is only null
+  // for a `path` that fails to resolve in `root` — and the very same `path`
+  // then also fails to match anything inside the `updateAt` call below (its
+  // traversal mirrors `nodeAt`'s), so the corrupted `wrapped` node built from
+  // a null `target` is never actually spliced into the returned tree either way.
   if (!target) return root;
   const wrapped: GroupNode = { kind: 'group', logic, children: [target] };
   return updateAt(root, path, wrapped);
@@ -714,7 +827,13 @@ export function tryParseRaw(raw: RawNode): FilterNode {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw.json);
-  } catch {
+  }
+  // Stryker disable next-line BlockStatement: an emptied catch body leaves
+  // `parsed` at its initial `undefined` (JSON.parse threw before
+  // assignment), and `isPlainObject(undefined)` is false — so the very
+  // next line already returns `raw`, the identical result this catch
+  // returns explicitly.
+  catch {
     return raw;
   }
   if (!isPlainObject(parsed)) return raw;

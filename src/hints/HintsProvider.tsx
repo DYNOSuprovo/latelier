@@ -6,6 +6,7 @@ import {
   resetHints as resetHintsStorage,
 } from './storage';
 import { HintsContext, type HintsContextValue } from './HintsContext';
+import { HINT_REGISTRY } from './registry';
 
 const SETTLE_MS = 1500;
 const SESSION_COUNTER_CAP = 500;
@@ -93,7 +94,13 @@ export function HintsProvider({ children }: { children: React.ReactNode }) {
     return sessionCounters.current.get(kind)?.get(key) ?? 0;
   }, []);
 
-  const visibleId = candidates[0] ?? null;
+  // Lowest `priority` wins, not registration order — the primary-path hint
+  // (Run) must beat a secondary one even when it registers later. Ties keep
+  // whichever candidate `reduce` saw first, i.e. mount order.
+  const visibleId = candidates.reduce<FeatureHintId | null>((best, id) => {
+    if (best === null) return id;
+    return HINT_REGISTRY[id].priority < HINT_REGISTRY[best].priority ? id : best;
+  }, null);
 
   const value = React.useMemo<HintsContextValue>(
     () => ({

@@ -74,7 +74,7 @@ describe(' a pointer interaction in a Workspace with a tab open keeps its focus'
   it('clicking a field focuses that field, not the resize handle', async () => {
     await mountWithTabOpen();
     // The handle is present — otherwise this spec would prove nothing.
-    expect(screen.getByRole('separator', { name: 'Resize builder pane' })).toBeTruthy();
+    expect(screen.getByRole('separator', { name: 'Resize Query Builder' })).toBeTruthy();
 
     const field = screen.getByLabelText('Filter collections');
     await userEvent.click(field);

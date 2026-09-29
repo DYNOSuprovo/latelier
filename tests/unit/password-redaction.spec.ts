@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { redactSecrets } from '../../electron/log';
+import { redactSecrets, isSecretFieldPath } from '../../electron/log';
 
 describe('redactSecrets', () => {
   it('redacts top-level password fields', () => {
@@ -81,5 +81,28 @@ describe('redactSecrets', () => {
       first: { password: '<redacted>' },
       second: { password: '<redacted>' },
     });
+  });
+});
+
+describe('isSecretFieldPath', () => {
+  it('flags a top-level secret key', () => {
+    expect(isSecretFieldPath('password')).toBe(true);
+    expect(isSecretFieldPath('pwd')).toBe(true);
+    expect(isSecretFieldPath('sshPassword')).toBe(true);
+    expect(isSecretFieldPath('sshPassphrase')).toBe(true);
+  });
+
+  it('flags a secret key at any dotted depth', () => {
+    expect(isSecretFieldPath('auth.password')).toBe(true);
+    expect(isSecretFieldPath('user.cmd.pwd')).toBe(true);
+  });
+
+  it('is case-insensitive per segment', () => {
+    expect(isSecretFieldPath('Auth.PASSWORD')).toBe(true);
+  });
+
+  it('does not flag a benign path, including one that merely contains "password" as a substring', () => {
+    expect(isSecretFieldPath('user.email')).toBe(false);
+    expect(isSecretFieldPath('passwordHint')).toBe(false);
   });
 });

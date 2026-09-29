@@ -185,7 +185,7 @@ describe('TableView — a sort on a hidden column (W15 §3.2)', () => {
 
   // the defect this test guards against. `columns` are derived from the returned
   // documents, so a sort key the projection excluded is undrawn exactly like
-  // a hidden one, and got "show it again" for a column `ColumnChooser` — built
+  // a hidden one, and got "show it again" for a column `FieldsControl` — built
   // from that same derived list — does not list. Advice that cannot be
   // followed is the §3.2 defect class wearing a different hat.
   it('does not send the user to the chooser for a field the chooser has never heard of', () => {

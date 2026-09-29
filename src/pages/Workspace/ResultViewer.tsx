@@ -3,16 +3,17 @@
 // internal slot components. The react-refresh rule wants one component per
 // file, but co-locating the slots is the whole point — and they're not
 // addressed as top-level exports, only via the namespace.
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { TreeView } from './views/TreeView';
 import { JsonView } from './views/JsonView';
 import { TableView } from './views/TableView';
 import { ResultBar } from './ResultBar';
 import { ResultSelectionProvider } from './ResultSelectionProvider';
 import { SelectionActionBar } from './SelectionActionBar';
+import { ImportDialog } from './ImportDialog';
 import { useCollectionWorkspace } from './context';
 import { EMPTY_DOCUMENTS } from './resultSelection';
-import { findProblem } from './builder';
+import { findProblem, isUnfilteredFirstPage } from './builder';
 import type { ReferenceRule } from '@shared/types';
 
 /**
@@ -55,8 +56,6 @@ interface BodyProps {
   onColumnResize: (field: string, width: number) => void;
   onRowExpand: (docId: string, expanded: boolean) => void;
   onSortField?: (field: string) => void;
-  /** User-configured preview field set; `null` while loading, `[]` if unset. */
-  previewFields?: string[] | null;
   refsByField?: Map<string, ReferenceRule>;
   onRefHover?: (rule: ReferenceRule, value: unknown, rect: DOMRect) => void;
   onRefHoverLeave?: () => void;
@@ -68,13 +67,16 @@ function Body({
   onColumnResize,
   onRowExpand,
   onSortField,
-  previewFields,
   refsByField,
   onRefHover,
   onRefHoverLeave,
   onRefOpen,
 }: BodyProps) {
-  const { state, meta } = useCollectionWorkspace();
+  const { state, meta, actions } = useCollectionWorkspace();
+  // Owned here, not by `EmptyState`: the import's own refresh fills
+  // `documents`, which unmounts `EmptyState`, and the dialog has to outlive
+  // that to keep showing its report.
+  const [importOpen, setImportOpen] = useState(false);
   const isLoading = meta.isLoading;
   const documents = state.lastRun?.documents ?? EMPTY_DOCUMENTS;
   const hasError = !!state.lastRun?.error;
@@ -119,13 +121,12 @@ function Body({
       )}
 
       {isEmpty ? (
-        <EmptyState onClearFilter={onClearFilter} />
+        <EmptyState onClearFilter={onClearFilter} onImport={() => setImportOpen(true)} />
       ) : (
         <>
           {state.view === 'Tree' && (
             <Tree
               onRowExpand={onRowExpand}
-              previewFields={previewFields}
               refsByField={refsByField}
               onRefHover={onRefHover}
               onRefHoverLeave={onRefHoverLeave}
@@ -146,11 +147,34 @@ function Body({
           )}
         </>
       )}
+      {importOpen && (
+        <ImportDialog
+          connectionId={meta.connectionId}
+          dbName={meta.dbName}
+          collection={meta.collection}
+          onClose={() => setImportOpen(false)}
+          onImported={() => actions.run()}
+        />
+      )}
     </div>
   );
 }
 
-function EmptyState({ onClearFilter }: { onClearFilter: () => void }) {
+const LINK_BUTTON_STYLE = {
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  color: 'var(--atelier-accent)',
+  fontSize: 12,
+  textDecoration: 'underline',
+} as const;
+
+function EmptyState({ onClearFilter, onImport }: { onClearFilter: () => void; onImport: () => void }) {
+  const { state, meta } = useCollectionWorkspace();
+  // No filter, first page, no error: the collection itself is empty, not
+  // just this query's match — a different message and CTA than "no match".
+  const isEmptyCollection = isUnfilteredFirstPage(state);
+
   return (
     <div
       style={{
@@ -164,27 +188,29 @@ function EmptyState({ onClearFilter }: { onClearFilter: () => void }) {
         gap: 8,
       }}
     >
-      <span>No matching documents</span>
-      <button
-        onClick={onClearFilter}
-        style={{
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          color: 'var(--atelier-accent)',
-          fontSize: 12,
-          textDecoration: 'underline',
-        }}
-      >
-        Clear filter
-      </button>
+      {isEmptyCollection ? (
+        <>
+          <span>This collection is empty</span>
+          {!meta.isReadOnly && (
+            <button onClick={onImport} style={LINK_BUTTON_STYLE}>
+              Import documents…
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <span>No matching documents</span>
+          <button onClick={onClearFilter} style={LINK_BUTTON_STYLE}>
+            Clear filter
+          </button>
+        </>
+      )}
     </div>
   );
 }
 
 interface TreeSlotProps {
   onRowExpand: (docId: string, expanded: boolean) => void;
-  previewFields?: string[] | null;
   refsByField?: Map<string, ReferenceRule>;
   onRefHover?: (rule: ReferenceRule, value: unknown, rect: DOMRect) => void;
   onRefHoverLeave?: () => void;
@@ -193,7 +219,6 @@ interface TreeSlotProps {
 
 function Tree({
   onRowExpand,
-  previewFields,
   refsByField,
   onRefHover,
   onRefHoverLeave,
@@ -207,7 +232,6 @@ function Tree({
       expandedRows={state.expandedRows}
       onSelect={() => {/* selection is internal to TreeView */}}
       onRowExpand={onRowExpand}
-      previewFields={previewFields}
       refsByField={refsByField}
       onRefHover={onRefHover}
       onRefHoverLeave={onRefHoverLeave}

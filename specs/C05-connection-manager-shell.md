@@ -17,9 +17,9 @@ Users). Owns delete confirmation for the Connection it's showing.
 - **In**: Shell layout, title bar with a back-to-Data-View affordance, resolving the Connection
   from `:id`, a not-found state for an id that no longer resolves, top-level delete confirmation
   (delegates actual work to C08's successor, `ConnectionDeleteDialog`).
-- **Out**: Detail-tab content (Overview C06, Collections C07, Indexes C09, Users C10), the
-  Connection list (retired — see ADR 0001; the Switcher is the list now), the Connection creation
-  / edit form (C03), CmdK palette (X07).
+- **Out**: Detail-tab content (Overview C06, Collections C07, Indexes C09 — amended by W16 Tier 1,
+  Users C10), the Connection list (retired — see ADR 0001; the Switcher is the list now), the
+  Connection creation / edit form (C03), CmdK palette (X07).
 
 ## Dependencies
 

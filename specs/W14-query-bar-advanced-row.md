@@ -21,6 +21,11 @@ opinion available.
 This spec covers the correctness fixes, the missing affordance, and the
 projection editor's parity gap with the filter tree.
 
+> **Since decided (§4):** projection no longer lives in the advanced row — it
+> moved into the result bar's Fields control. Where §1–§3 and §7–§8 say
+> "projection / sort / limit", the advanced row now carries sort / limit
+> only; §3's draft contract moved with the input and holds there unchanged.
+
 ## Scope
 
 - **In**: `advancedOpen` lifecycle, a persistent indicator that collapsed
@@ -168,7 +173,7 @@ tree keeps it and only `queryRaw` holds at the last good value (W13 §5.5).
 
 ---
 
-## 4. Projection editor parity — decision, not yet a mandate
+## 4. Projection editor parity — decided: a text field, in the Fields control
 
 The filter got a recursive per-row editor with typed values, operator pickers,
 and raw-clause degradation. Projection remained a single text input over an
@@ -183,6 +188,43 @@ is a larger change whose value depends on how often users hand-write projections
 
 Recommendation: ship §1–§3 first, then decide §4 against real use. Do not build
 the structured editor speculatively.
+
+### Decision
+
+**Projection stays a text field, and it moves out of the advanced row into the
+Fields control** (the result bar's one control for which fields you see), as a
+separate section headed "Fetch only these fields from the server". No
+structured chip editor is built.
+
+Why: the parity gap turned out to be the smaller problem. Three controls
+answered "which fields do I see?" — Preview fields, Columns and projection —
+and projection, the only one with a server-side cost, sat in a different strip
+under a different word, presented as a peer of two display toggles. A field a
+projection excluded then dropped out of the column list with no explanation.
+Putting the projection *beside* the display toggles, divided from them and each
+explained in one line, is what teaches the difference:
+
+- **Show in results** (hide / reorder): display only, instant, nothing is
+  re-fetched.
+- **Fetch only these fields from the server** (projection): changes what the
+  server returns, applied on the next Run.
+
+What moved and what did not:
+
+- The input keeps everything it had: Shell Syntax repair on commit, the
+  `projection` / `projectionRaw` split and its W15 §9(b) raw escape, the
+  retained-draft messages of §3, and field completion. It commits on blur,
+  Enter, and when the control closes; ⌘↵ inside it settles the draft and runs
+  (the panel-level ⌘↵ skips dialogs, and the control's dropdown is one).
+- Run compiles and sends the projection exactly as before; `BuilderState` is
+  unchanged.
+- The advanced row keeps sort, skip and limit. Its "n set" count no longer
+  counts a projection and a projection alone no longer opens it; the Fields
+  button carries its own "projection" badge instead, warn-coloured while the
+  projection cannot run as written.
+- A field the projection keeps off the wire is listed as "not fetched" rather
+  than silently missing — every field the control can name without asking the
+  server (the fields in hand, plus any the tab's column config remembers).
 
 ## 5. Types
 

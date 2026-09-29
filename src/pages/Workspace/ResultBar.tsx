@@ -1,11 +1,14 @@
-import { ActionIcon, Group, Menu, Select, SegmentedControl } from '@mantine/core';
+import React from 'react';
+import { ActionIcon, Button, Group, Menu, Select, SegmentedControl, Tooltip } from '@mantine/core';
 import { themeVars } from '../../theme/themeVars';
 import { I } from '../../icons';
 import type { ResultViewMode } from '@shared/types';
 import { useCollectionWorkspace } from './context';
 import { api } from '../../api/atelier';
 import { DEFAULT_PAGE_SIZE_PREF_KEY, PAGE_SIZE_OPTIONS } from '../../state/workspaceTabs';
-import { ColumnChooser } from './ColumnChooser';
+import { FieldsControl } from './FieldsControl';
+import { ExportDialog } from './ExportDialog';
+import { ImportDialog } from './ImportDialog';
 import { findProblem } from './builder';
 
 const VIEWS: ResultViewMode[] = ['Tree', 'JSON', 'Table'];
@@ -40,6 +43,8 @@ export function ResultBar() {
   const isLoading = meta.isLoading;
   const view = state.view;
   const isReadOnly = !!meta.isReadOnly;
+  const [exportOpen, setExportOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
 
   // X14 §5 — the dangerous half of the defect this ticket exists for.
   // A refused filter never re-runs, so `lastRun` keeps describing the query
@@ -49,7 +54,13 @@ export function ResultBar() {
   // `useQueryRunner`, where no QueryBar-local message exists to hang this on.
   // `findProblem` is the Run button's own rule, so the count is marked stale
   // exactly while Run is refusing to make it current again.
-  const isStale = findProblem(state) !== null;
+  const runProblem = findProblem(state);
+  const isStale = runProblem !== null;
+  // Before the first run, the count is missing entirely rather than stale —
+  // offer the same Run gate QueryBar's button uses instead of a dead-end
+  // "No run yet" label. Read-only consumers (ScriptTab's snapshot provider)
+  // have no working `run`, so they keep the plain label.
+  const canRunHere = !isReadOnly && !isLoading && runProblem === null;
 
   const start = docCount !== null ? page * pageSize + 1 : null;
   const end = docCount !== null ? page * pageSize + docCount : null;
@@ -103,6 +114,19 @@ export function ResultBar() {
         flexShrink: 0,
         fontSize: 11,
         color: T.textMuted,
+        // None of this row's own text (page number, result counts, ms,
+        // range) sets its own `white-space`, so a tight flex squeeze can
+        // wrap any one span onto a second line instead of shrinking a
+        // neighbour. That grows this bar's own height, which — one flex
+        // column up — shrinks the table's available height under its
+        // virtualized list, turning a cosmetic width squeeze into a
+        // scroll-settle bug several layers away (a virtualized row landing
+        // a sub-pixel short of fully in view because its scroll container
+        // is fractionally shorter than the settle math expects). Setting it
+        // once here, inherited by every descendant, keeps this row's height
+        // independent of how tight the available width gets, rather than
+        // chasing it span by span.
+        whiteSpace: 'nowrap',
       }}
     >
       {/* Pager — first · prev · P/T · next · last */}
@@ -216,40 +240,94 @@ export function ResultBar() {
         ) : (
           <>
             <span style={{ color: T.textGhost }}>·</span>
-            <span style={{ color: T.textMuted }}>No run yet</span>
+            {isReadOnly ? (
+              <span style={{ color: T.textMuted }}>No run yet</span>
+            ) : (
+              <Tooltip label={runProblem ?? 'Run (Cmd+Enter)'} withArrow>
+                <Button
+                  variant="subtle"
+                  color="gray"
+                  size="compact-xs"
+                  leftSection={I.play}
+                  onClick={() => canRunHere && actions.run()}
+                  disabled={!canRunHere}
+                  data-testid="resultbar-run-cta"
+                >
+                  Run (Cmd+Enter)
+                </Button>
+              </Tooltip>
+            )}
           </>
         )}
       </Group>
 
       <span style={{ flex: 1 }} />
 
-      {/* Column chooser — Table-only (T2.5). */}
-      {view === 'Table' && <ColumnChooser />}
+      {/* Fields control — one control for all three views; each view reads
+          the same per-tab `columnConfig`. */}
+      <FieldsControl />
 
-      {/* View switch */}
-      <SegmentedControl
-        size="xs"
-        value={view}
-        onChange={(v) => actions.patch({ view: v as ResultViewMode })}
-        data={VIEWS.map((v) => ({ label: v, value: v }))}
-      />
+      {/* Insert — primary create action, moved here from the header so it
+          sits with the other document-level controls. Same handler as
+          before (`actions.openInsert`, wired to `useDocumentDialogs`'s
+          `openInsertModal`); the aria-label is unchanged so existing e2e
+          selectors looking for `/Insert document/` still match. Hidden for
+          read-only consumers (ScriptTab's snapshot provider), same as the
+          Documents menu below. */}
+      {!isReadOnly && (
+        <Tooltip label="Insert a new document into this collection" withArrow>
+          <Button
+            variant="filled"
+            size="compact-xs"
+            leftSection={I.plus}
+            onClick={() => actions.openInsert()}
+            aria-label="Insert document"
+          >
+            Insert
+          </Button>
+        </Tooltip>
+      )}
 
-      {/* Overflow — destructive/bulk actions. Hidden for read-only
-          consumers (ScriptTab's snapshot provider) so there's nothing to
-          short-circuit at the leaf. */}
+      {/* Document-level actions — bulk/destructive operations on the result
+          set. A labelled menu rather than a bare overflow icon: this is the
+          shared home for document actions (update all matching, delete all
+          matching, export, import), so it needs a name a
+          user can point at, not just a dots glyph next to the view switch.
+          Placed left of the view switch, not beside it, so a destructive item
+          doesn't share a hover target with a benign view-mode toggle. Hidden
+          for read-only consumers (ScriptTab's snapshot provider) so there's
+          nothing to short-circuit at the leaf. */}
       {!isReadOnly && (
         <Menu position="bottom-end" shadow="md" width={210}>
           <Menu.Target>
-            <ActionIcon
-              variant="subtle"
-              color="gray"
-              size="sm"
-              aria-label="More result actions"
+            <Button
+              variant="default"
+              size="compact-xs"
+              rightSection={I.chevD}
             >
-              {I.more}
-            </ActionIcon>
+              Documents
+            </Button>
           </Menu.Target>
           <Menu.Dropdown>
+            <Menu.Item
+              leftSection={I.edit}
+              onClick={() => actions.openUpdateAll()}
+            >
+              Update all matching…
+            </Menu.Item>
+            <Menu.Item
+              leftSection={I.download}
+              disabled={docCount === null || docCount === 0}
+              onClick={() => setExportOpen(true)}
+            >
+              Export…
+            </Menu.Item>
+            <Menu.Item
+              leftSection={I.upload}
+              onClick={() => setImportOpen(true)}
+            >
+              Import documents…
+            </Menu.Item>
             <Menu.Item
               color="red"
               leftSection={I.trash}
@@ -260,6 +338,27 @@ export function ResultBar() {
           </Menu.Dropdown>
         </Menu>
       )}
+
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
+      {importOpen && (
+        <ImportDialog
+          connectionId={meta.connectionId}
+          dbName={meta.dbName}
+          collection={meta.collection}
+          onClose={() => setImportOpen(false)}
+          onImported={(report) => {
+            if (report.inserted > 0) actions.run();
+          }}
+        />
+      )}
+
+      {/* View switch */}
+      <SegmentedControl
+        size="xs"
+        value={view}
+        onChange={(v) => actions.patch({ view: v as ResultViewMode })}
+        data={VIEWS.map((v) => ({ label: v, value: v }))}
+      />
     </Group>
   );
 }

@@ -2,7 +2,8 @@ import React, { memo } from 'react';
 import { Badge, Button, Group, Menu, Tooltip, VisuallyHidden } from '@mantine/core';
 import { themeVars } from '../../theme/themeVars';
 import { I } from '../../icons';
-import { isEjsonDocument } from '../../utils/ejson';
+import { ejsonParse, isEjsonDocument, isPlainDocument } from '../../utils/ejson';
+import { suggestIndex } from '../../utils/indexSuggestion';
 import { useShellSyntaxField } from './useShellSyntaxField';
 import {
   compileFindOptions,
@@ -26,10 +27,44 @@ interface QueryBarProps {
   /**
    * Receives the Documents view's ⌘/Ctrl+Enter action. The key is
    * bound once, on `PanelBody`'s panel group, so it reaches every focus in
-   * the view (a result row after a drag into the drawer, sort, projection);
+   * the view (a result row after a drag into the drawer, sort, limit);
    * what it does lives here, beside the drafts it has to flush first.
    */
   runShortcutRef?: React.Ref<() => void>;
+}
+
+/** `suggestIndex`'s filter argument — an unparseable or non-document filter is treated as empty rather than thrown. */
+function parseFilterDoc(raw: string): Record<string, unknown> {
+  try {
+    const parsed = ejsonParse(raw);
+    return isPlainDocument(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `suggestIndex`'s sort argument. Per W16 §6/platform facts: the sort is a
+ * raw EJSON string (`compileFindOptions`'s output, not a filterTree node),
+ * parsed the same way as the filter and then normalized with `Number()` —
+ * a direction other than `±1` (e.g. `{$meta:'textScore'}`) drops that field
+ * rather than prefilling it.
+ */
+function parseSortDoc(raw: string | undefined): Record<string, 1 | -1> | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = ejsonParse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isPlainDocument(parsed)) return undefined;
+  const result: Record<string, 1 | -1> = {};
+  for (const [field, direction] of Object.entries(parsed as Record<string, unknown>)) {
+    const n = Number(direction);
+    if (n === 1 || n === -1) result[field] = n;
+  }
+  return result;
 }
 
 /**
@@ -42,33 +77,6 @@ function runBlockReason(s: CollectionTabState): string | null {
   if (projectionProblem(s.builder) !== null) return 'Invalid projection';
   return null;
 }
-
-import { formatProjection, isRawProjection, parseProjection } from './projection';
-import type { ProjectionFailure } from './projection';
-
-// Deliberately two messages, not one: a typo and an exclusion need different
-// things from the user.
-//
-// W15 §2.1 — the `unmodelable` wording has now been through four states.
-// It once named raw MQL, a surface that did not exist; an earlier revision
-// cut the advice back to the bare limitation rather than prescribe a
-// workaround it couldn't deliver. The current one delivers it: an exclusion
-// or `$slice` written as an EJSON document commits to
-// `builder.projectionRaw` and runs verbatim, so this message is only reached
-// by text that isn't a document.
-//
-// X14 §5 — "quote the keys, e.g. { "_id": 0 }" named an edit that fixed
-// nothing still able to reach here. Since T3 the transform repairs unquoted
-// keys, so what lands in this branch is either text the transform *refused*
-// (unbalanced braces, a regex literal, arithmetic) — which now shows the
-// transform's own reason instead of this string, see `commitProjection` — or
-// text that parses as JSON and still is not an EJSON document. This states
-// that bar rather than prescribing an edit for a class that no longer exists.
-const PROJECTION_ERRORS: Record<ProjectionFailure, string> = {
-  malformed: "Can't parse this projection. Expected { field: 1 } or a comma-separated field list.",
-  unmodelable:
-    'Exclusions and $slice run as a raw projection, but only as an EJSON document — this text is not one.',
-};
 
 // W15 §4.4 — one copy, referenced by both the Tooltip (mouse, and now
 // keyboard focus) and the visually-hidden element `skip` is described by. Two
@@ -108,6 +116,7 @@ function QueryBarInner({
   const isLoading = meta.isLoading;
   const onPatch = actions.patch;
   const onRun = actions.run;
+  const onCancel = actions.cancel;
   const onSave = actions.openSave;
   // the Recent list lives in the builder pane, which is unmounted
   // while collapsed. Switching its tab without making it visible is a click
@@ -136,14 +145,6 @@ function QueryBarInner({
     () => limitWarning(state.builder.limit),
     [state.builder.limit],
   );
-  // W15 §2.1 — the committed raw projection's own gate, shared with
-  // `useQueryRunner`. Distinct from `projMessage`, which is about the
-  // draft the user is still editing; this one is about state that would
-  // otherwise run.
-  const projRawError = React.useMemo(
-    () => projectionProblem(state.builder),
-    [state.builder],
-  );
 
   const findOptions = React.useMemo(() => compileFindOptions(state.builder), [state.builder]);
   // W13 §7 — Run's enabled rule collapses to `isEjsonDocument(queryRaw)`. The
@@ -163,8 +164,8 @@ function QueryBarInner({
   // behaviourally: Copy code needs the *reason* rather than the verdict, and
   // a second place computing "is this query runnable" is exactly what §3.1
   // exists to prevent, so the button and the copy path read one function.
-  // `sortError` / `projRawError` stay — they are the inline per-field
-  // messages, which is a different question from whether Run is enabled.
+  // `sortError` stays — it is the inline per-field
+  // message, which is a different question from whether Run is enabled.
   const canRun = !isLoading && findProblem(state) === null;
   // Explain calls `api.query.explain` directly — it does NOT go through
   // `useQueryRunner.run`, but W13 collapses its rule to the same one:
@@ -264,6 +265,21 @@ function QueryBarInner({
     ],
   );
 
+  // Same inputs `runQueryExplain` reads (`filterField`'s committed text,
+  // `findOptions.sort`) — the button only appears on the explain that was
+  // just run against them, so the suggestion has to read the same query.
+  // `actions.openCreateIndex` is optional (saved-query preview, ScriptTab's
+  // synthetic provider don't have a Structure view), so `undefined` here
+  // means `ExplainDrawer` renders no button at all.
+  const onCreateIndex = actions.openCreateIndex
+    ? () => {
+        const { text } = filterField.commitNow();
+        actions.openCreateIndex!(
+          suggestIndex(parseFilterDoc(text), parseSortDoc(findOptions.sort)),
+        );
+      }
+    : undefined;
+
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     onPatch({ queryRaw: e.target.value });
     // Stale complaint while the user is already fixing it; the next blur or
@@ -271,85 +287,6 @@ function QueryBarInner({
     // becomes runnable again".
     filterField.onChange(e.target.value);
     autocomplete.probe();
-  };
-
-  // Projection input uses a local draft so the user can type freely; we
-  // only commit (and reformat) on blur. When the builder changes externally
-  // (e.g. project chip toggle), `projDraft === null` lets the formatted
-  // representation flow through.
-  const projDisplay = React.useMemo(
-    () => state.builder.projectionRaw?.trim() || formatProjection(state.builder.projection),
-    [state.builder.projectionRaw, state.builder.projection],
-  );
-  const [projDraft, setProjDraft] = React.useState<string | null>(null);
-  const projValue = projDraft ?? projDisplay;
-  // W14 §3 — the old body ran `setProjDraft(null)` unconditionally, so
-  // a refused parse threw the user's typing away and fell back to the last
-  // committed value with no message. `parseProjection` returns the *reason*
-  // precisely so the draft survives and the fix is nameable.
-  //
-  // W15 §2.1/§2.2 — three outcomes now, not two. A projection the
-  // inclusion model can't express is no longer a dead end: if it parses as an
-  // EJSON document it commits to `projectionRaw` and runs verbatim, which is
-  // what finally makes `{"_id": 0}` reachable. The two fields are mutually
-  // exclusive by construction — whichever route commits clears the other, so
-  // the compiler never has to arbitrate between a stale pair.
-  //
-  // X14 §3 — the transform runs *first*, and the two rules above then
-  // judge the repaired text. `{_id: 0}` was a dead end before this: the
-  // inclusion model refuses it, and `isRawProjection` refused it too because
-  // an unquoted key is not JSON. Repaired to `{"_id": 0}` it takes the raw
-  // route and runs. `repairNow` writes the repair back into the draft (below,
-  // by hand — it "commits nothing" itself), so a repair that then fails a
-  // shape rule is still visible in the box.
-  //
-  // No `then` here, for the same reason as sort: `parseProjection`'s message
-  // isn't a second rule applied *after* the transform's refusal, it can
-  // *outrank* it. `{a: }` is `malformed` — a typo, not a raw-MQL problem — and
-  // names its own fix even though the transform also refuses it; only the
-  // *other* failing branch (`unmodelable`) prefers the transform's reason,
-  // when there is one. That is the opposite priority from the filter's, so
-  // it stays this field's own memo rather than the hook's ordering rule.
-  const projField = useShellSyntaxField({ value: projDraft ?? '' });
-  // The text last *classified* — set only at commit, cleared on change — not
-  // `projDraft` itself. `projMessage` derived straight from the live draft
-  // would reclassify on every keystroke and announce a half-typed `{name:`
-  // through the `role="alert"` Notice; freezing the memo's input (rather
-  // than holding the message as its own state) still keeps this a read of
-  // the hook's `refusal`, not a second one of its own.
-  const [projClassified, setProjClassified] = React.useState<string | null>(null);
-  const projMessage = React.useMemo(() => {
-    if (projClassified === null) return null;
-    const result = parseProjection(projClassified);
-    if (result.ok || (result.reason === 'unmodelable' && isRawProjection(projClassified))) return null;
-    if (result.reason === 'unmodelable') return projField.refusal ?? PROJECTION_ERRORS.unmodelable;
-    return PROJECTION_ERRORS.malformed;
-  }, [projClassified, projField.refusal]);
-  // Settles the draft onto `base` and returns the builder it commits to —
-  // `base` itself when there is no draft, null when the draft is refused.
-  // Patches nothing: ⌘↵ folds this and the sort repair into one `builder`
-  // patch, since two in one tick would each spread the same stale builder.
-  const settleProjection = (base: CollectionTabState['builder']) => {
-    if (projDraft === null) return base;
-    const { text, outcome } = projField.repairNow();
-    if (outcome.kind === 'repaired') setProjDraft(text);
-    const result = parseProjection(text);
-    let next: CollectionTabState['builder'];
-    if (result.ok) {
-      next = { ...base, projection: result.fields, projectionRaw: undefined };
-    } else if (result.reason === 'unmodelable' && isRawProjection(text)) {
-      next = { ...base, projection: [], projectionRaw: text.trim() };
-    } else {
-      setProjClassified(text); // keep the draft — `projMessage` now says why
-      return null;
-    }
-    setProjClassified(null);
-    setProjDraft(null);
-    return next;
-  };
-  const commitProjection = () => {
-    const next = settleProjection(state.builder);
-    if (next !== null && next !== state.builder) onPatch({ builder: next });
   };
 
   // X14 §3 — the sort field's half, same glue and same conversion
@@ -389,13 +326,16 @@ function QueryBarInner({
   // async, so the repaired values also ride along as the `run` override.
   //
   // A refused press is named on `runBlocked`'s line — unless this very
-  // press raised the filter or projection Notice (`commitNow` /
-  // `settleProjection` set it just now), which already says why; a second
-  // `role="alert"` would say it twice. A Notice that was already on screen
-  // is not re-announced, so it does not count. `seq` remounts the line on
-  // every refused press so a repeat press is announced again. The line
-  // lasts until the query changes (keyed on the exact values it judged),
-  // the projection draft is edited, or the tab switches.
+  // press raised the filter Notice (`commitNow` set it just now), which
+  // already says why; a second `role="alert"` would say it twice. A Notice
+  // that was already on screen is not re-announced, so it does not count.
+  // `seq` remounts the line on every refused press so a repeat press is
+  // announced again. The line lasts until the query changes (keyed on the
+  // exact values it judged) or the tab switches.
+  //
+  // The projection is not settled here: its draft lives in the Fields
+  // control, whose dropdown is a dialog the panel-level ⌘↵ skips, so the
+  // control runs its own ⌘↵ with the draft settled.
   const [runBlocked, setRunBlocked] = React.useState<{
     reason: string;
     queryRaw: string;
@@ -405,26 +345,18 @@ function QueryBarInner({
   const runFromShortcut = () => {
     if (isLoading) return;
     const hadFilterNotice = filterField.refusal !== null;
-    const hadProjectionNotice = projMessage !== null;
     const filter = filterField.commitNow();
     const sort = sortField.repairNow();
-    const withSort =
+    const builder =
       sort.text === state.builder.sort ? state.builder : { ...state.builder, sort: sort.text };
-    const settled = settleProjection(withSort);
-    const builder = settled ?? withSort;
     if (builder !== state.builder) onPatch({ builder });
-    const reason =
-      settled === null
-        ? 'Invalid projection'
-        : runBlockReason({ ...state, queryRaw: filter.text, builder });
+    const reason = runBlockReason({ ...state, queryRaw: filter.text, builder });
     if (reason === null) {
       setRunBlocked(null);
       onRun({ queryRaw: filter.text, builder });
       return;
     }
-    const freshNotice =
-      (settled === null && !hadProjectionNotice) ||
-      (settled !== null && filterProblem(filter.text) !== null && !hadFilterNotice);
+    const freshNotice = filterProblem(filter.text) !== null && !hadFilterNotice;
     setRunBlocked((prev) =>
       freshNotice ? null : { reason, queryRaw: filter.text, builder, seq: (prev?.seq ?? 0) + 1 },
     );
@@ -438,14 +370,14 @@ function QueryBarInner({
   const skipValue = state.page * state.pageSize;
   const runError = state.lastRun?.error;
 
-  // Advanced rows (projection/sort/skip/limit) are hidden by default and
+  // Advanced rows (sort/skip/limit) are hidden by default and
   // expand from the QUERY row's chevron. The row opens automatically when the
   // builder already has any advanced value set, so users editing an existing
   // saved query don't get a "where did my sort go?" moment.
   // A count rather than a bare boolean — W14 §2 renders "n set" on the
-  // collapsed trigger.
+  // collapsed trigger. Projection is not counted: it lives in the Fields
+  // control, which carries its own badge (W14 §4).
   const advancedCount =
-    (state.builder.projection.length > 0 || state.builder.projectionRaw?.trim() ? 1 : 0) +
     (state.builder.sort.trim() !== '' ? 1 : 0) +
     (state.builder.limit.trim() !== '' ? 1 : 0);
   const hasAdvanced = advancedCount > 0;
@@ -461,7 +393,7 @@ function QueryBarInner({
   // The last rule is the point: a symmetric resync would yank the row shut
   // under a user who just deleted the last character of `sort`, and a bare
   // `useEffect(() => setAdvancedOpen(hasAdvanced))` would fight every toggle.
-  // No `key` is used, so nothing here remounts QueryBar or drops `projDraft`.
+  // No `key` is used, so nothing here remounts QueryBar.
   const [advancedOpen, setAdvancedOpen] = React.useState(hasAdvanced);
   const [advancedSync, setAdvancedSync] = React.useState({
     tabId: meta.tabId,
@@ -470,20 +402,12 @@ function QueryBarInner({
   if (advancedSync.tabId !== meta.tabId) {
     setAdvancedSync({ tabId: meta.tabId, hasAdvanced });
     setAdvancedOpen(hasAdvanced);
-    // `projDraft` is QueryBar-local and QueryBar never remounts, so a
-    // retained bad draft would otherwise show tab A's unsaved text over tab
-    // B's query. Only unparseable drafts can reach here (a valid one commits
-    // on blur), so nothing savable is lost. Rides the tabId sentinel above
-    // rather than adding a second copy of it.
-    setProjDraft(null);
-    setProjClassified(null);
-    // X14 §5 — same reasoning for the other held messages: they are
-    // QueryBar-local and QueryBar never remounts, so tab A's complaint would
+    // X14 §5 — the held messages are QueryBar-local and QueryBar never
+    // remounts, so tab A's complaint would
     // otherwise sit under tab B's query. `onChange`'s argument is unused by
     // the hook — this leans on it purely for the clear.
     filterField.onChange('');
     sortField.onChange('');
-    projField.onChange('');
     setRunBlocked(null);
   } else if (advancedSync.hasAdvanced !== hasAdvanced) {
     setAdvancedSync({ tabId: meta.tabId, hasAdvanced });
@@ -546,9 +470,17 @@ function QueryBarInner({
       {/* Top toolbar — Save · History · Run (split). W15 §7.1 deletes
           "Set default": it wrote `query.default.<conn>.<db>.<coll>` and
           nothing anywhere read it back. Saved queries already own "reuse this
-          query on this collection". */}
+          query on this collection". This is now the one Save button in the
+          Documents view — the builder-drawer footer's copy was deleted, and
+          `saved.create`'s hint anchor moved here with it. */}
       <Group gap={8} wrap="nowrap" style={{ padding: '8px 12px' }}>
-        <Button variant="default" size="compact-xs" leftSection={I.save} onClick={onSave}>
+        <Button
+          data-hint-anchor="saved.create"
+          variant="default"
+          size="compact-xs"
+          leftSection={I.save}
+          onClick={onSave}
+        >
           Save
         </Button>
         <Button variant="default" size="compact-xs" leftSection={I.clock} onClick={onHistory}>
@@ -568,22 +500,37 @@ function QueryBarInner({
         />
 
         <Button.Group>
-          <Tooltip
-            label={runBlockReason(state) ?? 'Run (Cmd+Enter)'}
-            withArrow
-          >
-            <Button
-              variant="filled"
-              size="compact-xs"
-              onClick={() => canRun && onRun()}
-              disabled={!canRun}
-              data-testid="query-run-btn"
-              leftSection={I.play}
-              styles={{ root: { fontWeight: 700 } }}
+          {isLoading ? (
+            <Tooltip label="Cancel" withArrow>
+              <Button
+                variant="outline"
+                color="red"
+                size="compact-xs"
+                onClick={onCancel}
+                data-testid="query-cancel-btn"
+              >
+                Cancel
+              </Button>
+            </Tooltip>
+          ) : (
+            <Tooltip
+              label={runBlockReason(state) ?? 'Run (Cmd+Enter)'}
+              withArrow
             >
-              Run
-            </Button>
-          </Tooltip>
+              <Button
+                variant="filled"
+                size="compact-xs"
+                onClick={() => canRun && onRun()}
+                disabled={!canRun}
+                data-testid="query-run-btn"
+                data-hint-anchor="run.execute"
+                leftSection={I.play}
+                styles={{ root: { fontWeight: 700 } }}
+              >
+                Run
+              </Button>
+            </Tooltip>
+          )}
           <Menu position="bottom-end" shadow="md" width={190}>
             <Menu.Target>
               <Tooltip label="Run options" withArrow>
@@ -689,7 +636,7 @@ function QueryBarInner({
             </span>
             <span style={{ color: T.accent }}>query</span>
             {/* W14 §2 — collapsed, the row gave no non-hover sign that
-                projection / sort / limit were set. A count rather than the dot
+                sort / limit were set. A count rather than the dot
                 43ee030 shipped and 7a21468 reverted: it survives monochrome
                 and states the fact. Decoration only — a Badge is a plain div,
                 so it isn't focusable and its clicks bubble to the trigger. */}
@@ -718,7 +665,7 @@ function QueryBarInner({
             data-testid="query-bar-input"
             // X14 §5 — the textarea had neither, so the one control that
             // most often refuses input was the only one whose complaint never
-            // reached a screen reader. Same wiring as the projection and sort
+            // reached a screen reader. Same wiring as the sort and limit
             // inputs below (W15 §5).
             aria-invalid={filterField.refusal !== null}
             aria-describedby={filterField.refusal ? 'query-bar-filter-error' : undefined}
@@ -763,59 +710,15 @@ function QueryBarInner({
 
       {advancedOpen && (
       <div id="query-bar-advanced">
-      {/* PROJECTION + SORT row */}
-      <div style={gridStyle}>
+      {/* SORT row — the full width, since a multi-field sort is the longest
+          value here. Projection is not in this row: it lives in the Fields
+          control, beside the display-only toggles (W14 §4). */}
+      <div style={{ ...gridStyle, gridTemplateColumns: '120px 1fr' }}>
         {/* W15 §5 — these label cells were the only thing naming the
             inputs, and only visually. Giving them `id`s and pointing
             `aria-labelledby` at them names each input off the exact text on
             screen; an `aria-label` duplicate would be a second copy to keep
             in sync. */}
-        <div id="query-bar-projection-label" style={labelCellStyle}>projection</div>
-        <div style={valueCellStyle}>
-          {/* W15 §2.3/§3.4 — projection and sort share one
-              autocomplete-backed control, fed by the same sources the
-              drawer's cond rows use. 'token' mode completes the field word
-              around the caret, so a name can be picked from inside
-              `{ … : 1 }` without the punctuation joining the search. */}
-          <FieldAutocompleteInput
-            value={projValue}
-            onChange={(next) => {
-              setProjDraft(next);
-              // Stale complaint while the user is already fixing it.
-              setProjClassified(null);
-              setRunBlocked(null);
-              projField.onChange(next);
-            }}
-            context={suggestionContext}
-            mode="token"
-            onBlur={commitProjection}
-            onKeyDown={(e) => {
-              // `defaultPrevented` means the popover just took this Enter to
-              // accept a suggestion; committing on top of it would close the
-              // input mid-completion.
-              if (e.key === 'Enter' && !e.defaultPrevented) {
-                e.preventDefault();
-                commitProjection();
-                (e.currentTarget as HTMLInputElement).blur();
-              }
-            }}
-            placeholder="{ field: 1 }"
-            dataTestid="query-bar-projection"
-            ariaLabelledBy="query-bar-projection-label"
-            ariaInvalid={projMessage !== null || projRawError !== null}
-            ariaDescribedBy={
-              projMessage
-                ? 'query-bar-projection-error'
-                : projRawError
-                  ? 'query-bar-projection-raw-error'
-                  : undefined
-            }
-            style={{
-              ...cellInputStyle,
-              borderBottom: `1px solid ${projMessage || projRawError ? T.warn : 'transparent'}`,
-            }}
-          />
-        </div>
         <div id="query-bar-sort-label" style={labelCellStyle}>sort</div>
         <div style={valueCellLast}>
           <FieldAutocompleteInput
@@ -837,8 +740,6 @@ function QueryBarInner({
         </div>
       </div>
 
-      {projMessage && <Notice id="query-bar-projection-error">{projMessage}</Notice>}
-      {projRawError && <Notice id="query-bar-projection-raw-error">{projRawError}</Notice>}
       {(sortField.refusal ?? sortError) && (
         <Notice id="query-bar-sort-error">{sortField.refusal ?? sortError}</Notice>
       )}
@@ -947,6 +848,7 @@ function QueryBarInner({
           onClose={() => setExplainOpen(false)}
           initialVerbosity={explainVerbosity}
           runExplain={runQueryExplain}
+          onCreateIndex={onCreateIndex}
         />
       )}
     </div>

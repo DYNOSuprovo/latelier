@@ -128,6 +128,29 @@ describe('OutputPanel — rendering and view switching', () => {
     expect(screen.queryByText(/Output copied to the clipboard/)).toBeNull();
   });
 
+  it('reports a failed save instead of swallowing it', async () => {
+    const saveFile = vi.fn(async () => {
+      throw new Error('EACCES: permission denied');
+    });
+    installAtelierMock({ app: { saveFile } as never });
+    renderPanel({ lastRun: { ...runMeta, rows: [{ _id: 1 }], durationMs: 5 } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download output as JSON' }));
+
+    expect(await screen.findByText(/Could not save the output: .*permission denied/)).toBeTruthy();
+  });
+
+  it('says nothing when the save panel is cancelled', async () => {
+    const saveFile = vi.fn(async () => ({ path: null }));
+    installAtelierMock({ app: { saveFile } as never });
+    renderPanel({ lastRun: { ...runMeta, rows: [{ _id: 1 }], durationMs: 5 } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download output as JSON' }));
+
+    await vi.waitFor(() => expect(saveFile).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Could not save the output/)).toBeNull();
+  });
+
   it('shows the Running… overlay when running is true', () => {
     const { container } = renderPanel({ running: true, lastRun: { ...runMeta, rows: [], durationMs: 0 } });
     expect(container.textContent).toContain('Running');

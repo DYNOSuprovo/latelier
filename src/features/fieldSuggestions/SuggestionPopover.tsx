@@ -69,7 +69,7 @@ export function SuggestionPopover({
   // auto-highlight the user never asked for must not swallow Enter: WAI-ARIA's
   // combobox pattern (`aria-autocomplete="list"`) has Enter commit the typed
   // text unless an option is *actively* selected. Without this, typing a
-  // complete `{ name: 1 }` into the query bar's projection and pressing Enter
+  // complete `{ name: 1 }` into the projection input and pressing Enter
   // committed `{ name: 1 }_id` — the popover took the key first and pasted
   // whatever happened to rank first. Tab is deliberately still unconditional:
   // it means "complete this", and there's nothing else it could mean here.
@@ -105,6 +105,23 @@ export function SuggestionPopover({
     };
   }, [open, anchorRef]);
 
+  // Whether the list is on screen — the render below returns null otherwise.
+  const shown = open && items.length > 0 && pos !== null;
+
+  // Escape belongs to the innermost thing showing. Mantine's Modal and Drawer
+  // close on a capture-phase window listener that runs before this input's
+  // own handler and skips any target carrying this attribute, so it is set
+  // exactly while the list is on screen. (A Mantine Popover's capture-phase
+  // Escape ignores the attribute; a popover hosting one of these inputs has
+  // to close on bubble-phase Escape and honour `defaultPrevented` instead —
+  // see `FieldsControl`.)
+  React.useEffect(() => {
+    const el = (keyboardRef ?? anchorRef).current;
+    if (!el || !shown) return;
+    el.setAttribute('data-mantine-stop-propagation', 'true');
+    return () => el.removeAttribute('data-mantine-stop-propagation');
+  }, [shown, anchorRef, keyboardRef]);
+
   // Keyboard navigation bound to the anchor element so focus can stay on the input.
   React.useEffect(() => {
     if (!open) return;
@@ -132,13 +149,16 @@ export function SuggestionPopover({
           onSelect(pick);
         }
       } else if (e.key === 'Escape') {
-        e.preventDefault();
+        // Claimed only when there is a list to dismiss. With nothing on
+        // screen the key is left to whatever encloses the input, or the user
+        // presses Escape once for an invisible list and sees nothing happen.
+        if (shown) e.preventDefault();
         onClose();
       }
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [open, items, highlight, engaged, moveHighlight, anchorRef, keyboardRef, onSelect, onClose]);
+  }, [open, items, highlight, engaged, moveHighlight, anchorRef, keyboardRef, onSelect, onClose, shown]);
 
   // Resolve the docs entry for the highlighted item, if any.
   const current = items[highlight];

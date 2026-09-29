@@ -4,24 +4,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '../helpers/rend
 import userEvent from '@testing-library/user-event';
 import { IndexesTab } from '../../src/pages/IndexesTab';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
-import type { ConnectionRuntime, ConnectionSummary, IndexInfo } from '@shared/types';
+import type { IndexInfo } from '@shared/types';
 
 afterEach(() => {
   uninstallAtelierMock();
   vi.restoreAllMocks();
 });
-
-const conn: ConnectionSummary = {
-  id: 'c1',
-  name: 'test',
-  color: '#1A6835',
-  host: 'localhost',
-  port: 27017,
-  connectionType: 'standard',
-  readOnly: false,
-  status: 'connected',
-};
-const runtime: ConnectionRuntime = { id: 'c1', status: 'connected' };
 
 const ID_INDEX: IndexInfo = {
   name: '_id_',
@@ -35,19 +23,6 @@ const ID_INDEX: IndexInfo = {
 
 function setupMocks(createSpy: IpcApi['index']['create']) {
   installAtelierMock({
-    meta: {
-      listDatabases: async () => [{ name: 'alpha', sizeOnDisk: 0, empty: false }],
-      listCollections: async () => [
-        {
-          name: 'people',
-          type: 'collection' as const,
-          documentCount: 0,
-          sizeBytes: 0,
-          indexCount: 1,
-          capped: false,
-        },
-      ],
-    },
     index: {
       list: async () => [ID_INDEX],
       create: createSpy,
@@ -57,7 +32,7 @@ function setupMocks(createSpy: IpcApi['index']['create']) {
 
 function renderTab() {
   return render(
-      <IndexesTab conn={conn} runtime={runtime} />
+      <IndexesTab connectionId="c1" dbName="alpha" collection="people" />
   );
 }
 

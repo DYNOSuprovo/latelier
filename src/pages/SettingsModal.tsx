@@ -2,6 +2,7 @@ import React from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import { useHints } from '../hints/HintsContext';
 import { api, getErrorMessage } from '../api/atelier';
+import { invalidateRecentValuesCache } from '../features/fieldSuggestions/sources';
 import { notify } from '../theme/notifications';
 import { useDialogFocusReturn } from '../hooks/useDialogFocusReturn';
 
@@ -14,12 +15,26 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const close = useDialogFocusReturn(onClose);
   const [resetting, setResetting] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [clearingValues, setClearingValues] = React.useState(false);
 
   const handleResetHints = () => {
     setResetting(true);
     reset();
     notify.success("Hints reset — you'll see them again as you use the app.");
     setResetting(false);
+  };
+
+  const handleClearValueHistory = async () => {
+    setClearingValues(true);
+    try {
+      await api.recent.clearFieldValues();
+      invalidateRecentValuesCache();
+      notify.success('Value history cleared.');
+    } catch (err) {
+      notify.error(getErrorMessage(err, 'Failed to clear value history.'));
+    } finally {
+      setClearingValues(false);
+    }
   };
 
   const handleExportDiagnostic = async () => {
@@ -74,6 +89,25 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             disabled={exporting}
           >
             {exporting ? 'Exporting…' : 'Export bundle'}
+          </Button>
+        </Group>
+
+        <Group justify="space-between" align="flex-start" wrap="nowrap">
+          <Stack gap={2} style={{ flex: 1 }}>
+            <Text size="sm" fw={600}>
+              Value suggestions
+            </Text>
+            <Text size="xs" c="dimmed">
+              Forget values typed into the builder's condition rows.
+            </Text>
+          </Stack>
+          <Button
+            variant="default"
+            size="compact-xs"
+            onClick={handleClearValueHistory}
+            disabled={clearingValues}
+          >
+            {clearingValues ? 'Clearing…' : 'Clear value history'}
           </Button>
         </Group>
 

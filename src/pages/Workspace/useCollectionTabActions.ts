@@ -24,6 +24,7 @@ export interface CollectionTabActions {
   patchAggregation: (patch: Partial<AggregationTabState>) => void;
   patchSchema: (patch: Partial<SchemaTabState>) => void;
   runActiveCollection: (override?: Partial<CollectionTabState>) => void;
+  cancelActiveCollection: () => void;
 }
 
 export function useCollectionTabActions(deps: {
@@ -31,8 +32,9 @@ export function useCollectionTabActions(deps: {
   activeScriptRef: React.RefObject<ScriptTab | null>;
   tabs: WorkspaceTabsState;
   run: (override?: Partial<CollectionTabState>) => Promise<void>;
+  cancel: () => void;
 }): CollectionTabActions {
-  const { activeCollectionRef, activeScriptRef, tabs, run } = deps;
+  const { activeCollectionRef, activeScriptRef, tabs, run, cancel } = deps;
 
   const patchActiveCollection = React.useCallback(
     (patch: Partial<CollectionTabState>) => {
@@ -114,6 +116,9 @@ export function useCollectionTabActions(deps: {
     },
     [run],
   );
+  const cancelActiveCollection = React.useCallback(() => {
+    cancel();
+  }, [cancel]);
 
   return {
     patchActiveCollection,
@@ -127,5 +132,6 @@ export function useCollectionTabActions(deps: {
     patchAggregation,
     patchSchema,
     runActiveCollection,
+    cancelActiveCollection,
   };
 }

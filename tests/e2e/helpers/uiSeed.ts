@@ -87,7 +87,8 @@ export async function seedActiveConnection(
 
 /**
  * Insert documents through the IPC bridge so a UI test starts with a
- * non-empty collection without driving the InsertDrawer first.
+ * non-empty collection without driving the Document Editor's insert mode
+ * first.
  *
  * `docs` are stringified to canonical EJSON by the caller (the bridge expects
  * `docJson: string`). Returns the inserted IDs in the order they were sent.

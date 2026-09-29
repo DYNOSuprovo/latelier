@@ -135,6 +135,32 @@ describe('AggregationTab — smoke', () => {
       expect(dialog.textContent).toContain('Stages with write ops were omitted');
     });
   });
+
+  // W16 Tier 4 acceptance: "a COLLSCAN explain for a find shows the action;
+  // an aggregation explain does not". AggregationTab passes no
+  // `onCreateIndex` to ExplainDrawer — only a find has a filter
+  // `suggestIndex` can read — so the button must never render here, even on
+  // a COLLSCAN with an otherwise-identical summary strip to the find case.
+  it('a COLLSCAN explain shows no "Create an index for this query" action', async () => {
+    const explainSpy = vi.fn<IpcApi['agg']['explain']>(async () => ({
+      plan: { queryPlanner: { winningPlan: { stage: 'COLLSCAN' } } },
+      verbosity: 'queryPlanner',
+      writeStageOmitted: false,
+    }));
+    installAtelierMock({ agg: { explain: explainSpy, cancel: async () => undefined } });
+
+    const state: AggregationTabState = {
+      ...DEFAULT_AGGREGATION_TAB_STATE,
+      stages: [{ id: 1, op: '$match', body: '{}', enabled: true }],
+    };
+    renderTab(state);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Explain' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Explain plan' });
+    await waitFor(() => expect(dialog.textContent).toContain('COLLSCAN'));
+    expect(screen.queryByTestId('explain-create-index')).toBeNull();
+  });
 });
 
 /**
@@ -430,5 +456,75 @@ describe('AggregationTab — Shell Syntax on the button-less run paths (X14 §4)
     const payload = updateSpy.mock.calls[0]![0].patch.payload;
     if (payload?.kind !== 'aggregation') throw new Error('expected an aggregation payload');
     expect(payload.stages.map((s) => s.body)).toEqual(CANONICAL);
+  });
+
+  // docs/adr/0013 — stage delete is local editor state: no confirm, an Undo
+  // toast instead. `renderStatefulTab`, not `renderTab`: the restore has to
+  // round-trip through `onPatch` and come back as props for the accordion to
+  // show the stage again.
+  describe('remove stage — Undo toast (docs/adr/0013)', () => {
+    function opAt(index: number) {
+      return screen.getByRole('button', {
+        name: new RegExp(`Change operator for stage ${index + 1} \\(currently \\$`),
+      }).getAttribute('aria-label');
+    }
+
+    it('restores the removed stage at its index', async () => {
+      renderStatefulTab({
+        ...DEFAULT_AGGREGATION_TAB_STATE,
+        stages: [
+          { id: 1, op: '$match', body: '{}', enabled: true },
+          { id: 2, op: '$sort', body: '{}', enabled: true },
+        ],
+      });
+
+      expect(opAt(0)).toMatch(/\$match/);
+      expect(opAt(1)).toMatch(/\$sort/);
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete stage' })[0]!);
+
+      // $match is gone; $sort shifted up to index 0.
+      expect(opAt(0)).toMatch(/\$sort/);
+      expect(screen.queryByRole('button', { name: 'Change operator for stage 2 (currently $sort)' })).toBeNull();
+
+      const undo = await screen.findByRole('button', { name: 'Undo' });
+      fireEvent.click(undo);
+
+      await waitFor(() => expect(opAt(0)).toMatch(/\$match/));
+      expect(opAt(1)).toMatch(/\$sort/);
+    });
+
+    /**
+     * MUTATION TARGET — drop the `index` argument in `onRemoveStage`'s Undo
+     * `onClick` (always restore at 0, say) and this goes red: $limit ends up
+     * first instead of last.
+     */
+    it('a second delete replaces the first toast\'s Undo target', async () => {
+      renderStatefulTab({
+        ...DEFAULT_AGGREGATION_TAB_STATE,
+        stages: [
+          { id: 1, op: '$match', body: '{}', enabled: true },
+          { id: 2, op: '$sort', body: '{}', enabled: true },
+          { id: 3, op: '$limit', body: '5', enabled: true },
+        ],
+      });
+
+      // Remove $match (index 0).
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete stage' })[0]!);
+      await screen.findByRole('button', { name: 'Undo' });
+
+      // Remove what is now index 1 ($limit) — only one Undo toast survives.
+      // A non-zero index matters here: restoring at 0 instead of the
+      // captured index would put $limit first instead of last.
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete stage' })[1]!);
+      await waitFor(() => expect(screen.getAllByRole('button', { name: 'Undo' })).toHaveLength(1));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+
+      // $limit came back at the end, not at 0; $match stays gone.
+      await waitFor(() => expect(opAt(1)).toMatch(/\$limit/));
+      expect(opAt(0)).toMatch(/\$sort/);
+      expect(screen.queryByRole('button', { name: /currently \$match\)/ })).toBeNull();
+    });
   });
 });

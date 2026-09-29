@@ -189,3 +189,63 @@ describe('ExplainDrawer', () => {
     });
   });
 });
+
+// W16 Tier 4 — "Create an index for this query". `AggregationTab` never
+// passes `onCreateIndex` at all (see `query-bar-create-index.spec.tsx` for
+// the wiring that supplies it), so these pin the drawer's own half:
+// visible only for a find's COLLSCAN *and* a caller that opted in.
+describe('ExplainDrawer — Create an index for this query (W16 Tier 4)', () => {
+  const collscanPlan = { queryPlanner: { winningPlan: { stage: 'COLLSCAN' } } };
+  const ixscanPlan = {
+    queryPlanner: { winningPlan: { stage: 'IXSCAN', indexName: 'a_1', keyPattern: { a: 1 } } },
+  };
+
+  it('shows the button on a COLLSCAN when onCreateIndex is supplied', async () => {
+    const runExplain = vi.fn(async () => ({ plan: collscanPlan }));
+    render(
+      <ExplainDrawer onClose={() => {}} runExplain={runExplain} onCreateIndex={() => {}} />,
+    );
+    await screen.findByRole('dialog', { name: 'Explain plan' });
+    await waitFor(() => {
+      expect(screen.getByTestId('explain-create-index')).toBeTruthy();
+    });
+  });
+
+  it('hides the button on a COLLSCAN when onCreateIndex is omitted (AggregationTab)', async () => {
+    const runExplain = vi.fn(async () => ({ plan: collscanPlan }));
+    render(<ExplainDrawer onClose={() => {}} runExplain={runExplain} />);
+    await screen.findByRole('dialog', { name: 'Explain plan' });
+    await waitFor(() => {
+      expect(screen.getByTestId('explain-summary-strip')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('explain-create-index')).toBeNull();
+  });
+
+  it('hides the button when the plan uses an index, even with onCreateIndex supplied', async () => {
+    const runExplain = vi.fn(async () => ({ plan: ixscanPlan }));
+    render(
+      <ExplainDrawer onClose={() => {}} runExplain={runExplain} onCreateIndex={() => {}} />,
+    );
+    await screen.findByRole('dialog', { name: 'Explain plan' });
+    await waitFor(() => {
+      expect(screen.getByTestId('explain-summary-strip')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('explain-create-index')).toBeNull();
+  });
+
+  it('clicking it closes the explain drawer and calls onCreateIndex', async () => {
+    const runExplain = vi.fn(async () => ({ plan: collscanPlan }));
+    const onClose = vi.fn();
+    const onCreateIndex = vi.fn();
+    render(
+      <ExplainDrawer onClose={onClose} runExplain={runExplain} onCreateIndex={onCreateIndex} />,
+    );
+    await screen.findByRole('dialog', { name: 'Explain plan' });
+    const button = await screen.findByTestId('explain-create-index');
+
+    fireEvent.click(button);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCreateIndex).toHaveBeenCalledTimes(1);
+  });
+});

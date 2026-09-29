@@ -8,7 +8,7 @@ import {
 } from 'react-window';
 import { useRovingFocus } from '../../../hooks/useRovingFocus';
 import { useMenuFocus } from '../../../hooks/useMenuFocus';
-import { isContextMenuKey, anchorForRow } from '../../../utils/contextMenuKey';
+import { isContextMenuKey, isEditKey, anchorForRow, anchorFromRect } from '../../../utils/contextMenuKey';
 import { Popover } from '@mantine/core';
 import { I } from '../../../icons';
 import { isRecord, toDisplayValue, valueToClipboardText } from '../../../utils/displayValue';
@@ -29,7 +29,10 @@ import { useCollectionWorkspace } from '../context';
 import { insertAt, parseFilter, printFilter } from '../filterTree';
 import { useResultSelection } from '../resultSelection';
 import { DocFieldTree, type FieldMenuOpenPayload } from './DocFieldTree';
-import { getFullDocId, isInlineEditable } from './docId';
+import { getDocId, getFullDocId, isInlineEditableKind, reviveTableValue } from './docId';
+import { kindOf, parseAs, textOf, type FieldKind } from '../documentFieldTypes';
+import { SelectToggle } from './SelectToggle';
+import { RowActionsMenu } from './RowActionsMenu';
 import {
   deriveColumns,
   resolveColumns,
@@ -59,7 +62,15 @@ interface TableViewProps {
 
 // Kept independent of the data columns — the column chooser can hide/reorder
 // any derived field including `_id`, so the expand control can't live in a data cell.
-const GUTTER_WIDTH = 28;
+// Wide enough for both the expand chevron and the select checkbox side by side.
+const GUTTER_WIDTH = 54;
+
+// Sticky right-edge actions column (Edit/Delete/More) — not a data column,
+// so it stays out of `deriveColumns`/`columnConfig`/`FieldsControl` (the
+// Fields control drives which document fields show, not this). Pinned with
+// `position: sticky; right: 0` on each cell so it stays reachable under
+// horizontal scroll, matching the recommendation in the issue this closes.
+const ACTIONS_WIDTH = 92;
 
 const EMPTY_EXPANDED_ROWS: Record<string, boolean> = {};
 
@@ -102,9 +113,13 @@ interface TableCellProps {
   value: unknown;
   /** Dotted path or plain field name — drag payload, title, "Copy field path". */
   fieldPath: string;
-  /** Inline-edit eligibility, computed by the caller since only it knows `col.kind`
-   * (a computed accessor column's `fieldPath` is a display label, not a real `$set` target). */
-  editable: boolean;
+  /**
+   * `col.kind === 'field'` — a real document field, as opposed to a computed
+   * accessor column. W18 §8: a field this narrow but `!editable` (Date,
+   * ObjectId, Object, Array, …) still gets an edit affordance, just one that
+   * opens the Document Editor on it instead of inline-editing it.
+   */
+  isFieldColumn: boolean;
   /** The row's document, needed to build the `{_id}` filter for inline-edit writes. */
   doc: unknown;
   width: number;
@@ -132,7 +147,7 @@ interface TableCellProps {
 function TableCell({
   value,
   fieldPath,
-  editable,
+  isFieldColumn,
   doc,
   width,
   cellKey,
@@ -153,8 +168,31 @@ function TableCell({
   const [focused, setFocused] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState('');
+  const [inputError, setInputError] = React.useState<string | null>(null);
+  // The boolean toggle's own in-flight guard: unlike the text/number path,
+  // it commits immediately with no separate draft to hold a second edit
+  // apart from the first, so a second click before the first write settles
+  // would guard its compare-and-set on the stale pre-write value and land a
+  // spurious conflict. `pending` overrides the checked state (and disables
+  // it) until `updateField`'s returned promise resolves.
+  const [pendingBoolean, setPendingBoolean] = React.useState<boolean | null>(null);
+  // Only the latest write may clear `pendingBoolean`: a rebind clears it
+  // early, and an older write settling after a newer click would otherwise
+  // re-enable the toggle while the newer write is still in flight.
+  const boolWriteRef = React.useRef(0);
   const commitGuardRef = React.useRef(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+
+  // W18 §8 — the cell's real BSON kind, revived from the wire sentinel once
+  // and shared by the eligibility check and the editor's control choice, so
+  // the two can't disagree about what this value is.
+  const revived = React.useMemo(() => reviveTableValue(value), [value]);
+  const kind = React.useMemo(() => kindOf(revived), [revived]);
+  // T2.6 — restricted to real field columns: a computed accessor column's
+  // `fieldPath` is a display label (or dotted path), never a real document
+  // field, so it must never reach `$set`.
+  const editable = isFieldColumn && isInlineEditableKind(kind, fieldPath);
+  const isNumericKind = kind === 'int32' || kind === 'long' || kind === 'double' || kind === 'decimal';
 
   // Index-virtualization rebinds this same TableCell instance to a different
   // document when the array swaps mid-edit; without cancelling here, the
@@ -167,6 +205,12 @@ function TableCell({
       commitGuardRef.current = true;
       setEditing(false);
       setDraft('');
+      setInputError(null);
+    }
+    if (pendingBoolean !== null) {
+      // eslint-disable-next-line react-hooks/refs
+      boolWriteRef.current++;
+      setPendingBoolean(null);
     }
   }
 
@@ -187,9 +231,21 @@ function TableCell({
   const affordanceVisible = hovered || expandOpen || focused;
 
   const canInlineEdit = editable && !meta.isReadOnly && typeof actions.updateField === 'function';
+  // W18 §8 — a real field this cell can't inline-edit (Date, ObjectId,
+  // Object, Array, …) still gets an edit affordance; it opens the Document
+  // Editor on the field instead. `_id` keeps neither: it already has the
+  // row-level Edit action, and highlighting it as "editable here" would be
+  // misleading.
+  const canOpenEditorHere =
+    !editable && isFieldColumn && fieldPath !== '_id' && draggable && !meta.isReadOnly;
 
   const startEdit = () => {
-    setDraft(typeof value === 'string' ? value : '');
+    if (isNumericKind) {
+      setDraft(textOf(kind as FieldKind, revived));
+    } else {
+      setDraft(typeof value === 'string' ? value : '');
+    }
+    setInputError(null);
     commitGuardRef.current = false;
     setEditing(true);
   };
@@ -198,14 +254,31 @@ function TableCell({
     // doesn't reproduce it) that would otherwise commit the cancelled draft.
     commitGuardRef.current = true;
     setEditing(false);
+    setInputError(null);
   };
   // Guarded against a double-fire: Enter's setEditing(false) unmounts the
   // input, and the browser also emits a blur for the same interaction.
   const commitEdit = () => {
     if (commitGuardRef.current) return;
+    if (isNumericKind) {
+      const parsed = parseAs(kind as FieldKind, draft);
+      if (!parsed.ok) {
+        // Refuse and stay in edit mode — never coerce or silently drop the
+        // edit. The guard resets so a fix-then-Enter/blur can still commit.
+        setInputError(parsed.error);
+        return;
+      }
+      commitGuardRef.current = true;
+      setEditing(false);
+      setInputError(null);
+      actions.updateField?.(doc, fieldPath, parsed.value);
+      return;
+    }
     commitGuardRef.current = true;
     setEditing(false);
-    if (draft === value) return; // unchanged — AC: no IPC call
+    // An unchanged value still reaches `updateField`, which is now the same
+    // guarded builder the Document Editor uses (W18 §5b: an empty diff sends
+    // no request) — one no-op rule instead of a second one duplicated here.
     actions.updateField?.(doc, fieldPath, draft);
   };
 
@@ -287,42 +360,94 @@ function TableCell({
           : undefined
       }
     >
-      {editing ? (
+      {canInlineEdit && kind === 'boolean' ? (
+        // W18 §8 — booleans are always live, not gated behind a pencil-click
+        // "editing" mode: flipping the toggle is the whole interaction.
+        // Disabled while a write is in flight: `checked` has no separate
+        // draft to protect a second click's guard from the first click's
+        // still-unsettled value (see `pendingBoolean`'s own comment).
         <input
-          ref={inputRef}
+          type="checkbox"
           aria-label={`Edit ${fieldPath}`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              e.stopPropagation();
-              commitEdit();
-            } else if (e.key === 'Escape') {
-              e.preventDefault();
-              e.stopPropagation();
-              cancelEdit();
-            }
+          checked={pendingBoolean ?? value === true}
+          disabled={pendingBoolean !== null}
+          onChange={(e) => {
+            const next = e.currentTarget.checked;
+            const token = ++boolWriteRef.current;
+            setPendingBoolean(next);
+            void Promise.resolve(actions.updateField?.(doc, fieldPath, next)).finally(() => {
+              if (boolWriteRef.current === token) setPendingBoolean(null);
+            });
           }}
-          onBlur={commitEdit}
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.stopPropagation()}
           draggable={false}
-          style={{
-            width: '100%',
-            boxSizing: 'border-box',
-            fontFamily: 'inherit',
-            fontSize: 'inherit',
-            color: 'var(--atelier-text)',
-            background: 'var(--atelier-surface)',
-            border: '1px solid var(--atelier-accent)',
-            borderRadius: 2,
-            padding: '0 2px',
-            outline: 'none',
-          }}
+          style={{ cursor: 'pointer' }}
         />
+      ) : editing ? (
+        <>
+          <input
+            ref={inputRef}
+            aria-label={`Edit ${fieldPath}`}
+            value={draft}
+            inputMode={isNumericKind ? 'decimal' : undefined}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setInputError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                commitEdit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelEdit();
+              }
+            }}
+            onBlur={commitEdit}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.stopPropagation()}
+            draggable={false}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              fontFamily: 'inherit',
+              fontSize: 'inherit',
+              color: 'var(--atelier-text)',
+              background: 'var(--atelier-surface)',
+              border: `1px solid ${inputError ? 'var(--atelier-red)' : 'var(--atelier-accent)'}`,
+              borderRadius: 2,
+              padding: '0 2px',
+              outline: 'none',
+            }}
+          />
+          {inputError && (
+            <span
+              role="alert"
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: '100%',
+                zIndex: 1,
+                marginTop: 2,
+                padding: '2px 4px',
+                borderRadius: 2,
+                background: 'var(--atelier-surface-raised)',
+                color: 'var(--atelier-red)',
+                fontSize: 11,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {inputError}
+            </span>
+          )}
+        </>
       ) : isCopied ? (
         '✓ Copied'
       ) : rule ? (
@@ -357,19 +482,56 @@ function TableCell({
         String(display)
       )}
 
-      {/* T2.6 — inline single-field edit: hover-revealed pencil turns the
-          cell into a text input. Own stopPropagation so it doesn't steal
+      {/* W18 §8 — inline single-field edit: hover-revealed pencil turns the
+          cell into a text/number input (booleans get their own always-on
+          toggle above, no pencil). Own stopPropagation so it doesn't steal
           row-select / drag / dblclick-copy / contextmenu, matching the
-          expand affordance below. Gated on `canInlineEdit` (string values on
-          a real field column, not a computed accessor or `_id`, and never
-          on a read-only workspace) so a sentinel-typed or computed cell
-          can't be silently corrupted via `$set`. */}
-      {canInlineEdit && !editing && (
+          expand affordance below. Gated on `canInlineEdit` (string, Int32,
+          Int64, Double or Decimal128 values on a real field column, not a
+          computed accessor or `_id`, and never on a read-only workspace) so
+          a sentinel-typed or computed cell can't be silently corrupted via
+          `$set`. */}
+      {canInlineEdit && kind !== 'boolean' && !editing && (
         <button
           aria-label="Edit cell value"
           onClick={(e) => {
             e.stopPropagation();
             startEdit();
+          }}
+          style={{
+            position: 'absolute',
+            right: 20,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            opacity: affordanceVisible ? 1 : 0,
+            pointerEvents: affordanceVisible ? 'auto' : 'none',
+            width: 16,
+            height: 16,
+            padding: 0,
+            border: 'none',
+            borderRadius: 3,
+            background: 'var(--atelier-surface-raised)',
+            color: 'var(--atelier-text-ghost)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {I.edit}
+        </button>
+      )}
+
+      {/* W18 §8 — a field this cell can't edit inline (Date, ObjectId,
+          Object, Array, …) still gets an edit affordance; it opens the
+          Document Editor on the field rather than turning the cell itself
+          into an input. */}
+      {canOpenEditorHere && (
+        <button
+          aria-label="Edit cell value"
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.openEdit(doc, fieldPath);
           }}
           style={{
             position: 'absolute',
@@ -408,7 +570,7 @@ function TableCell({
           shadow="md"
           // #79 — without this, closing on a click outside a focusable
           // element drops focus to <body>. Safe here because this dropdown
-          // has no focusable content to autofocus (see `ColumnChooser`'s
+          // has no focusable content to autofocus (see `FieldsControl`'s
           // comment for why an autofocus would break this).
           returnFocus
         >
@@ -483,9 +645,12 @@ interface TableRowProps {
   refsByField?: Map<string, ReferenceRule>;
   // Widened from React.MouseEvent so a keyboard Enter/Space on the row can
   // drive the same selection logic as a click — both event types carry
-  // metaKey/ctrlKey, which is all this reads.
+  // metaKey/ctrlKey, which is all this reads. A plain click only moves the
+  // active row; ⌘/Ctrl+click also toggles the row into/out of the
+  // selection — the checkbox below is the plain-click-free way in.
   onSelect: (e: { metaKey: boolean; ctrlKey: boolean }, idx: number) => void;
-  // #20 — stable per-row DOM id so the grid's `aria-activedescendant` (set
+  onToggleSelect: (idx: number) => void;
+  // stable per-row DOM id so the grid's `aria-activedescendant` (set
   // by `useRovingFocus` in the component below) always names a real element.
   rowId: (index: number) => string;
   onCopyCell: (text: string, cellKey: string) => void;
@@ -505,6 +670,22 @@ interface TableRowProps {
   onRefHover?: (rule: ReferenceRule, value: unknown, rect: DOMRect) => void;
   onRefHoverLeave?: () => void;
   onRefOpen?: (rule: ReferenceRule, field: string, value: unknown) => void;
+  onEditDoc: (doc: unknown) => void;
+  onDeleteDoc: (doc: unknown) => void;
+  // Opens the same cell-level context menu the right-click/Shift+F10 paths
+  // use (Edit/Duplicate/Delete), anchored to the "More actions" button
+  // rather than the cursor. `focus` carries the keyboard-open pair
+  // (`returnFocusTo`/`focusMenuOnOpen`) only when the click itself came
+  // from the keyboard — see the button's own `onClick` for how that's told
+  // apart from a mouse click.
+  onOpenRowMenu: (
+    doc: unknown,
+    anchor: { x: number; y: number },
+    focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
+  ) => void;
+  // Hand-computed pin for the actions column — see `TableView`'s own
+  // `actionsOffset` for why native `position: sticky` can't be used here.
+  actionsOffset: number;
 }
 
 // `ariaAttributes` is intentionally not destructured off the row props.
@@ -525,6 +706,7 @@ function TableRowImpl({
   fieldCopiedPath,
   refsByField,
   onSelect,
+  onToggleSelect,
   onCopyCell,
   onContextMenu,
   onRowExpand,
@@ -535,12 +717,32 @@ function TableRowImpl({
   onRefHoverLeave,
   onRefOpen,
   rowId,
+  onEditDoc,
+  onDeleteDoc,
+  onOpenRowMenu,
+  actionsOffset,
 }: RowComponentProps<TableRowProps>) {
   const doc = documents[index];
   const isSelected = indices.has(index);
   const isActive = index === activeIndex;
   const docId = getFullDocId(doc);
   const isExpanded = !!ownGet(expandedRows, docId);
+  // The actions column shows on row hover (mouse), when the row is the
+  // roving-focus target (`isActive`, keyboard), or when real DOM focus is
+  // inside it (Tab reaches these buttons the same way it already reaches
+  // TableCell's own hover-revealed pencil/expand buttons — see those for
+  // why `focused` state, not `:focus-within`, catches that: this project's
+  // component tests read `getComputedStyle`, which doesn't reflect dynamic
+  // pseudo-classes in jsdom). Local hover/focus state rather than CSS for
+  // the same reason.
+  const [rowHovered, setRowHovered] = React.useState(false);
+  const [actionsFocused, setActionsFocused] = React.useState(false);
+  const actionsVisible = rowHovered || isActive || actionsFocused;
+  const rowBackground = isSelected
+    ? 'var(--atelier-accent-soft)'
+    : index % 2 === 0
+    ? 'var(--atelier-surface-raised)'
+    : 'var(--atelier-surface)';
 
   return (
     <div
@@ -549,19 +751,17 @@ function TableRowImpl({
       data-selected={isSelected}
       style={{
         ...style,
-        background: isSelected
-          ? 'var(--atelier-accent-soft)'
-          : index % 2 === 0
-          ? 'var(--atelier-surface-raised)'
-          : 'var(--atelier-surface)',
+        background: rowBackground,
       }}
     >
-      {/* S6848 — this strip behaves like a selectable row (click selects,
-          ⌘/Ctrl+click multi-selects) while wrapping other real interactive
-          controls: draggable cells, the expand chevron, the edit affordances.
-          `role="option"` was the first attempt and was wrong: `option` is
-          "children presentational" in ARIA, so it may not contain any of
-          those, and it needs a `listbox` parent this never had.
+      {/* This strip behaves like an activatable row (plain click makes it
+          the active/highlighted row, ⌘/Ctrl+click also toggles it into/out
+          of the selection) while wrapping other real interactive controls:
+          draggable cells, the expand chevron, the select checkbox, the edit
+          affordances. `role="option"` was the first attempt and was wrong:
+          `option` is "children presentational" in ARIA, so it may not
+          contain any of those, and it needs a `listbox` parent this never
+          had.
 
           `row` inside `role="grid"` is the pattern for exactly this — a data
           table whose cells hold controls. `row` is not children
@@ -570,20 +770,18 @@ function TableRowImpl({
           counts the header, so the first document row is 2.
 
           No `tabIndex` at all: a plain `div` with none is already out of
-          both the Tab order AND click-focusable — #20 originally left
-          `tabIndex={-1}` here on the theory that only *sequential* focus
-          needed excluding, but the HTML focusing-steps algorithm treats any
-          declared `tabIndex` (negative included) as making the element
-          focusable via a real click, which review caught: clicking a row
-          left real DOM focus sitting on it, so the next Arrow/Home/End
-          reached the grid's `onKeyDown` with `e.target` = this row instead
-          of the grid itself, and its own-target guard swallowed every one
-          of them. Removing it lets a click's focusing steps walk up to the
-          nearest focusable ancestor instead, which is the grid — exactly
-          where #20's design already wanted real focus to live. The grid's
+          both the Tab order AND click-focusable — the HTML focusing-steps
+          algorithm treats any declared `tabIndex` (negative included) as
+          making the element focusable via a real click, and a click leaving
+          real DOM focus sitting on the row would make the next Arrow/Home/End
+          reach the grid's `onKeyDown` with `e.target` = this row instead of
+          the grid itself, where its own-target guard would swallow every one
+          of them. Leaving `tabIndex` off lets a click's focusing steps walk
+          up to the nearest focusable ancestor instead, which is the grid —
+          exactly where real focus needs to live. The grid's
           `aria-activedescendant` (set in `TableView` below) still points at
-          this row via its `id`; `handleSelect` also moves the roving index
-          here on click, so a click and the next Arrow agree on which row is
+          this row via its `id`; `onSelect` also moves the roving index here
+          on click, so a click and the next Arrow agree on which row is
           active. */}
       <div
         id={rowId(index)}
@@ -605,8 +803,10 @@ function TableRowImpl({
           outlineOffset: isActive ? '-2px' : undefined,
         }}
         onClick={(e) => onSelect(e, index)}
+        onMouseEnter={() => setRowHovered(true)}
+        onMouseLeave={() => setRowHovered(false)}
       >
-        {/* Fixed expand gutter — independent of the (hide/reorder-able)
+        {/* Fixed expand+select gutter — independent of the (hide/reorder-able)
             data columns. A `gridcell` like the rest, so the row owns nothing
             but cells. */}
         <div
@@ -618,11 +818,17 @@ function TableRowImpl({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            gap: 2,
             borderBottom: '1px solid var(--atelier-border)',
             borderRight: '1px solid var(--atelier-border)',
             boxSizing: 'border-box',
           }}
         >
+          <SelectToggle
+            selected={isSelected}
+            docLabel={getDocId(doc)}
+            onToggle={() => onToggleSelect(index)}
+          />
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -663,17 +869,13 @@ function TableRowImpl({
           const isCopied = copiedCell === cellKey;
           const width = ownGet(widths, col.field) ?? 160;
           const rule = val !== undefined ? refsByField?.get(fieldPath) : undefined;
-          // T2.6 — restricted to real field columns: a computed accessor
-          // column's `fieldPath` is a display label (or dotted path), never
-          // a real document field, so it must never reach `$set`.
-          const editable = col.kind === 'field' && isInlineEditable(val, fieldPath);
 
           return (
             <TableCell
               key={col.field}
               value={val}
               fieldPath={fieldPath}
-              editable={editable}
+              isFieldColumn={col.kind === 'field'}
               doc={doc}
               width={width}
               cellKey={cellKey}
@@ -687,6 +889,112 @@ function TableRowImpl({
             />
           );
         })}
+
+        {/* Right-edge actions column — Edit/Delete always visible (matching
+            Tree/JSON, which never gate them on `isReadOnly`; they're no-ops
+            for read-only providers), plus a "More actions" button that
+            opens the same cell-level context menu the right-click/
+            Shift+F10 paths use (it already gates Duplicate on
+            `!meta.isReadOnly`, so nothing new to gate here). Kept reachable
+            under horizontal scroll via `actionsOffset`, a hand-computed
+            `transform` rather than native `position: sticky` — see
+            `TableView`'s own comment on `actionsOffset` for why sticky
+            doesn't reach across react-window's `List`. Not a data column:
+            it's rendered here directly rather than through `columns`/
+            `deriveColumns`, so it never reaches `columnConfig` or the
+            Fields control. */}
+        <div
+          role="gridcell"
+          style={{
+            width: ACTIONS_WIDTH,
+            minWidth: ACTIONS_WIDTH,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: 2,
+            padding: '0 6px',
+            borderBottom: '1px solid var(--atelier-border)',
+            borderLeft: '1px solid var(--atelier-border)',
+            boxSizing: 'border-box',
+            background: rowBackground,
+            transform: `translateX(${actionsOffset}px)`,
+            opacity: actionsVisible ? 1 : 0,
+            pointerEvents: actionsVisible ? 'auto' : 'none',
+          }}
+          onFocus={() => setActionsFocused(true)}
+          onBlur={() => setActionsFocused(false)}
+        >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEditDoc(doc);
+            }}
+            title="Edit document"
+            aria-label={`Edit document ${getDocId(doc)}`}
+            style={{
+              background: 'none',
+              border: '1px solid var(--atelier-border)',
+              borderRadius: 'var(--atelier-radius-xs)',
+              padding: '3px 5px',
+              cursor: 'pointer',
+              color: 'var(--atelier-text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {I.edit}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeleteDoc(doc);
+            }}
+            title="Delete document"
+            aria-label={`Delete document ${getDocId(doc)}`}
+            style={{
+              background: 'none',
+              border: '1px solid var(--atelier-border)',
+              borderRadius: 'var(--atelier-radius-xs)',
+              padding: '3px 5px',
+              cursor: 'pointer',
+              color: 'var(--atelier-red)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {I.trash}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              // A keyboard-activated click (Enter/Space) reports `detail:
+              // 0` in Chromium (the app's only runtime — a mouse click is
+              // always >= 1); only that path grabs focus into the menu and
+              // returns it to this button on dismiss, matching the
+              // keyboard-open convention the field/cell menus above use.
+              const viaKeyboard = e.detail === 0;
+              onOpenRowMenu(doc, anchorFromRect(e.currentTarget.getBoundingClientRect()), {
+                returnFocusTo: viaKeyboard ? e.currentTarget : undefined,
+                focusMenuOnOpen: viaKeyboard,
+              });
+            }}
+            title="More actions"
+            aria-label={`More actions for document ${getDocId(doc)}`}
+            style={{
+              background: 'none',
+              border: '1px solid var(--atelier-border)',
+              borderRadius: 'var(--atelier-radius-xs)',
+              padding: '3px 5px',
+              cursor: 'pointer',
+              color: 'var(--atelier-text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {I.more}
+          </button>
+        </div>
       </div>
 
       {/* Row expand (AC1/AC2) — the same recursive FIELD|VALUE|TYPE tree the
@@ -925,9 +1233,70 @@ export function TableView({
     return out;
   }, [columns, getWidth]);
   const totalWidth = React.useMemo(
-    () => GUTTER_WIDTH + columns.reduce((sum, c) => sum + (ownGet(widths, c.field) ?? 160), 0),
+    () =>
+      GUTTER_WIDTH +
+      ACTIONS_WIDTH +
+      columns.reduce((sum, c) => sum + (ownGet(widths, c.field) ?? 160), 0),
     [columns, widths],
   );
+
+  // The sticky actions column can't use native `position: sticky; right: 0`:
+  // its nearest ancestor with non-`visible` overflow is react-window's own
+  // `List` element (forced non-`visible` on both axes by its own
+  // `overflowY: 'auto'` — the CSS rule that couples the two axes once
+  // either one opts out of `visible`), not this wrapping div, even though
+  // this div is the one that actually scrolls horizontally (`List`'s own
+  // box is sized to fit its content exactly, via `minWidth: totalWidth`
+  // below, so it never overflows itself). Native sticky would silently
+  // resolve against `List` instead and never move — confirmed empirically
+  // with a throwaway Playwright repro of the same nesting, deleted after
+  // use. So the offset is computed by hand and applied as a `transform`,
+  // the same trick TreeView's sticky field-header overlay uses for an
+  // analogous case where react-window's row positioning breaks a native
+  // CSS mechanism.
+  //
+  // The column's right edge is the wrapper's visible right edge, capped at
+  // the grid's own content box: once the grid shows its vertical scrollbar,
+  // its rows are that much narrower than the wrapper, and a `transform`
+  // counts toward scrollable overflow — ending at the wrapper's edge would
+  // tuck the column under the scrollbar and give the grid a horizontal
+  // scrollbar of its own, shortening the viewport the roving-focus scroll
+  // aims at.
+  const tableWrapperRef = React.useRef<HTMLDivElement>(null);
+  // Declared here rather than beside `roving` below, which also uses it:
+  // the actions offset reads the grid element too.
+  const listRef = useListRef(null);
+  const [actionsOffset, setActionsOffset] = React.useState(0);
+  const computeActionsOffset = React.useCallback(() => {
+    const el = tableWrapperRef.current;
+    if (!el) return;
+    const visibleRight = el.scrollLeft + el.clientWidth;
+    const grid = listRef.current?.element;
+    setActionsOffset((grid ? Math.min(visibleRight, grid.clientWidth) : visibleRight) - totalWidth);
+  }, [totalWidth, listRef]);
+  const scrollRaf = React.useRef<number | null>(null);
+  const handleTableScroll = React.useCallback(() => {
+    if (scrollRaf.current != null) return;
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = null;
+      computeActionsOffset();
+    });
+  }, [computeActionsOffset]);
+  React.useLayoutEffect(() => {
+    computeActionsOffset();
+  }, [computeActionsOffset]);
+  // A window resize is not the only thing that moves the visible edge: a
+  // panel splitter drag resizes the wrapper alone, and the grid's vertical
+  // scrollbar appears only once enough rows have been measured.
+  React.useEffect(() => {
+    const el = tableWrapperRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(computeActionsOffset);
+    observer.observe(el);
+    const grid = listRef.current?.element;
+    if (grid) observer.observe(grid);
+    return () => observer.disconnect();
+  }, [computeActionsOffset, listRef]);
 
   const dragState = React.useRef<{
     field: string;
@@ -986,7 +1355,6 @@ export function TableView({
   // moves the index — see `useRovingFocus`'s own docstring for why that has
   // to be one operation, not two. Declared before `handleSelect` below,
   // which needs `roving.setActiveIndex`.
-  const listRef = useListRef(null);
   const roving = useRovingFocus({
     count: documents.length,
     idPrefix: 'table-row-',
@@ -994,24 +1362,56 @@ export function TableView({
     scrollToIndex: (i) => listRef.current?.scrollToRow({ index: i, align: 'auto' }),
   });
 
-  // Plain click: single-row highlight (click again to deselect). ⌘/Ctrl+click
-  // toggles the row into/out of a multi-row selection for the bulk-action bar.
-  // Also makes the clicked row the roving-focus target — found in review: a
-  // clicked row (`tabIndex={-1}` used to make it click-focusable per the HTML
+  // Plain click only moves the roving-focus/active-row highlight — it used
+  // to also replace the selection with just this row, which made a habit
+  // learned in Table surprise a user in Tree or JSON (a plain click there
+  // means something else entirely). ⌘/Ctrl+click still toggles the row
+  // into/out of the multi-row selection for the bulk-action bar; the visible
+  // checkbox in the gutter is the plain-click-free way to select. Always
+  // moves the roving-focus target too — found in review: a clicked row
+  // (`tabIndex={-1}` used to make it click-focusable per the HTML
   // focusing-steps algorithm — since removed, see the row strip's own
   // comment) would otherwise leave the highlight sitting wherever it was
   // before the click, so the next Arrow key would jump from there instead of
   // from the row the user just clicked.
-  const handleSelect = React.useCallback(
+  const handleRowClick = React.useCallback(
     (e: { metaKey: boolean; ctrlKey: boolean }, idx: number) => {
       if (e.metaKey || e.ctrlKey) selection.toggle(idx);
-      else selection.selectOnly(idx);
       roving.setActiveIndex(idx);
     },
     // `roving` itself is a fresh object every render; depend on the one
     // function this actually calls (stable per `useRovingFocus`) so this
     // callback — and everything memoized against it, like `rowProps` below
     // — doesn't get a new identity on every unrelated re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection, roving.setActiveIndex],
+  );
+
+  // The checkbox's own gesture: toggle the row into/out of the selection
+  // (never a single-row replace — matches JSON's and Tree's checkbox, and
+  // ⌘/Ctrl+click above) and also move the active row here, same as a click
+  // anywhere else on the strip.
+  const handleToggleSelect = React.useCallback(
+    (idx: number) => {
+      selection.toggle(idx);
+      roving.setActiveIndex(idx);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection, roving.setActiveIndex],
+  );
+
+  // Keyboard Enter/Space on the grid (handleGridKeyDown below) keeps the
+  // previous plain-click semantics: replace the selection with just the
+  // active row, or clear it if it was already the sole selection. Mouse and
+  // keyboard deliberately diverge here — the mouse has a dedicated checkbox
+  // and ⌘/Ctrl+click, but a keyboard user still needs a single-key way to
+  // select the active row without reaching for a modifier.
+  const handleSelect = React.useCallback(
+    (e: { metaKey: boolean; ctrlKey: boolean }, idx: number) => {
+      if (e.metaKey || e.ctrlKey) selection.toggle(idx);
+      else selection.selectOnly(idx);
+      roving.setActiveIndex(idx);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [selection, roving.setActiveIndex],
   );
@@ -1036,6 +1436,28 @@ export function TableView({
         y: e.clientY,
         ...payload,
         returnFocusTo: listRef.current?.element ?? null,
+      });
+    },
+    [listRef],
+  );
+
+  // The "More actions" button's own open path — anchored to the button
+  // rather than the cursor, same shape as the Shift+F10 path below
+  // (`field: null`/`hasValue: false`, since this isn't a specific cell).
+  const handleOpenRowMenu = React.useCallback(
+    (
+      doc: unknown,
+      anchor: { x: number; y: number },
+      focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
+    ) => {
+      setContextMenu({
+        ...anchor,
+        doc,
+        field: null,
+        value: undefined,
+        hasValue: false,
+        returnFocusTo: focus?.returnFocusTo ?? listRef.current?.element ?? null,
+        focusMenuOnOpen: focus?.focusMenuOnOpen,
       });
     },
     [listRef],
@@ -1081,6 +1503,12 @@ export function TableView({
         });
         return;
       }
+      if (isEditKey(e)) {
+        if (documents.length === 0) return;
+        e.preventDefault();
+        onEditDoc(documents[roving.activeIndex]);
+        return;
+      }
       // ⌘/Ctrl+Enter is Run (PanelBody's handler), never this row's action.
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) return;
       if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -1091,7 +1519,7 @@ export function TableView({
     // `roving` itself is a fresh object every render (see `handleSelect`
     // above) — depend on the members this actually reads instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [roving.onKeyDown, roving.activeIndex, roving.rowId, documents, handleSelect, listRef],
+    [roving.onKeyDown, roving.activeIndex, roving.rowId, documents, handleSelect, listRef, onEditDoc],
   );
 
   const rowProps = React.useMemo<TableRowProps>(
@@ -1106,7 +1534,8 @@ export function TableView({
       deepPaths,
       fieldCopiedPath,
       refsByField,
-      onSelect: handleSelect,
+      onSelect: handleRowClick,
+      onToggleSelect: handleToggleSelect,
       onCopyCell: copyCell,
       onContextMenu: handleContextMenu,
       onRowExpand: handleRowExpand,
@@ -1117,6 +1546,10 @@ export function TableView({
       onRefHoverLeave,
       onRefOpen,
       rowId: roving.rowId,
+      onEditDoc,
+      onDeleteDoc,
+      onOpenRowMenu: handleOpenRowMenu,
+      actionsOffset,
     }),
     [
       documents,
@@ -1129,7 +1562,8 @@ export function TableView({
       deepPaths,
       fieldCopiedPath,
       refsByField,
-      handleSelect,
+      handleRowClick,
+      handleToggleSelect,
       copyCell,
       handleContextMenu,
       handleRowExpand,
@@ -1140,11 +1574,22 @@ export function TableView({
       onRefHoverLeave,
       onRefOpen,
       roving.rowId,
+      onEditDoc,
+      onDeleteDoc,
+      handleOpenRowMenu,
+      actionsOffset,
     ],
   );
 
   return (
     <div
+      ref={tableWrapperRef}
+      onScroll={handleTableScroll}
+      // Test hook (e2e) — the actual horizontal-scroll container. `[role="grid"]`
+      // (react-window's `List`) sizes its own box to fit its content exactly
+      // (`minWidth: totalWidth` below), so it never scrolls itself; this div
+      // is what does, and what the actions column's `actionsOffset` tracks.
+      data-testid="table-scroll-container"
       style={{
         flex: 1,
         minHeight: 0,
@@ -1368,6 +1813,26 @@ export function TableView({
             </div>
           );
         })}
+
+        {/* Header cell for the actions column below — same width and the
+            same `actionsOffset` transform, so it stays aligned with the
+            body's actions column under horizontal scroll. No label: the
+            column holds icon-only buttons. */}
+        <div
+          role="columnheader"
+          aria-label="Actions"
+          style={{
+            width: ACTIONS_WIDTH,
+            minWidth: ACTIONS_WIDTH,
+            flexShrink: 0,
+            transform: `translateX(${actionsOffset}px)`,
+            borderBottom: '1px solid var(--atelier-border)',
+            borderLeft: '1px solid var(--atelier-border)',
+            boxSizing: 'border-box',
+            background: 'var(--atelier-surface)',
+            zIndex: 1,
+          }}
+        />
       </div>
 
       <List<TableRowProps>
@@ -1521,68 +1986,19 @@ export function TableView({
               }}
             />
           )}
-          <button
-            onClick={() => {
-              onEditDoc(contextMenu.doc);
-              setContextMenu(null);
-            }}
-            style={{
-              display: 'block',
-              width: '100%',
-              textAlign: 'left',
-              padding: '6px 12px',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 12,
-              color: 'var(--atelier-text)',
-            }}
-          >
-            Edit
-          </button>
-          {/* T2.6 — omitted for read-only providers (preview/snapshot,
-              ScriptTab's synthetic result provider), which either set
-              `meta.isReadOnly` or simply don't wire `openDuplicate`. */}
-          {!meta.isReadOnly && onDuplicateDoc && (
-            <button
-              onClick={() => {
-                onDuplicateDoc(contextMenu.doc);
-                setContextMenu(null);
-              }}
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                padding: '6px 12px',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
-                color: 'var(--atelier-text)',
-              }}
-            >
-              Duplicate document
-            </button>
-          )}
-          <button
-            onClick={() => {
-              onDeleteDoc(contextMenu.doc);
-              setContextMenu(null);
-            }}
-            style={{
-              display: 'block',
-              width: '100%',
-              textAlign: 'left',
-              padding: '6px 12px',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 12,
-              color: 'var(--atelier-red)',
-            }}
-          >
-            Delete
-          </button>
+          {/* T2.6 — Duplicate omitted for read-only providers
+              (preview/snapshot, ScriptTab's synthetic result provider),
+              which either set `meta.isReadOnly` or simply don't wire
+              `openDuplicate`. Shared with Tree/JSON's own "More actions"
+              menu, which has no field-specific items above it. */}
+          <RowActionsMenu
+            doc={contextMenu.doc}
+            onEdit={onEditDoc}
+            onDuplicate={onDuplicateDoc}
+            onDelete={onDeleteDoc}
+            isReadOnly={meta.isReadOnly}
+            onClose={() => setContextMenu(null)}
+          />
         </div>
       )}
 

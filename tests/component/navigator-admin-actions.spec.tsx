@@ -125,6 +125,38 @@ describe('DbCollectionNavigator — T1.1 admin actions', () => {
     await waitFor(() => expect(listCollections.mock.calls.length).toBeGreaterThan(initialCalls));
   });
 
+  it('collection context menu "Import documents…" imports into that collection and refreshes the DB; a view has no such item', async () => {
+    const listCollections = vi.fn(async () => [
+      { name: 'orders', type: 'collection' as const, documentCount: 0, sizeBytes: 0, indexCount: 0, capped: false },
+      { name: 'recent', type: 'view' as const, documentCount: 0, sizeBytes: 0, indexCount: 0, capped: false },
+    ]);
+    const importFn = vi.fn(async () => ({
+      fileName: 'o.jsonl', format: 'jsonl' as const, inserted: 3, failed: 0, errors: [], errorsTruncated: false, cancelled: false,
+    }));
+    baseMocks({
+      meta: { listDatabases: async () => [{ name: 'shop', sizeOnDisk: 1, empty: false }], listCollections },
+      app: { pickFile: async () => ({ path: '/tmp/o.jsonl' }) } as never,
+      data: { import: importFn },
+    });
+
+    mountNavigator();
+    await screen.findByText('recent');
+    fireEvent.contextMenu(screen.getByTestId('nav-coll-shop-recent'));
+    expect(screen.queryByRole('menuitem', { name: 'Import documents…' })).toBeNull();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+
+    const initialCalls = listCollections.mock.calls.length;
+    fireEvent.contextMenu(screen.getByTestId('nav-coll-shop-orders'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Import documents…' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Choose file…' }));
+
+    await screen.findByText('Imported 3 documents from o.jsonl.');
+    expect(importFn).toHaveBeenCalledWith({
+      connectionId: 'c1', dbName: 'shop', collection: 'orders', path: '/tmp/o.jsonl', cancelToken: expect.any(String),
+    });
+    await waitFor(() => expect(listCollections.mock.calls.length).toBeGreaterThan(initialCalls));
+  });
+
   it('collection context menu "Drop collection" opens type-to-confirm; success refreshes the DB', async () => {
     const listCollections = vi.fn(async () => [
       {

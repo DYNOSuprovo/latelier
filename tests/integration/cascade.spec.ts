@@ -41,11 +41,6 @@ describe('FK cascades on connections delete', () => {
        VALUES ('tab1', ?, 'collection', 'db', 'coll', '{}', 0, 1, ?)`,
     ).run(id, now);
 
-    db.prepare(
-      `INSERT INTO preview_fields (connection_id, db_name, collection, fields_json, updated_at)
-       VALUES (?, 'db', 'coll', '["f"]', ?)`,
-    ).run(id, now);
-
     // Delete parent; FK cascades wipe dependents.
     db.prepare('DELETE FROM connections WHERE id = ?').run(id);
 
@@ -56,7 +51,6 @@ describe('FK cascades on connections delete', () => {
       'saved_queries',
       'recent_queries',
       'workspace_tabs',
-      'preview_fields',
     ]) {
       expect(countFor(t), `expected ${t} empty`).toBe(0);
     }

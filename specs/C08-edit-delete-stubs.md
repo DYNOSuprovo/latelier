@@ -38,9 +38,12 @@ The existing mock detail header has three buttons: Edit, Delete, Open workspace.
 
 > **Superseded.** This section describes the empty-state placeholders as they
 > shipped in Phase C. Both were later replaced with real CRUD tabs in
-> post-iteration-1 specs [C09](./C09-indexes-tab.md) (Indexes) and
+> post-iteration-1 specs [C09](./C09-indexes-tab.md) (Indexes, itself amended
+> by W16 Tier 1 and then removed by W16 Tier 2 — see that spec's note) and
 > [C10](./C10-users-tab.md) (Users) — `StubTab` no longer exists in `src/`.
-> Kept below as historical record of what Phase C originally shipped.
+> The Connection Manager's Indexes tab no longer exists either; index
+> management moved into the collection tab's Structure sub-view. Kept below
+> as historical record of what Phase C originally shipped.
 
 ### Indexes tab
 Renders a centered empty-state card:

@@ -110,9 +110,47 @@ describe('ConnectionManager deep detail screen', () => {
     // (`api.tabs.list()`), so it's async: `findByRole`, not `getByRole`.
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText(/Delete "Alpha"/i)).toBeTruthy();
+    // docs/adr/0013 — the confirm button stays disabled until the
+    // connection name is typed back.
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Confirm connection name' }), {
+      target: { value: 'Alpha' },
+    });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(del).toHaveBeenCalledWith('a'));
     await waitFor(() => expect(screen.getByText('workspace-route')).toBeTruthy());
+  });
+
+  /**
+   * docs/adr/0013 — deleting a connection irreversibly drops its saved
+   * queries and history, so it sits on the type-to-confirm tier, not a
+   * plain two-button confirm.
+   *
+   * MUTATION TARGET — replace `matches` with `true` in
+   * `ConnectionDeleteDialog` and this goes red: Delete stays clickable
+   * (and callable) with nothing typed.
+   */
+  it('keeps Delete disabled until the connection name is typed back', async () => {
+    const del = vi.fn(async (id: string) => ({ id }));
+    installAtelierMock({
+      conn: { list: async () => [summary({ id: 'a', name: 'Alpha' })], delete: del },
+    });
+    renderDetail('/connections/a');
+    await screen.findAllByText('Alpha');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    const confirmButton = within(dialog).getByRole('button', { name: 'Delete' });
+    const input = within(dialog).getByRole('textbox', { name: 'Confirm connection name' });
+
+    expect(confirmButton.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(input, { target: { value: 'Alp' } });
+    expect(confirmButton.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(input, { target: { value: 'Alpha' } });
+    expect(confirmButton.hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(del).toHaveBeenCalledWith('a'));
   });
 
   // X16 §4.6 — this screen has no `useWorkspaceTabs()`

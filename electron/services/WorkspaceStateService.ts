@@ -317,6 +317,19 @@ function parseState<T>(raw: string): Partial<T> {
   return {};
 }
 
+/**
+ * Maps a persisted `activeView` value to the current `CollectionView` union.
+ * `'schema'` is the retired value and migrates to `'structure'`; anything
+ * else outside the union (a future value read by an older build, or
+ * corrupted `state_json`) falls back to `'documents'` rather than leaving a
+ * tab stuck on a view the renderer no longer knows how to render.
+ */
+function normalizeActiveView(raw: unknown): CollectionView {
+  if (raw === 'aggregation' || raw === 'structure') return raw;
+  if (raw === 'schema') return 'structure';
+  return 'documents';
+}
+
 function mergeState(
   currentJson: string,
   patch: Partial<CollectionTabState> | Partial<ScriptTabState>,
@@ -350,7 +363,7 @@ function rowToTab(row: WorkspaceTabRow): WorkspaceTab {
   const state: CollectionTabState = {
     ...DEFAULT_COLLECTION_TAB_STATE,
     ...parsed,
-    activeView: (parsed.activeView ?? 'documents') as CollectionView,
+    activeView: normalizeActiveView(parsed.activeView),
   };
   const tab: CollectionTab = {
     id: row.id,

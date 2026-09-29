@@ -353,6 +353,10 @@ This is the single largest "the user has to think about it" cost in the
 Documents view, and it is invisible in any single-feature review because each
 control is individually reasonable.
 
+> **Since resolved:** the three became one Fields control in the result bar;
+> projection is its separate "fetch" section (W14 §4), and a field the
+> projection excluded is listed as "not fetched" rather than vanishing.
+
 ---
 
 ## 7. Dead and stale surfaces
@@ -417,6 +421,15 @@ extending the inclusion-only model. Decide that after those ship, not before.
 If a structured editor is built later, it should share one control with sort
 (both are field-list-plus-modifier editors) rather than arriving as a third
 independent widget in a row that already has too many.
+
+> **Decided (W14 §4):** after §2.1 and §2.3 shipped, projection stayed a text
+> field — completion plus the §9(b) raw escape, no chip UI — and moved out of
+> the advanced row into the result bar's Fields control, as a divided "Fetch
+> only these fields from the server" section beside the display-only
+> show/hide list. That is also §6's answer for projection: one control for
+> "which fields do I see", with the server-side choice visibly separate from
+> the display-only one and each explained in one line. The advanced row keeps
+> sort, skip and limit.
 
 **Recommended sequencing**: Tier 1 as one small PR (it is mostly deletion and
 message edits), Tier 2 as a second (one shared autocomplete-backed field input

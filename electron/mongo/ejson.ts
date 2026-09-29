@@ -179,6 +179,17 @@ export function ejsonEncodeArray(docs: unknown[], relaxed = false): unknown[] {
 }
 
 /**
+ * `ejsonEncodeArrayJson`'s byte cap was breached. The same code and message a
+ * plain `SystemError` carried before, as its own class so a caller that
+ * treats the cap as an expected outcome can tell it from a real failure.
+ */
+export class ByteCapExceededError extends SystemError {
+  constructor(maxBytes: number) {
+    super('INTERNAL', `result size exceeds ${maxBytes} byte cap`);
+  }
+}
+
+/**
  * Encode + JSON-stringify a document array in a single pass. The wire format
  * for find/aggregate results is a JSON string (parsed once at the renderer
  * boundary), which is meaningfully cheaper than structured-cloning N nested
@@ -200,12 +211,7 @@ export function ejsonEncodeArrayJson(
     const piece = JSON.stringify(ejsonEncode(docs[i], relaxed));
     const sep = i === 0 ? '' : ',';
     bytes += sep.length + piece.length;
-    if (max !== undefined && bytes > max) {
-      throw new SystemError(
-        'INTERNAL',
-        `result size exceeds ${max} byte cap`,
-      );
-    }
+    if (max !== undefined && bytes > max) throw new ByteCapExceededError(max);
     out += sep + piece;
   }
   out += ']';
@@ -225,6 +231,7 @@ export function parseEjsonField<T = unknown>(json: string, field: string): T {
   try {
     return ejsonParse<T>(json);
   } catch (err) {
+    // Stryker disable next-line StringLiteral: every throw reachable through `ejsonParse` (grepped across this file) constructs `new Error`/`new SystemError`/`new ValidationError`, and `JSON.parse`/bson's `EJSON.parse` both throw real `Error` instances too, so the `: 'invalid EJSON'` fallback is unreachable for any input today; kept in case a future dependency throws a bare string or object.
     const reason = err instanceof Error ? err.message : 'invalid EJSON';
     throw new ValidationError(`invalid ${field}: ${reason}`, { field });
   }

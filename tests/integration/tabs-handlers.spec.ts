@@ -96,6 +96,26 @@ describe('tabs:* handlers — tightened state schema (P1-14)', () => {
     if (!env.ok) expect(env.error.code).toBe('VALIDATION');
   });
 
+  it('tabs:update accepts activeView:"structure" and forwards it alongside a second field', async () => {
+    const env = await shim.invoke(IPC_CHANNELS.tabsUpdate, {
+      id: 'tab-1',
+      patch: { state: { activeView: 'structure', page: 2 } },
+    });
+    expect(env.ok).toBe(true);
+    expect(svc.update).toHaveBeenCalledWith('tab-1', {
+      state: { activeView: 'structure', page: 2 },
+    });
+  });
+
+  it('tabs:update rejects the retired "schema" activeView value', async () => {
+    const env = await shim.invoke(IPC_CHANNELS.tabsUpdate, {
+      id: 'tab-1',
+      patch: { state: { activeView: 'schema' } },
+    });
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error.code).toBe('VALIDATION');
+  });
+
   it('tabs:update accepts unknown forward-compat fields via .passthrough()', async () => {
     const env = await shim.invoke(IPC_CHANNELS.tabsUpdate, {
       id: 'tab-1',

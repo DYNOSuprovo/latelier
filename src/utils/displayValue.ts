@@ -55,7 +55,9 @@ export function valueToClipboardText(val: unknown): string {
     dv.type === 'decimal' ||
     dv.type === 'regex' ||
     dv.type === 'number' ||
+    // Stryker disable next-line ConditionalExpression,StringLiteral: dropping this clause only changes the fallback taken for an actual boolean, and `String(v)` (this branch's `dv.display`) and `JSON.stringify(v)` (the fallback) are byte-identical for both `true` and `false` — verified with node.
     dv.type === 'boolean' ||
+    // Stryker disable next-line ConditionalExpression,StringLiteral: same reasoning as 'boolean' above — `dv.display` for a null value is the literal string 'null', which is also `JSON.stringify(null)`.
     dv.type === 'null'
   ) {
     return dv.display;
@@ -81,6 +83,7 @@ export function toDisplayValue(v: unknown): DisplayValue {
   }
 
   if (typeof v === 'string') {
+    // Stryker disable next-line StringLiteral,BlockStatement: this branch is redundant with the function's final catch-all (`return { type: 'string', display: String(v), raw: v }`) for any actual string `v` — `Array.isArray` and `isRecord` are both false for a string, so it falls through there, and `String(v) === v` for every string. Skipping or emptying this branch changes nothing observable.
     return { type: 'string', display: v, raw: v };
   }
 
@@ -98,6 +101,7 @@ export function toDisplayValue(v: unknown): DisplayValue {
     if ('$date' in v && Object.keys(v).length === 1) {
       const d = v.$date;
       let dateStr: string;
+      // Stryker disable next-line StringLiteral: this branch is redundant with the final `else { dateStr = String(d); }` for any actual string `d` — `typeof d === 'number'` and `isRecord(d)` are both false for a string, so it falls through there, and `String(d) === d` for every string.
       if (typeof d === 'string') {
         dateStr = d;
       } else if (typeof d === 'number') {

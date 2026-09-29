@@ -41,7 +41,9 @@ hole that both stacks share.
 - **`Workspace/DeleteConfirm.tsx`** and
   **`features/connections/ConnectionDeleteDialog.tsx`** — already Mantine, and
   both are deliberately *not* folded into `confirmDestructive`; the reasons are
-  written into `src/utils/confirm.ts` and still hold.
+  written into `src/utils/confirm.ts` and still hold. Which of the app's
+  destructive dialogs get type-to-confirm versus an undo toast is decided by
+  [ADR 0013](../docs/adr/0013-destructive-friction.md), not by this spec.
 
 ## Dependencies
 

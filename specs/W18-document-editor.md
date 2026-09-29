@@ -59,7 +59,7 @@ One row per top-level field, in document order. Each row has three parts: the fi
 | ObjectId | text validated as 24 hex characters |
 | Null | a `null` chip; the type selector changes it |
 | Object | an expandable row whose children are indented rows of the same kind, recursively |
-| Array | a compact inline JSON editor for the whole array |
+| Array | an expandable row whose children are element rows (`[0]`, `[1]`, …) of the same kind, recursively — an "Add item" button appends a new element (default: empty string) in place of "Add field" |
 | anything else (Binary, RegExp, Timestamp, …) | read-only rendering plus an "Edit in JSON" link that switches to the JSON view |
 
 - **The type selector** is the only way a field's type changes. Typing `"42"` into a string field keeps it a string; changing it to a number is a selector choice, which converts the value when the conversion is lossless and clears it otherwise. There is no inference from typed text.
@@ -148,7 +148,7 @@ None new. `doc:updateOne` already returns `{ matchedCount, modifiedCount }`, whi
 - [ ] Invalid JSON blocks both the switch to Fields and Save, with the text preserved.
 - [ ] Each scalar type edits in its own input and saves with its type preserved (Int64 stays Int64).
 - [ ] A type changes only through the type selector.
-- [ ] Nested objects edit as rows; arrays edit as a whole-array JSON editor.
+- [ ] Nested objects edit as rows; arrays edit as rows of expandable, recursive elements (`[i]`), with Add item and per-element remove.
 - [ ] Add and remove field work; `_id` is not editable or removable; a duplicate name is refused.
 - [ ] Edited rows are marked, and editing a value back to its original clears the mark.
 - [ ] The W17 warning appears on a disagreeing row and never blocks Save.

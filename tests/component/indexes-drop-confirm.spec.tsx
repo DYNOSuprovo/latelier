@@ -3,24 +3,12 @@ import { render, screen, waitFor } from '../helpers/render';
 import userEvent from '@testing-library/user-event';
 import { IndexesTab } from '../../src/pages/IndexesTab';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
-import type { ConnectionRuntime, ConnectionSummary, IndexInfo } from '@shared/types';
+import type { IndexInfo } from '@shared/types';
 
 afterEach(() => {
   uninstallAtelierMock();
   vi.restoreAllMocks();
 });
-
-const conn: ConnectionSummary = {
-  id: 'c1',
-  name: 'test',
-  color: '#1A6835',
-  host: 'localhost',
-  port: 27017,
-  connectionType: 'standard',
-  readOnly: false,
-  status: 'connected',
-};
-const runtime: ConnectionRuntime = { id: 'c1', status: 'connected' };
 
 const ID_INDEX: IndexInfo = {
   name: '_id_',
@@ -44,7 +32,7 @@ const UNIQUE: IndexInfo = {
 
 function renderTab() {
   return render(
-      <IndexesTab conn={conn} runtime={runtime} />
+      <IndexesTab connectionId="c1" dbName="alpha" collection="people" />
   );
 }
 
@@ -52,19 +40,6 @@ describe('IndexesTab — drop confirm', () => {
   it('Drop is disabled until the typed name matches; success refetches', async () => {
     const dropCalls: string[] = [];
     installAtelierMock({
-      meta: {
-        listDatabases: async () => [{ name: 'alpha', sizeOnDisk: 0, empty: false }],
-        listCollections: async () => [
-          {
-            name: 'people',
-            type: 'collection' as const,
-            documentCount: 0,
-            sizeBytes: 0,
-            indexCount: 2,
-            capped: false,
-          },
-        ],
-      },
       index: {
         list: async () => (dropCalls.length === 0 ? [ID_INDEX, UNIQUE] : [ID_INDEX]),
         drop: async ({ name }) => {
@@ -99,19 +74,6 @@ describe('IndexesTab — drop confirm', () => {
 
   it('does not render a Drop button on the _id_ row', async () => {
     installAtelierMock({
-      meta: {
-        listDatabases: async () => [{ name: 'alpha', sizeOnDisk: 0, empty: false }],
-        listCollections: async () => [
-          {
-            name: 'people',
-            type: 'collection' as const,
-            documentCount: 0,
-            sizeBytes: 0,
-            indexCount: 1,
-            capped: false,
-          },
-        ],
-      },
       index: { list: async () => [ID_INDEX] },
     });
     renderTab();

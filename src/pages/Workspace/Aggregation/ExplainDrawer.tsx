@@ -60,6 +60,14 @@ interface Props {
    * call has no cancellation support (find-explain doesn't today).
    */
   onCancelToken?: (cancelToken: string) => void;
+  /**
+   * Optional: shows "Create an index for this query" beside the COLLSCAN
+   * badge. Omitted by `AggregationTab` — only a find's explain has a filter
+   * `suggestIndex` can read. The caller (`QueryBar`) owns computing the
+   * suggestion and routing to the Structure view; this only closes the
+   * drawer and hands control back.
+   */
+  onCreateIndex?: () => void;
 }
 
 export function ExplainDrawer({
@@ -67,6 +75,7 @@ export function ExplainDrawer({
   initialVerbosity,
   runExplain,
   onCancelToken,
+  onCreateIndex,
 }: Props) {
   const T = themeVars;
   const [verbosity, setVerbosity] = React.useState<ExplainVerbosity>(
@@ -292,7 +301,28 @@ export function ExplainDrawer({
                       >
                         ⚠ COLLSCAN — no index used
                       </span>
-                    ) : summary.usesIndex ? (
+                    ) : null}
+                    {summary.collscan && onCreateIndex && (
+                      <button
+                        data-testid="explain-create-index"
+                        onClick={() => {
+                          close();
+                          onCreateIndex();
+                        }}
+                        style={{
+                          fontSize: 10,
+                          padding: '2px 8px',
+                          borderRadius: T.rs,
+                          background: T.surfaceRaised,
+                          color: T.text,
+                          border: `1px solid ${T.border}`,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Create an index for this query
+                      </button>
+                    )}
+                    {!summary.collscan && summary.usesIndex ? (
                       <span
                         style={{
                           fontSize: 10,

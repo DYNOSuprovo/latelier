@@ -9,8 +9,9 @@ import type { IpcApi } from '@shared/ipc';
 
 /**
  * W15 Tier 2a — projection and sort share one autocomplete-backed
- * control, and projection gains the raw escape hatch that makes `{_id: 0}`
- * reachable at all.
+ * input, and projection gains the raw escape hatch that makes `{_id: 0}`
+ * reachable at all. Sort sits in the query bar's advanced row; projection in
+ * the Fields control (W14 §4).
  *
  * §2.3/§3.4 completion, §2.2 the `_id` exclusion and its save/restore round
  * trip, §9(b) the additive `projectionRaw`, §11 fail-closed.
@@ -100,9 +101,15 @@ function lastWrittenBuilder(
   return undefined;
 }
 
+/** The projection lives in the Fields control (W14 §4), behind its button. */
+async function openProjection(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole('button', { name: /^fields/i }));
+  return screen.findByTestId('fields-projection');
+}
+
 /**
  * The advanced row is collapsed while nothing is set (W14 §1), so a tab with
- * a default builder has to open it before the projection/sort inputs exist.
+ * a default builder has to open it before the sort input exists.
  */
 async function openAdvanced(): Promise<void> {
   await screen.findByTestId('query-bar-input');
@@ -135,9 +142,7 @@ afterEach(() => {
 describe('W15 §2.3/§3.4 — field completion on projection and sort', () => {
   it('typing a prefix in the projection input offers field candidates, and picking one inserts it', async () => {
     mountWith(makeState());
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     typeWithCaret(input, '{ nam');
 
     const option = await screen.findByRole('option', { name: /^name/ });
@@ -153,9 +158,7 @@ describe('W15 §2.3/§3.4 — field completion on projection and sort', () => {
 
   it('completes dotted paths', async () => {
     mountWith(makeState());
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     typeWithCaret(input, '{ address.ci');
 
     fireEvent.click(await screen.findByRole('option', { name: /address\.city/ }));
@@ -171,9 +174,7 @@ describe('W15 §2.3/§3.4 — field completion on projection and sort', () => {
     // `{ name: 1 }_id`. Typing a whole projection and pressing Enter is the
     // ordinary way to use this input.
     const { updateSpy } = mountWith(makeState());
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     typeWithCaret(input, '{ name: 1 }');
     // Popover is open and offering — this is not a "no suggestions" pass.
     expect(await screen.findByRole('option', { name: /^name/ })).toBeTruthy();
@@ -194,9 +195,7 @@ describe('W15 §2.3/§3.4 — field completion on projection and sort', () => {
     // `{ n` matches two candidates, so landing on the *second* is evidence the
     // arrow moved rather than the list happening to have one entry.
     mountWith(makeState());
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     typeWithCaret(input, '{ n');
     await screen.findByRole('option', { name: /^name/ });
     expect(screen.getByRole('option', { name: /^nickname/ })).toBeTruthy();
@@ -232,9 +231,7 @@ describe('W15 §2.2 — {_id: 0} is expressible and survives a round trip', () =
     const { updateSpy } = mountWith(
       makeState({ builder: { projection: ['name'], sort: '', limit: '' } }),
     );
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     fireEvent.change(input, { target: { value: '{"_id": 0}' } });
     fireEvent.blur(input);
 
@@ -253,7 +250,7 @@ describe('W15 §2.2 — {_id: 0} is expressible and survives a round trip', () =
       makeState({ builder: { projection: [], projectionRaw: '{ "name": 1, "_id": 0 }', sort: '', limit: '' } }),
     );
 
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     expect((input as HTMLInputElement).value).toBe('{ "name": 1, "_id": 0 }');
 
     fireEvent.click(screen.getByTestId('query-run-btn'));
@@ -268,7 +265,7 @@ describe('W15 §2.2 — {_id: 0} is expressible and survives a round trip', () =
       makeState({ builder: { projection: [], projectionRaw: '{"_id":0}', sort: '', limit: '' } }),
     );
 
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     fireEvent.change(input, { target: { value: '{ name: 1 }' } });
     fireEvent.blur(input);
 
@@ -286,7 +283,7 @@ describe('W15 §9(b) — projectionRaw is additive', () => {
     );
 
     // Same rendering as before …
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     expect((input as HTMLInputElement).value).toBe('{ name: 1, nickname: 1 }');
 
     // … same compiled projection …
@@ -317,6 +314,7 @@ describe('W15 §11 — a refused projection never widens the query', () => {
     await waitFor(() => {
       expect(screen.getByTestId('query-run-btn')).toHaveProperty('disabled', true);
     });
+    await openProjection();
     expect(screen.getByText(/Can't parse this projection/)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('query-run-btn'));
@@ -345,9 +343,7 @@ describe('W15 §11 — a refused projection never widens the query', () => {
 
   it('an unmodelable projection that is not a document is refused with the fix named', async () => {
     const { updateSpy } = mountWith(makeState());
-    await openAdvanced();
-
-    const input = await screen.findByTestId('query-bar-projection');
+    const input = await openProjection();
     // A projection that can neither be modelled nor passed through. X14 §3
     // took `{_id: 0}` out of that class — the transform repairs it to
     // a document and it commits to `projectionRaw` — so what remains is text

@@ -10,6 +10,14 @@ export function isContextMenuKey(e: { key: string; shiftKey: boolean }): boolean
   return e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10');
 }
 
+/**
+ * `E` on a focused result row opens the Document Editor on it (W18 §7).
+ * Unmodified only, so ⌘E and Ctrl+E stay free for the app and the OS.
+ */
+export function isEditKey(e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): boolean {
+  return (e.key === 'e' || e.key === 'E') && !e.metaKey && !e.ctrlKey && !e.altKey;
+}
+
 /** A `DOMRect`-shaped input — deliberately structural, not `DOMRect` itself,
  * so this stays testable with a plain object and no DOM. */
 export interface RectLike {

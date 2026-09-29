@@ -20,6 +20,17 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
  */
 const REDACTED_KEYS = new Set(['password', 'pwd', 'sshpassword', 'sshpassphrase']);
 
+/**
+ * True when a dotted field path (e.g. `user.password`) has any segment that
+ * is a secret key name, checked case-insensitively. Shared with
+ * `RecentFieldValueService` so a value typed against a secret-named field
+ * never reaches `recent_field_values` — main is the trust boundary, not the
+ * renderer that sends the record request.
+ */
+export function isSecretFieldPath(field: string): boolean {
+  return field.split('.').some((segment) => REDACTED_KEYS.has(segment.toLowerCase()));
+}
+
 const REDACTED_PLACEHOLDER = '<redacted>';
 const CIRCULAR_PLACEHOLDER = '[Circular]';
 const IN_PROGRESS = Symbol('in-progress');
@@ -107,6 +118,7 @@ export function createLogger(userDataDir: string, opts: {
       level: lvl,
       tag,
       msg,
+      // Stryker disable next-line ConditionalExpression: redactSecrets(undefined) returns undefined unchanged (walk's `typeof !== 'object'` guard), and JSON.stringify drops an undefined-valued key entirely, so `{ data: undefined }` and no `data` key at all serialize byte-identically — verified with a node probe.
       ...(data !== undefined ? { data: redactSecrets(data) } : {}),
     };
     const serialized = JSON.stringify(line) + '\n';

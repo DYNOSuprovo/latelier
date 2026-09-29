@@ -22,10 +22,10 @@ import { IPC_CHANNELS } from '@shared/ipc';
 const WRITE_CHANNELS = new Set<string>([
   IPC_CHANNELS.docInsert,
   IPC_CHANNELS.docInsertMany,
-  IPC_CHANNELS.docReplace,
   IPC_CHANNELS.docUpdateOne,
   IPC_CHANNELS.docDeleteOne,
   IPC_CHANNELS.docDeleteMany,
+  IPC_CHANNELS.docUpdateMany,
   IPC_CHANNELS.collectionCreate,
   IPC_CHANNELS.collectionDrop,
   IPC_CHANNELS.collectionRename,
@@ -40,6 +40,8 @@ const WRITE_CHANNELS = new Set<string>([
   IPC_CHANNELS.mshellStart,
   IPC_CHANNELS.mshellWrite,
   IPC_CHANNELS.scriptRun,
+  IPC_CHANNELS.auditUndo,
+  IPC_CHANNELS.dataImport,
 ]);
 
 const READ_CHANNELS = new Set<string>([
@@ -62,7 +64,9 @@ const READ_CHANNELS = new Set<string>([
   IPC_CHANNELS.queryFindOne,
   IPC_CHANNELS.queryExplain,
   IPC_CHANNELS.queryCancel,
+  IPC_CHANNELS.queryExport,
   IPC_CHANNELS.docConfirmDeleteMany,
+  IPC_CHANNELS.docConfirmUpdateMany,
   IPC_CHANNELS.aggPreviewUpToStage,
   IPC_CHANNELS.aggExplain,
   IPC_CHANNELS.refsResolve,
@@ -84,8 +88,6 @@ const NON_MONGO_CHANNELS = new Set<string>([
   IPC_CHANNELS.shellOpenExternal,
   IPC_CHANNELS.prefsGet,
   IPC_CHANNELS.prefsSet,
-  IPC_CHANNELS.prefsGetPreviewFields,
-  IPC_CHANNELS.prefsSetPreviewFields,
   IPC_CHANNELS.prefsGetTheme,
   IPC_CHANNELS.prefsSetTheme,
   IPC_CHANNELS.prefsThemeEvent,
@@ -98,7 +100,14 @@ const NON_MONGO_CHANNELS = new Set<string>([
   IPC_CHANNELS.recentList,
   IPC_CHANNELS.recentGet,
   IPC_CHANNELS.recentClear,
+  IPC_CHANNELS.recentValuesForField,
+  IPC_CHANNELS.recentRecordFieldValues,
+  IPC_CHANNELS.recentClearFieldValues,
+  IPC_CHANNELS.auditList,
   IPC_CHANNELS.aggCancel,
+  IPC_CHANNELS.dataPreviewCsv,
+  IPC_CHANNELS.dataCancelImport,
+  IPC_CHANNELS.dataImportProgressEvent,
   IPC_CHANNELS.refsList,
   IPC_CHANNELS.refsGet,
   IPC_CHANNELS.refsCreate,
@@ -139,18 +148,21 @@ describe('read-only guard — IPC channel classification is exhaustive', () => {
   });
 
   it('every write channel name actually looks write-shaped', () => {
-    const writeVerb = /insert|update|replace|delete|drop|create|rename|runAndSave|write/i;
-    // These three don't carry a write verb in their name because they're not
+    const writeVerb = /insert|update|replace|delete|drop|create|rename|runAndSave|write|import/i;
+    // These don't carry a write verb in their name because they're not
     // unconditional writes: agg:run is conditional on pipeline content
     // (guarded inline via isWriteStage), and mshell:start/script:run are the
     // session-start channels for panes that hand sandboxed code a raw driver
     // handle (guarded via wholesale refusal / dbProxy allowlist — ADR 0005).
     // Any OTHER non-verb-named addition here is exactly the silent-drift case
     // this test exists to catch — don't add to this list without a reason.
+    // audit:undo writes whatever puts an Operation back (an insert or a
+    // replace), and takes its grant from MongoPool.write like any write.
     const namedExemptions = new Set<string>([
       IPC_CHANNELS.aggRun,
       IPC_CHANNELS.mshellStart,
       IPC_CHANNELS.scriptRun,
+      IPC_CHANNELS.auditUndo,
     ]);
     const nonVerbLike = [...WRITE_CHANNELS].filter(
       (ch) => !writeVerb.test(ch) && !namedExemptions.has(ch),

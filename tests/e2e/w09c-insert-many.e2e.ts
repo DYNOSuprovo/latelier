@@ -12,8 +12,8 @@ import { expectConsoleClean, expectStatusDot } from './helpers/uiAsserts';
 test.afterAll(stopAllMemoryServers);
 
 /**
- * T2.7 — pasting a top-level JSON array into the Insert drawer routes to
- * `doc:insertMany` and inserts every document in one shot.
+ * Pasting a top-level JSON array into the Document Editor's insert mode
+ * routes to `doc:insertMany` and inserts every document in one shot.
  */
 test('doc writes: pasting a JSON array into Insert adds every document', async () => {
   const { host, port } = await startMemoryServer();
@@ -38,22 +38,23 @@ test('doc writes: pasting a JSON array into Insert adds every document', async (
 
       // ── Insert an array of two documents ─────────────────────────────────
       await win.getByRole('button', { name: /Insert document/ }).click();
-      await expect(win.getByText('Insert document', { exact: true })).toBeVisible({
-        timeout: 5000,
-      });
+      const insertDialog = win.getByRole('dialog', { name: 'Insert document' });
+      await expect(insertDialog).toBeVisible({ timeout: 5000 });
 
-      const insertTextarea = win.locator('textarea').last();
-      await insertTextarea.fill(
+      // Fields is the default view (W18 §2); switch to JSON to paste an array.
+      await insertDialog.getByRole('radiogroup', { name: 'View' }).getByText('JSON', { exact: true }).click();
+      const insertBox = insertDialog.getByRole('textbox', { name: 'Document JSON' });
+      await insertBox.fill(
         '[{"_id": 1, "sku": "bulk-one", "status": "pending"}, {"_id": 2, "sku": "bulk-two", "status": "pending"}]',
       );
 
-      // The drawer's primary button label reflects the array count.
+      // The editor's primary button label reflects the array count.
       await win.getByRole('button', { name: /^Insert 2 documents$/ }).click();
 
-      // Drawer closes, the run reruns automatically. Both new rows appear.
+      // Editor closes, the run reruns automatically. Both new rows appear.
       await expect(win.getByText('bulk-one')).toBeVisible({ timeout: 8000 });
       await expect(win.getByText('bulk-two')).toBeVisible();
-      await expect(win.getByText('Insert document', { exact: true })).not.toBeVisible();
+      await expect(insertDialog).not.toBeVisible();
     });
   });
 });

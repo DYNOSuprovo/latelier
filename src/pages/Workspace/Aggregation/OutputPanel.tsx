@@ -5,7 +5,8 @@ import type { AggregationLastRun, ResultViewMode } from '@shared/types';
 import { Button, Group, SegmentedControl } from '@mantine/core';
 import { ejsonStringifyReadable } from '../../../utils/ejson';
 import { copyToClipboard } from '../../../utils/clipboard';
-import { api } from '../../../api/atelier';
+import { api, getErrorMessage } from '../../../api/atelier';
+import { notify } from '../../../theme/notifications';
 import { resizeKeyStep } from '../resizeKeyStep';
 
 interface OutputPanelProps {
@@ -124,10 +125,12 @@ export function OutputPanel({
     if (rows.length === 0) return;
     const content = safeStringifyArray(rows);
     const defaultName = `${pipelineName ?? 'pipeline'}-output.json`;
+    // A cancelled save panel resolves `{ path: null }`; only a real write
+    // failure throws, and the user has to hear about that one.
     try {
       await api.app.saveFile({ defaultName, content });
-    } catch {
-      // swallow — user likely cancelled
+    } catch (err) {
+      notify.error(`Could not save the output: ${getErrorMessage(err, 'the file could not be written')}`);
     }
   };
 
@@ -194,7 +197,14 @@ export function OutputPanel({
         <Button size="compact-xs" variant="default" leftSection={I.save} onClick={onSaveAsCollection} disabled={running || rows.length === 0}>
           Save as…
         </Button>
-        <Button size="compact-xs" variant="default" onClick={() => void download()} disabled={rows.length === 0}>
+        <Button
+          size="compact-xs"
+          variant="default"
+          onClick={() => void download()}
+          disabled={rows.length === 0}
+          aria-label="Download output as JSON"
+          title="Download output as JSON"
+        >
           ⇩
         </Button>
       </Group>

@@ -110,6 +110,14 @@ describe('WorkspaceStateService', () => {
     expect(updated.state.pageSize).toBe(50);
   });
 
+  it('update round-trips activeView:"structure" and a second field in the same patch', () => {
+    const tab = svc.openCollection({ connectionId: 'conn', dbName: 'd', collection: 'c' });
+    svc.update(tab.id, { state: { activeView: 'structure', page: 2 } });
+    const reread = asCollectionTab(svc.get(tab.id));
+    expect(reread.state.activeView).toBe('structure');
+    expect(reread.state.page).toBe(2);
+  });
+
   it('close returns newActiveId = left neighbour when active closed', () => {
     const a = svc.openCollection({ connectionId: 'conn', dbName: 'd', collection: 'a' });
     const b = svc.openCollection({ connectionId: 'conn', dbName: 'd', collection: 'b' });
@@ -372,5 +380,71 @@ describe('WorkspaceStateService', () => {
     // Same hydration path via list(), not just get().
     const listed = asCollectionTab(svc.list().find((t) => t.id === id)!);
     expect(listed.state.queryRaw).toBe('{}');
+  });
+
+  // ─── 'schema' → 'structure' migration on read ──────────────────────────
+  describe('activeView migration on read', () => {
+    function seedWithActiveView(activeView: unknown): string {
+      const id = `view-tab-${String(activeView)}`;
+      repo.insert({
+        id,
+        connection_id: 'conn',
+        kind: 'collection',
+        db_name: 'd',
+        collection: 'c',
+        state_json: JSON.stringify(
+          activeView === undefined ? {} : { activeView },
+        ),
+        position: repo.nextPosition(),
+        is_active: 0,
+        opened_at: new Date().toISOString(),
+        pinned: 0,
+      });
+      return id;
+    }
+
+    it('migrates a persisted schema view to structure', () => {
+      const id = seedWithActiveView('schema');
+      expect(asCollectionTab(svc.get(id)).state.activeView).toBe('structure');
+    });
+
+    it('leaves a persisted structure view as structure', () => {
+      const id = seedWithActiveView('structure');
+      expect(asCollectionTab(svc.get(id)).state.activeView).toBe('structure');
+    });
+
+    it('leaves documents and aggregation unchanged', () => {
+      const docsId = seedWithActiveView('documents');
+      const aggId = seedWithActiveView('aggregation');
+      expect(asCollectionTab(svc.get(docsId)).state.activeView).toBe('documents');
+      expect(asCollectionTab(svc.get(aggId)).state.activeView).toBe('aggregation');
+    });
+
+    it('falls back to documents for a garbage value', () => {
+      const id = seedWithActiveView('not-a-real-view');
+      expect(asCollectionTab(svc.get(id)).state.activeView).toBe('documents');
+    });
+
+    it('falls back to documents when activeView is absent', () => {
+      const id = seedWithActiveView(undefined);
+      expect(asCollectionTab(svc.get(id)).state.activeView).toBe('documents');
+    });
+
+    it('falls back to documents for unparseable state_json', () => {
+      const id = 'view-tab-corrupt';
+      repo.insert({
+        id,
+        connection_id: 'conn',
+        kind: 'collection',
+        db_name: 'd',
+        collection: 'c',
+        state_json: '{not json',
+        position: repo.nextPosition(),
+        is_active: 0,
+        opened_at: new Date().toISOString(),
+        pinned: 0,
+      });
+      expect(asCollectionTab(svc.get(id)).state.activeView).toBe('documents');
+    });
   });
 });

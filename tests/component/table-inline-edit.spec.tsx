@@ -19,8 +19,8 @@ import type {
 import type { CollectionTabState, TableColumnConfig } from '@shared/types';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
 import { api, getErrorMessage } from '../../src/api/atelier';
-import { buildIdFilter } from '../../src/pages/Workspace/views/docId';
-import { ejsonStringify } from '../../src/utils/ejson';
+import { ejsonParse, isPlainDocument } from '../../src/utils/ejson';
+import { buildUpdateRequest, setAtSegments } from '../../src/pages/Workspace/documentDiff';
 import { notify } from '../../src/theme/notifications';
 
 // jsdom doesn't implement clipboard by default; other cell interactions
@@ -63,10 +63,11 @@ function stateWithDocs(
 }
 
 /**
- * `updateField` mirrors Workspace.tsx's real implementation (`buildIdFilter`
- * -> `api.doc.updateOne` -> refresh callback on success, `notify.error` on
- * failure) — a noop spy would only prove the affordance renders, not the
- * `$set` shape or the error-feedback path (T2.6 plan validation:
+ * `updateField` mirrors Workspace.tsx's real implementation (revive -> the
+ * shared `buildUpdateRequest` guarded builder -> `api.doc.updateOne` ->
+ * refresh callback on success, `notify.error` on failure or a matchless
+ * guard) — a noop spy would only prove the affordance renders, not the
+ * `$set`+guard shape or the error-feedback path (T2.6 plan validation:
  * "real/stateful actions object, not a noop spy").
  *
  * #72 — both harnesses below had their own byte-identical copy of this.
@@ -79,24 +80,43 @@ function stateWithDocs(
 function inlineEditActions(opts: {
   onRefresh?: () => void;
   openDuplicate?: (doc: unknown) => void;
+  openEdit?: (doc: unknown, focusPath?: string) => void;
 }): CollectionWorkspaceActions {
   return emptyWorkspaceActions({
+    ...(opts.openEdit ? { openEdit: opts.openEdit } : {}),
     updateField: (doc, fieldPath, newValue) => {
-      const filterJson = buildIdFilter(doc);
-      if (filterJson === null) {
+      const revived = ejsonParse<unknown>(JSON.stringify(doc));
+      if (!isPlainDocument(revived)) {
         notify.error('Cannot edit a document without an _id');
-        return;
+        return Promise.resolve();
       }
-      const updateJson = ejsonStringify({ $set: { [fieldPath]: newValue } });
-      api.doc
+      const original = revived as Record<string, unknown>;
+      const draft = setAtSegments(original, [fieldPath], newValue);
+      let request;
+      try {
+        request = buildUpdateRequest(original, draft);
+      } catch (e) {
+        notify.error(getErrorMessage(e, 'Cannot save this value'));
+        return Promise.resolve();
+      }
+      if (request === null) return Promise.resolve(); // unchanged
+      return api.doc
         .updateOne({
           connectionId: 'c1',
           dbName: 'app',
           collection: 'orders',
-          filterJson,
-          updateJson,
+          filterJson: request.filterJson,
+          updateJson: request.updateJson,
         })
-        .then(() => opts.onRefresh?.())
+        .then(({ matchedCount }) => {
+          if (matchedCount === 0) {
+            notify.error('This document changed since it was loaded; the edit was not saved.', {
+              title: 'Update failed',
+            });
+            return;
+          }
+          opts.onRefresh?.();
+        })
         .catch((e: unknown) => {
           notify.error(getErrorMessage(e, 'Update failed'), { title: 'Update failed' });
         });
@@ -112,6 +132,7 @@ function renderInlineEditHarness(
     metaOverrides?: Partial<CollectionWorkspaceMeta>;
     columnConfig?: TableColumnConfig;
     openDuplicate?: (doc: unknown) => void;
+    openEdit?: (doc: unknown, focusPath?: string) => void;
   } = {},
 ) {
   function Harness() {
@@ -169,17 +190,12 @@ function renderRerenderableInlineEditHarness(
 }
 
 describe('TableView — inline cell editing (T2.6)', () => {
-  it('inline-edits a string cell via Enter: calls doc.updateOne with a $set patch (never replace), then refreshes', async () => {
+  it('inline-edits a string cell via Enter: calls doc.updateOne with a $set patch, then refreshes', async () => {
     const updateCalls: Array<{ filterJson: string; updateJson: string }> = [];
-    const replaceCalls: unknown[] = [];
     installAtelierMock({
       doc: {
         updateOne: async (input) => {
           updateCalls.push(input);
-          return { matchedCount: 1, modifiedCount: 1 };
-        },
-        replace: async (input) => {
-          replaceCalls.push(input);
           return { matchedCount: 1, modifiedCount: 1 };
         },
       },
@@ -199,9 +215,11 @@ describe('TableView — inline cell editing (T2.6)', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
 
     await waitFor(() => expect(updateCalls.length).toBe(1));
-    expect(replaceCalls.length).toBe(0);
+    // The compare-and-set guard (W18 §5b/§8): `_id` plus the loaded value of
+    // the one path that changed, not a bare `{_id}` filter.
     expect(JSON.parse(updateCalls[0]!.filterJson)).toEqual({
       _id: { $oid: '507f1f77bcf86cd799439011' },
+      status: { $eq: 'pending' },
     });
     expect(JSON.parse(updateCalls[0]!.updateJson)).toEqual({ $set: { status: 'shipped' } });
 
@@ -329,20 +347,144 @@ describe('TableView — inline cell editing (T2.6)', () => {
     expect(within(cell).queryByRole('button', { name: 'Edit cell value' })).toBeNull();
   });
 
-  it('a number-sentinel cell exposes no inline-edit pencil (routes to the drawer to avoid BSON-type corruption)', () => {
+  // W18 §8 — widened from v1 (T2.6): the BSON numeric types now inline-edit
+  // in place, keeping their loaded type through the guarded save path.
+  it('a number-sentinel cell inline-edits, saving with its Int32 type preserved', async () => {
+    const updateCalls: Array<{ filterJson: string; updateJson: string }> = [];
+    installAtelierMock({
+      doc: {
+        updateOne: async (input) => {
+          updateCalls.push(input);
+          return { matchedCount: 1, modifiedCount: 1 };
+        },
+      },
+    });
     const docs = [{ _id: 1, amount: { $numberInt: '5' } }];
     const { getByTitle } = renderInlineEditHarness(docs);
     const cell = getByTitle(/Drag to add "amount/);
     fireEvent.mouseEnter(cell);
-    expect(within(cell).queryByRole('button', { name: 'Edit cell value' })).toBeNull();
+    fireEvent.click(within(cell).getByRole('button', { name: 'Edit cell value' }));
+
+    const input = within(cell).getByRole('textbox') as HTMLInputElement;
+    expect(input.value).toBe('5');
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(updateCalls.length).toBe(1));
+    expect(JSON.parse(updateCalls[0]!.updateJson)).toEqual({ $set: { amount: { $numberInt: '9' } } });
   });
 
-  it('an ObjectId-sentinel cell exposes no inline-edit pencil', () => {
-    const docs = [{ _id: 1, userId: { $oid: '507f1f77bcf86cd799439011' } }];
+  it('a number-sentinel cell refuses invalid text inline, without committing', () => {
+    const docs = [{ _id: 1, amount: { $numberInt: '5' } }];
     const { getByTitle } = renderInlineEditHarness(docs);
-    const cell = getByTitle(/Drag to add "userId/);
+    const cell = getByTitle(/Drag to add "amount/);
+    fireEvent.mouseEnter(cell);
+    fireEvent.click(within(cell).getByRole('button', { name: 'Edit cell value' }));
+
+    const input = within(cell).getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'not a number' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // Still editing — Enter was refused, not silently coerced or dropped.
+    expect(within(cell).getByRole('textbox')).toBeTruthy();
+    expect(within(cell).getByRole('alert')).toBeTruthy();
+  });
+
+  it('a boolean cell shows an always-on toggle, no pencil, and saves on toggle', async () => {
+    const updateCalls: Array<{ filterJson: string; updateJson: string }> = [];
+    installAtelierMock({
+      doc: {
+        updateOne: async (input) => {
+          updateCalls.push(input);
+          return { matchedCount: 1, modifiedCount: 1 };
+        },
+      },
+    });
+    const docs = [{ _id: 1, active: true }];
+    const { getByTitle } = renderInlineEditHarness(docs);
+    const cell = getByTitle(/Drag to add "active/);
     fireEvent.mouseEnter(cell);
     expect(within(cell).queryByRole('button', { name: 'Edit cell value' })).toBeNull();
+
+    const toggle = within(cell).getByRole('checkbox', { name: 'Edit active' }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(updateCalls.length).toBe(1));
+    expect(JSON.parse(updateCalls[0]!.updateJson)).toEqual({ $set: { active: false } });
+  });
+
+  // A controlled checkbox has no draft to protect a second click from the
+  // first: without the in-flight guard, a click before the first write
+  // settles would fire a second `updateOne` whose compare-and-set guard
+  // reads the stale pre-write value, and land a spurious conflict.
+  it('disables the boolean toggle while a write is in flight, so a second click before it settles is a no-op', async () => {
+    let resolveWrite: (() => void) | undefined;
+    const updateOne = vi.fn(
+      () =>
+        new Promise<{ matchedCount: number; modifiedCount: number }>((resolve) => {
+          resolveWrite = () => resolve({ matchedCount: 1, modifiedCount: 1 });
+        }),
+    );
+    installAtelierMock({ doc: { updateOne } });
+    const docs = [{ _id: 1, active: true }];
+    const { getByTitle } = renderInlineEditHarness(docs);
+    const cell = getByTitle(/Drag to add "active/);
+    fireEvent.mouseEnter(cell);
+    const toggle = within(cell).getByRole('checkbox', { name: 'Edit active' }) as HTMLInputElement;
+
+    fireEvent.click(toggle);
+    expect(toggle.disabled).toBe(true);
+    fireEvent.click(toggle); // a second click while disabled reaches no handler
+
+    resolveWrite?.();
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(updateOne).toHaveBeenCalledTimes(1);
+  });
+
+  // A rebind clears the pending state before the first write settles; that
+  // write's late settle must not re-enable a toggle a newer click disabled.
+  it('keeps the toggle disabled when an older write settles while a newer one is in flight', async () => {
+    const resolvers: Array<() => void> = [];
+    const updateOne = vi.fn(
+      () =>
+        new Promise<{ matchedCount: number; modifiedCount: number }>((resolve) => {
+          resolvers.push(() => resolve({ matchedCount: 1, modifiedCount: 1 }));
+        }),
+    );
+    installAtelierMock({ doc: { updateOne } });
+    const { getByTitle, rerenderDocs } = renderRerenderableInlineEditHarness([{ _id: 1, active: true }]);
+    const toggle = () =>
+      within(getByTitle(/Drag to add "active/)).getByRole('checkbox', { name: 'Edit active' }) as HTMLInputElement;
+
+    fireEvent.click(toggle());
+    expect(toggle().disabled).toBe(true);
+    rerenderDocs([{ _id: 1, active: false }]);
+    expect(toggle().disabled).toBe(false);
+    fireEvent.click(toggle());
+    expect(toggle().disabled).toBe(true);
+
+    await act(async () => { resolvers[0]!(); });
+    expect(toggle().disabled).toBe(true);
+
+    await act(async () => { resolvers[1]!(); });
+    await waitFor(() => expect(toggle().disabled).toBe(false));
+  });
+
+  // Date/ObjectId/Binary stay out of the inline editor's scope (W18 §8); the
+  // pencil still shows, but opens the Document Editor on the field instead.
+  it('an ObjectId-sentinel cell has no inline pencil, but its edit affordance opens the Document Editor on that field', () => {
+    const openEdit = vi.fn();
+    const docs = [{ _id: 1, userId: { $oid: '507f1f77bcf86cd799439011' } }];
+    const { getByTitle } = renderInlineEditHarness(docs, { openEdit });
+    const cell = getByTitle(/Drag to add "userId/);
+    fireEvent.mouseEnter(cell);
+    expect(within(cell).queryByRole('textbox')).toBeNull();
+
+    fireEvent.click(within(cell).getByRole('button', { name: 'Edit cell value' }));
+
+    expect(openEdit).toHaveBeenCalledTimes(1);
+    expect(openEdit).toHaveBeenCalledWith(docs[0], 'userId');
   });
 
   it('a computed dotted-path column exposes no inline-edit pencil (must never $set on the column label)', () => {
@@ -388,6 +530,30 @@ describe('TableView — inline cell editing (T2.6)', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
 
     await waitFor(() => expect(screen.getByText('boom')).toBeTruthy());
+  });
+
+  // W18 §5c/§8 — the guarded path's conflict outcome: `matchedCount: 0`
+  // means the field (or the document) changed underneath the edit, so it
+  // must surface visibly, never silently drop the write.
+  it('a concurrent change under an inline edit (matchedCount: 0) surfaces visibly, not silently', async () => {
+    installAtelierMock({
+      doc: {
+        updateOne: async () => ({ matchedCount: 0, modifiedCount: 0 }),
+      },
+    });
+    const docs = [{ _id: 1, status: 'pending' }];
+    const { getByTitle } = renderInlineEditHarness(docs);
+
+    const cell = getByTitle(/Drag to add "status/);
+    fireEvent.mouseEnter(cell);
+    fireEvent.click(within(cell).getByRole('button', { name: 'Edit cell value' }));
+    const input = within(cell).getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'shipped' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/This document changed since it was loaded/)).toBeTruthy(),
+    );
   });
 
   it('context menu "Duplicate document" calls actions.openDuplicate with the row document', () => {
@@ -453,7 +619,15 @@ describe('TableView — inline cell editing (T2.6)', () => {
     fireEvent.keyDown(inputAfterSwap, { key: 'Enter' });
 
     await waitFor(() => expect(updateCalls.length).toBe(1));
-    expect(JSON.parse(updateCalls[0]!.filterJson)).toEqual({ _id: 2 });
+    // The guarded path revives the raw doc (`documentDiff.ts`'s `Doc`), so a
+    // bare JS `_id: 2` canonicalizes to Int32 the same way the Document
+    // Editor's own save path would — a change of spelling on the wire, not
+    // of the document, and the same Int32 the driver would have produced
+    // from a bare `2` either way.
+    expect(JSON.parse(updateCalls[0]!.filterJson)).toEqual({
+      _id: { $numberInt: '2' },
+      status: { $eq: 'active' },
+    });
     expect(JSON.parse(updateCalls[0]!.updateJson)).toEqual({ $set: { status: 'archived' } });
   });
 });

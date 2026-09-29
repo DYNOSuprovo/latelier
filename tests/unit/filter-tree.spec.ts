@@ -1402,3 +1402,174 @@ describe('parseFilter/printFilter — fast-check: totality + fixpoint (§2, §3b
     );
   });
 });
+
+// ─── Mutation-sweep gap fills ────────────────────────────────────────────────
+//
+// The tests below close specific mutation-testing survivors found scoping
+// `npx stryker run --mutate src/pages/Workspace/filterTree.ts`. Each is a real
+// behavioral distinction (not an equivalent mutant) — the file itself carries
+// `// Stryker disable next-line` annotations, with evidence, for the mutants
+// that turned out to be genuinely equivalent instead.
+
+describe('guessSentinelOnly — multi-key guard (§2b)', () => {
+  it('a multi-key object whose first key looks like a value sentinel is still raw, never smuggled through', () => {
+    // Without the keys.length === 1 guard, guessSentinelOnly would match on
+    // the first key alone and silently drop the "extra" field from the filter.
+    const src = '{"a":{"$eq":{"$oid":"507f1f77bcf86cd799439011","extra":1}}}';
+    const root = mustParse(src);
+    expect(root.children).toEqual([raw(src)]);
+  });
+});
+
+describe('guessValue — null/boolean scalars produce the exact cond shape (§2b)', () => {
+  it('a null field value is a cond with valType null and empty text', () => {
+    expect(mustParse('{"a":null}').children).toEqual([
+      cond({ field: 'a', op: '$eq', valType: 'null', value: '' }),
+    ]);
+  });
+
+  it('a boolean field value is a cond with valType boolean and stringified text', () => {
+    expect(mustParse('{"a":true}').children).toEqual([
+      cond({ field: 'a', op: '$eq', valType: 'boolean', value: 'true' }),
+    ]);
+  });
+});
+
+describe('guessValue — sentinel match nested under an operator value (§2b)', () => {
+  it('{$eq: {$oid: ...}} guesses the objectid sentinel, not a raw fallback', () => {
+    const oid = '507f1f77bcf86cd799439011';
+    expect(mustParse(`{"a":{"$eq":{"$oid":"${oid}"}}}`).children).toEqual([
+      cond({ field: 'a', op: '$eq', valType: 'objectid', value: oid }),
+    ]);
+  });
+});
+
+describe('parseFieldPredicate — the operator-map gate rejects non-$ and empty key sets (§2)', () => {
+  it('an empty-object field value is one raw node, never silently dropped', () => {
+    const src = '{"a":{}}';
+    expect(mustParse(src).children).toEqual([raw(src)]);
+  });
+
+  it('a single non-$ key is never mistaken for an operator — stays raw, never becomes a cond', () => {
+    const src = '{"a":{"foo":"bar"}}';
+    expect(mustParse(src).children).toEqual([raw(src)]);
+  });
+
+  it('a field-value array with an unrepresentable element is one raw node (not the $in path)', () => {
+    const src = '{"a":[1,{"nested":1}]}';
+    expect(mustParse(src).children).toEqual([raw(src)]);
+  });
+});
+
+describe('buildScalarWire — unknown valType falls through to the defensive default', () => {
+  it('an out-of-union valType (reachable only via an unsafe cast) passes the value through', () => {
+    expect(buildScalarWire('bogus' as unknown as CondNode['valType'], 'x')).toBe('x');
+  });
+});
+
+describe('encodeCondValue — $type encodes numerically when possible, else the raw text (§3)', () => {
+  it('a numeric $type alias encodes as a number', () => {
+    const p = printFilter(group('$and', [cond({ op: '$type', value: '2' })]));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(JSON.parse(p.json)).toEqual({ a: { $type: 2 } });
+  });
+
+  it('a string $type alias (e.g. "string") is not numeric — encodes as the text itself', () => {
+    const p = printFilter(group('$and', [cond({ op: '$type', value: 'string' })]));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(JSON.parse(p.json)).toEqual({ a: { $type: 'string' } });
+  });
+
+  it('an empty $type value is excluded from the numeric branch even though Number("") is finite', () => {
+    const p = printFilter(group('$and', [cond({ op: '$type', value: '' })]));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(JSON.parse(p.json)).toEqual({ a: { $type: '' } });
+  });
+
+  it('a whitespace-only $type value is excluded via trim(), not just a literal-empty check', () => {
+    // Number('   ') is 0 (finite) and '   ' !== '' is true (untrimmed) — only
+    // checking value.trim() !== '' correctly excludes this from the numeric
+    // branch, leaving the original whitespace text untouched.
+    const p = printFilter(group('$and', [cond({ op: '$type', value: '   ' })]));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(JSON.parse(p.json)).toEqual({ a: { $type: '   ' } });
+  });
+});
+
+describe('condValueProblem — $mod array-length guard (§3)', () => {
+  it('a 3-element $mod array blocks with the exact 2-element message, not a divisor/remainder message', () => {
+    // Without this guard, destructuring [divisor, remainder] from a 3-element
+    // array silently ignores the third element instead of rejecting it.
+    const p = printFilter(group('$and', [cond({ op: '$mod', value: '[1,2,3]' })]));
+    expect(p.ok).toBe(false);
+    if (p.ok) return;
+    expect(p.problems[0].message).toBe('$mod value must be a 2-element array, e.g. [2, 1]');
+  });
+});
+
+describe('condValueProblem — isScalarNumeric on a genuinely empty/blank long value (§3a)', () => {
+  it('a whitespace-only long value is excluded from the integer-format check, not blocked', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'long', op: '$gt', value: '   ' })]));
+    expect(p.ok).toBe(true);
+  });
+
+  it('a fully empty long value is excluded from the integer-format check, not blocked', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'long', op: '$gt', value: '' })]));
+    expect(p.ok).toBe(true);
+  });
+});
+
+describe('condValueProblem — decimal regex exactness (§3, S8786 rewrite)', () => {
+  it('leading garbage before an otherwise-valid decimal blocks (proves the ^ anchor)', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'decimal', value: 'abc1.5' })]));
+    expect(p.ok).toBe(false);
+  });
+
+  it('a multi-digit integer part is valid (proves \\d+, not a single \\d)', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'decimal', value: '12.5' })]));
+    expect(p.ok).toBe(true);
+  });
+
+  it('a multi-digit fractional part after an integer part is valid (proves \\.\\d*, not \\.\\d)', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'decimal', value: '1.55' })]));
+    expect(p.ok).toBe(true);
+  });
+
+  it('a multi-digit fractional part with no leading integer digit is valid (proves \\.\\d+, not \\.\\d)', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'decimal', value: '.55' })]));
+    expect(p.ok).toBe(true);
+  });
+
+  it('surrounding whitespace is trimmed before validating a decimal value', () => {
+    const p = printFilter(group('$and', [cond({ valType: 'decimal', value: ' 1.5 ' })]));
+    expect(p.ok).toBe(true);
+  });
+});
+
+describe('updateAt — descending past a leaf is a no-op, not a crash (§4)', () => {
+  it('an over-long path through a cond leaf leaves the tree unchanged', () => {
+    const root = group('$and', [cond({ field: 'a' })]);
+    expect(() => updateAt(root, [0, 0], cond({ field: 'z' }))).not.toThrow();
+    expect(updateAt(root, [0, 0], cond({ field: 'z' }))).toEqual(root);
+  });
+});
+
+describe('removeAt — an empty path returns the exact same root reference (§4)', () => {
+  it('is a true identity no-op, not merely a structurally-equal copy', () => {
+    const root = group('$and', [cond({ field: 'a' }), cond({ field: 'b' })]);
+    expect(removeAt(root, [])).toBe(root);
+  });
+});
+
+describe('moveAt — an out-of-range path is a no-op even when the arithmetic would land in-bounds (§4)', () => {
+  it('never moves a nonexistent node into a real slot', () => {
+    const root = group('$and', [cond({ field: 'a' }), cond({ field: 'b' }), cond({ field: 'c' })]);
+    // path [5] doesn't resolve (only indices 0-2 exist); delta -3 would put
+    // a *real* index-5 node at slot 2 — but there is no such node.
+    expect(moveAt(root, [5], -3)).toEqual(root);
+  });
+});

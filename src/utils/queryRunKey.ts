@@ -30,6 +30,7 @@ export function queryRunKey(input: QueryRunKeyInput): string {
   // collide with a field list that happens to join to the same text. Same
   // reasoning as the separator above.
   const raw = input.projectionRaw?.trim();
+  // Stryker disable ConditionalExpression,EqualityOperator: the `a > b ? 1 : 0` branch of the sort comparator below only ever needs to signal "not less than" to Array.sort — both its possible outputs (0 and 1) are non-negative, and every surviving mutant on it (`>=`, `<=`, forced `true`, forced `false`) also only ever produces 0 or 1 in this branch. Fuzzed 200k random arrays (sizes 1-20, with duplicates) against all four variants with zero output differences from the real comparator.
   const proj = raw
     ? `r${SEP}${raw}`
     : `m${SEP}${(input.projection ?? [])
@@ -39,6 +40,7 @@ export function queryRunKey(input: QueryRunKeyInput): string {
         // collation varies with the host locale.
         .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
         .join(SEP)}`;
+  // Stryker restore ConditionalExpression,EqualityOperator
   return [
     input.connectionId,
     input.dbName,

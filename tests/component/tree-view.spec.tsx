@@ -3,6 +3,7 @@ import {
   render,
   screen,
   fireEvent,
+  within,
   act,
   emptyWorkspaceActions,
   emptyWorkspaceMeta,
@@ -12,11 +13,11 @@ import userEvent from '@testing-library/user-event';
 import { TreeView } from '../../src/pages/Workspace/views/TreeView';
 import { CollectionWorkspaceProvider } from '../../src/pages/Workspace/CollectionWorkspaceProvider';
 import type { CollectionWorkspaceActions } from '../../src/pages/Workspace/context';
-import type { CollectionTabState } from '@shared/types';
+import type { CollectionTabState, TableColumnConfig } from '@shared/types';
 
 const noop = () => {};
 
-function emptyState(): CollectionTabState {
+function emptyState(columnConfig?: TableColumnConfig): CollectionTabState {
   return {
     view: 'Tree',
     builder: { projection: [], sort: '', limit: '' },
@@ -24,19 +25,21 @@ function emptyState(): CollectionTabState {
     page: 0,
     pageSize: 50,
     activeBuilderTab: 'Builder',
+    columnConfig,
   };
 }
 
 function renderTree(documents: unknown[], opts: {
   expanded?: Record<string, true>;
-  previewFields?: string[] | null;
+  /** Fields control's per-tab config — hide/reorder now drive the Tree preview directly. */
+  columnConfig?: TableColumnConfig;
   onRowExpand?: (id: string, expanded: boolean) => void;
   onSelect?: (doc: unknown) => void;
   actions?: Partial<CollectionWorkspaceActions>;
 } = {}) {
   return render(
       <CollectionWorkspaceProvider
-        state={emptyState()}
+        state={emptyState(opts.columnConfig)}
         actions={emptyWorkspaceActions(opts.actions)}
         meta={emptyWorkspaceMeta()}
       >
@@ -45,7 +48,6 @@ function renderTree(documents: unknown[], opts: {
           expandedRows={opts.expanded}
           onSelect={opts.onSelect ?? noop}
           onRowExpand={opts.onRowExpand ?? vi.fn()}
-          previewFields={opts.previewFields}
         />
       </CollectionWorkspaceProvider>
   );
@@ -72,14 +74,14 @@ describe('TreeView — rendering and interaction', () => {
     expect(container.textContent).toContain('beta');
   });
 
-  it('honors previewFields prop, hiding non-listed fields from the collapsed preview', () => {
+  it('hiding a field in the Fields control removes it from the collapsed preview', () => {
     const docs = [
       { _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha', secret: 'hidden' },
     ];
-    const { container } = renderTree(docs, { previewFields: ['name'] });
+    const { container } = renderTree(docs, { columnConfig: { hidden: ['secret'] } });
 
     expect(container.textContent).toContain('alpha');
-    // `secret` field is not in the previewFields list — must not appear.
+    // `secret` is hidden in the Fields control — must not appear in the preview.
     // Strip <style> elements first: Mantine's MantineProvider injects a
     // global stylesheet that mentions the word "hidden" in utility class
     // names (e.g., .mantine-hidden-from-xs), which would otherwise be
@@ -87,6 +89,52 @@ describe('TreeView — rendering and interaction', () => {
     const rendered = container.cloneNode(true) as HTMLElement;
     rendered.querySelectorAll('style').forEach((el) => el.remove());
     expect(rendered.textContent).not.toContain('hidden');
+  });
+
+  it('with no Fields config, the preview falls back to a document\'s own first 4 keys', () => {
+    const docs = [{ _id: 1, aa: 1, bb: 2, cc: 3, dd: 4, ee: 5 }];
+    const { container } = renderTree(docs);
+
+    expect(container.textContent).toContain('aa:');
+    expect(container.textContent).not.toContain('ee:');
+  });
+
+  it('reordering fields in the Fields control changes which 4 fields the Tree previews', () => {
+    const docs = [{ _id: 1, aa: 1, bb: 2, cc: 3, dd: 4, ee: 5 }];
+    const { container } = renderTree(docs, {
+      columnConfig: { order: ['ee', 'dd', 'cc', 'bb', 'aa'] },
+    });
+
+    // Reordered to the front — now inside the first-4 preview slice.
+    expect(container.textContent).toContain('ee:');
+    // Pushed to 5th by the reorder — falls out of the slice.
+    expect(container.textContent).not.toContain('aa:');
+  });
+
+  it('hiding every field shows an empty collapsed preview, not the hidden fields', () => {
+    const docs = [
+      { _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha', secret: 'topsecret' },
+    ];
+    const { container } = renderTree(docs, { columnConfig: { hidden: ['name', 'secret'] } });
+
+    const rendered = container.cloneNode(true) as HTMLElement;
+    rendered.querySelectorAll('style').forEach((el) => el.remove());
+    expect(rendered.textContent).not.toContain('alpha');
+    expect(rendered.textContent).not.toContain('topsecret');
+  });
+
+  it('with a Fields config, each sparse row previews its own visible fields, not a global slice', () => {
+    const docs = [
+      { _id: 1, a: 'zone-a', b: 'zone-b', c: 'zone-c', d: 'zone-d' },
+      { _id: 2, e: 'zone-e', f: 'zone-f' },
+    ];
+    // Hiding `a` pushes the visible list to [b, c, d, e, f]; a global first-4
+    // slice would cut `f` before the second doc's own fields are considered,
+    // even though that doc has none of b/c/d.
+    const { container } = renderTree(docs, { columnConfig: { hidden: ['a'] } });
+
+    expect(container.textContent).toContain('zone-e');
+    expect(container.textContent).toContain('zone-f');
   });
 
   it('renders an expanded row with its top-level fields visible', () => {
@@ -123,6 +171,22 @@ describe('TreeView — rendering and interaction', () => {
 
     expect(onRowExpand).toHaveBeenCalledTimes(1);
     expect(onRowExpand).toHaveBeenCalledWith('507f1f77bcf86cd799439011', true);
+  });
+
+  // N4.1 — Tree had no visible way to select without ⌘/Ctrl+click; the
+  // checkbox added alongside the expand chevron is that path.
+  it('the checkbox selects a row without expanding it, and names the document', () => {
+    const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha' }];
+    const onRowExpand = vi.fn();
+    const { getByRole, container } = renderTree(docs, { onRowExpand });
+    const checkbox = getByRole('button', { name: 'Select document 99439011' });
+
+    fireEvent.click(checkbox);
+
+    expect(onRowExpand).not.toHaveBeenCalled();
+    expect(checkbox.getAttribute('aria-pressed')).toBe('true');
+    expect(getByRole('button', { name: 'Deselect document 99439011' })).toBe(checkbox);
+    expect(container.querySelector('[data-selected="true"]')).not.toBeNull();
   });
 
   // #20 — roving focus: the tree itself is the widget's only tab stop.
@@ -173,6 +237,17 @@ describe('TreeView — rendering and interaction', () => {
       fireEvent.keyDown(tree, { key: 'Enter' });
 
       expect(onRowExpand).toHaveBeenCalledWith('507f1f77bcf86cd799439012', true);
+    });
+
+    it('E on the tree opens the editor on the active row', () => {
+      const openEdit = vi.fn();
+      const { container } = renderTree(threeDocs, { actions: { openEdit } });
+      const tree = container.querySelector('[role="tree"]')!;
+
+      fireEvent.keyDown(tree, { key: 'ArrowDown' });
+      fireEvent.keyDown(tree, { key: 'E' });
+
+      expect(openEdit).toHaveBeenCalledWith(threeDocs[1]);
     });
 
     // Mirrors the existing per-row guard test above, at the container level:
@@ -277,6 +352,69 @@ describe('TreeView — rendering and interaction', () => {
       );
       expect(outlined).toHaveLength(1);
       expect(outlined[0].id).toBe('tree-row-0');
+    });
+  });
+
+  // Edit/Delete already had their own visible per-row buttons here; this
+  // adds a "More actions" button for parity with Table's context menu
+  // (Duplicate), opening the same shared menu content.
+  describe('"More actions" per-row menu', () => {
+    it('opens a menu with Duplicate, and calls the workspace action on click', () => {
+      const openDuplicate = vi.fn();
+      const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha' }];
+      const { getByRole } = renderTree(docs, { actions: { openDuplicate } });
+
+      fireEvent.click(getByRole('button', { name: /More actions for document/ }));
+      const menu = getByRole('group', { name: 'Document actions' });
+      fireEvent.click(within(menu).getByText('Duplicate document'));
+
+      expect(openDuplicate).toHaveBeenCalledWith(docs[0]);
+    });
+
+    it('omits Duplicate when the workspace has no openDuplicate action wired', () => {
+      const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha' }];
+      const { getByRole, queryByText } = renderTree(docs);
+
+      fireEvent.click(getByRole('button', { name: /More actions for document/ }));
+      expect(queryByText('Duplicate document')).toBeNull();
+    });
+
+    it('does not expand or collapse the row it belongs to', () => {
+      const onRowExpand = vi.fn();
+      const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha' }];
+      const { getByRole } = renderTree(docs, { onRowExpand });
+
+      fireEvent.click(getByRole('button', { name: /More actions for document/ }));
+      expect(onRowExpand).not.toHaveBeenCalled();
+    });
+
+    it('closes the field-level menu when the doc menu opens, and vice versa', () => {
+      const docs = [{ _id: { $oid: '507f1f77bcf86cd799439011' }, name: 'alpha' }];
+      const { getByRole, queryByRole } = renderTree(docs, {
+        expanded: { '507f1f77bcf86cd799439011': true },
+      });
+
+      // Right-click the expanded 'name' field row to open the field-level
+      // menu. Field rows are identified by a stable `field-row-<docId>::<path>`
+      // id, since the doc summary row's own accessible name also contains
+      // "name" (it previews the field's value).
+      const nameFieldRow = document.getElementById(
+        'field-row-507f1f77bcf86cd799439011::name',
+      )!;
+      fireEvent.contextMenu(nameFieldRow);
+      expect(getByRole('group', { name: 'Field actions' })).toBeTruthy();
+
+      // Opening the doc-level "More actions" menu must close the field menu —
+      // both are dismissed only by useMenuFocus's window click listener, and
+      // this button stops propagation, so it never fires for the other menu.
+      fireEvent.click(getByRole('button', { name: /More actions for document/ }));
+      expect(queryByRole('group', { name: 'Field actions' })).toBeNull();
+      expect(getByRole('group', { name: 'Document actions' })).toBeTruthy();
+
+      // And the reverse: opening a field menu closes the doc menu.
+      fireEvent.contextMenu(nameFieldRow);
+      expect(queryByRole('group', { name: 'Document actions' })).toBeNull();
+      expect(getByRole('group', { name: 'Field actions' })).toBeTruthy();
     });
   });
 });

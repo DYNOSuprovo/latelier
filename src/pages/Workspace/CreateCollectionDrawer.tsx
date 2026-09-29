@@ -217,8 +217,9 @@ export function CreateCollectionDrawer({
   };
 
   return (
-    // X15 §2 — see the note in `InsertDrawer.tsx`. The backdrop is inert: it
-    // does not close and it does not prompt. Escape goes through the guard.
+    // X15 §2 — see the note in `DocumentEditor.tsx`'s Modal. The backdrop is
+    // inert: it does not close and it does not prompt. Escape goes through
+    // the guard.
     <Drawer
       opened
       onClose={() => void requestClose()}

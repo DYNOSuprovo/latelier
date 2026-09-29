@@ -60,8 +60,9 @@ describe('Result selection — cross-view persistence and reset (AC5/AC6)', () =
     const lastRun: LastRun = { documents: docs, durationMs: 5, ranAt: new Date().toISOString() };
     const { rerender, container } = render(<Viewer state={makeState('Table', lastRun)} />);
 
-    // Select the "alpha" row in Table view.
-    fireEvent.click(screen.getByText('alpha'));
+    // Select the "alpha" row in Table view — a plain click no longer
+    // selects, so this goes through the row's own checkbox.
+    fireEvent.click(screen.getByRole('button', { name: 'Select document 1' }));
     expect(container.textContent).toContain('1 selected');
 
     // Switch to Tree — a *new* CollectionTabState object, but the same
@@ -87,7 +88,7 @@ describe('Result selection — cross-view persistence and reset (AC5/AC6)', () =
     const lastRun1: LastRun = { documents: docs, durationMs: 5, ranAt: new Date().toISOString() };
     const { rerender, container } = render(<Viewer state={makeState('Table', lastRun1)} />);
 
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select document 1' }));
     expect(container.textContent).toContain('1 selected');
 
     // A fresh `documents` array — the shape of a new query run / page change

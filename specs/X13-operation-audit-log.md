@@ -8,20 +8,23 @@ X13 gives every Connection a durable **Audit Log** of the Operations that change
 
 ## Scope
 
-**In scope** — eight channels, chosen by blast radius on documents rather than by API level:
+**In scope** — nine `op` values, chosen by blast radius on documents rather than by API level. Two of them belong to channels that do not exist yet; each gets its row in the per-channel table (§4) when its channel lands, and until then nothing records it:
 
 | Channel | `op` |
 | --- | --- |
 | `docInsertMany` | `insertMany` |
-| `docReplace` | `replace` |
 | `docUpdateOne` | `updateOne` |
+| `docUpdateMany` (not yet built) | `updateMany` |
 | `docDeleteOne` | `deleteOne` |
 | `docDeleteMany` | `deleteMany` |
 | `collectionDrop` | `collectionDrop` |
 | `collectionRename` | `collectionRename` |
 | `databaseDrop` | `databaseDrop` |
+| `dataImport` (not yet built) | `import` |
 
-Also in scope: migration `010`, an `AuditRepo` + `AuditService`, two IPC channels, an Undo action on the success toast, an audit modal over the Active Connection, retention in `MaintenanceService`, and one line in each of the three confirm dialogs stating whether the action can be undone.
+There is no `docReplace` to audit: the Document Editor saves through `docUpdateOne`, and the `doc:replace` channel is gone.
+
+Also in scope: migration `012`, an `AuditRepo` + `AuditService`, two IPC channels, an Undo action on the success toast, an audit modal that opens on the Focused Tab's Connection, retention in `MaintenanceService`, and one line in each of the three confirm dialogs stating whether the action can be undone.
 
 **Out of scope** — see [ADR 0002](../docs/adr/0002-audit-log-scope.md) for why each of these is excluded, not merely deferred:
 
@@ -34,7 +37,7 @@ Also in scope: migration `010`, an `AuditRepo` + `AuditService`, two IPC channel
 
 ## Dependencies
 
-- F02 (SQLite persistence & migrations) — migration `010`.
+- F02 (SQLite persistence & migrations) — migration `012`.
 - F04 (IPC bridge & error envelope) — recording taps `createRouter`.
 - W08 (document write ops), C07/C09 (collection admin) — the audited channels.
 
@@ -64,7 +67,7 @@ Also in scope: migration `010`, an `AuditRepo` + `AuditService`, two IPC channel
 
 Added to `shared/types.ts`:
 
-- `AuditOp` — string-literal union of the eight `op` values above, mirrored as the SQL `CHECK` constraint.
+- `AuditOp` — string-literal union of the nine `op` values above, mirrored as the SQL `CHECK` constraint.
 - `AuditOutcome` — `'ok' | 'error' | 'partial'`.
 - `AuditEntry` — `id`, `connectionId`, `dbName`, `collection` (null for `databaseDrop`), `op`, `summary` (parsed `AuditSummary`), `outcome`, `errorCode?`, `ranAt`, `durationMs`, `reversible`, `undoneAt?`.
 - `AuditSummary` — a discriminated union on `op`, carrying only what the modal renders: the filter for the `doc*` ops, `matchedCount`/`modifiedCount`/`deletedCount`/`insertedCount` as applicable, and `fromName`/`toName` for `collectionRename`.
@@ -77,7 +80,7 @@ New `AppErrorCode` members, thrown via `SystemError` so the renderer can `switch
 - `AUDIT_ALREADY_UNDONE` — `undone_at` is set.
 - `AUDIT_TARGET_CHANGED` — the document has changed since the Operation.
 
-## 2. Database — migration `010-audit-log.sql`
+## 2. Database — migration `012-audit-log.sql`
 
 ```sql
 CREATE TABLE audit_log (
@@ -86,8 +89,8 @@ CREATE TABLE audit_log (
   db_name        TEXT NOT NULL,
   collection     TEXT,
   op             TEXT NOT NULL CHECK(op IN (
-                   'insertMany','replace','updateOne','deleteOne','deleteMany',
-                   'collectionDrop','collectionRename','databaseDrop')),
+                   'insertMany','updateOne','updateMany','deleteOne','deleteMany',
+                   'collectionDrop','collectionRename','databaseDrop','import')),
   summary_json   TEXT NOT NULL,
   outcome        TEXT NOT NULL CHECK(outcome IN ('ok','error','partial')),
   error_code     TEXT,
@@ -119,16 +122,19 @@ Neither carries a secret; neither goes on the secret allowlist. Both follow the 
 
 ## 4. Recording
 
-Recording taps `createRouter`. A **static per-channel table** in main maps an audited channel to: its `op`, how to derive `dbName`/`collection` from the validated input, and how to build the `AuditSummary` from the input plus the handler's result.
+Recording taps `createRouter`. A **static per-channel table** in main (`electron/ipc/auditChannels.ts`) maps an audited channel to: its `op`, how to derive `dbName`/`collection` from the validated input, and how to build the `AuditSummary` from the input plus the handler's result.
 
 **A channel absent from that table is not audited.** This is the mechanism by which a channel added later fails closed.
 
 Recording rules:
 
 - The row is written **after** the handler returns, from a capture held in memory. Writing before would leave a phantom entry claiming an Operation that a crash prevented.
-- Failures are recorded, with `outcome = 'error'` and the `IpcError` code in `error_code`. A failed Operation is never reversible.
-- `insertMany` runs `ordered: true`, so a mid-batch failure leaves documents inserted. `classifyInsertManyError` already recovers `insertedCount` from the driver error; that case records `outcome = 'partial'` with the count, and `reversible = 0` — the error path yields the count but never the ids.
-- **A failed audit write never blocks, fails, or delays the Operation.** It is logged via `electron/log.ts` and the entry is lost.
+- Failures are recorded, with `outcome = 'error'` and the `IpcError` code in `error_code` — the same code the renderer received. A failed Operation is never reversible, with one exception: an `import` that stops part-way (below).
+- A payload that fails its zod schema is not recorded: it never reached a server and has no trustworthy namespace. A service-side refusal after the schema passed (an empty filter, an expired confirm token, a Read-Only Connection) is an attempt, and is recorded as an error.
+- An `updateOne` that matches nothing — a compare-and-set that lost its race — is recorded as `outcome = 'ok'` with `matchedCount: 0`, and is not reversible.
+- `insertMany` runs `ordered: true`, so a mid-batch failure leaves documents inserted. `DocumentService.insertMany` already folds `insertedCount` from the driver error into the error's `details`; a count above zero records `outcome = 'partial'` with the count, and `reversible = 0` — the error path yields the count but never the ids.
+- `import` inserts in unordered batches. A failure that stops it part-way (a dropped connection, a batch the driver can't account for per document) records `outcome = 'partial'` with the landed count, and stays reversible for every batch that **fully** landed before it: those ids and digests were already captured. The failing batch's own landed documents can't be told apart from the ones it never wrote, so they are not captured and Undo leaves them. The capture rides the thrown error inside main, never its `details`, so it never crosses IPC. The renderer gets no `auditId` for an error envelope, so this Undo is offered from the audit log, not a toast.
+- **A failed audit write never blocks, fails, or delays the Operation.** It is logged via `electron/log.ts` and the entry is lost. The write runs outside the router's handler `try`, so it cannot turn a completed Operation into an error envelope.
 
 ## 5. Capture
 
@@ -136,20 +142,25 @@ Pre-image capture lives in the services, because only they run before the write.
 
 | `op` | Captured | `undo_json` |
 | --- | --- | --- |
-| `insertMany` | nothing | the returned `insertedIds` |
-| `deleteOne`, `replace`, `updateOne` | exactly 1 document | the Pre-image |
+| `insertMany` | ≤1000 docs **and** ≤1 MB | the inserted documents, `_id` included |
+| `deleteOne`, `updateOne` | exactly 1 document | the Pre-image |
 | `deleteMany` | ≤1000 docs **and** ≤1 MB | the Pre-images |
-| `collectionRename` | nothing | `fromName` |
+| `updateMany` | ≤1000 docs **and** ≤1 MB | the Pre-images, paired by index with what each was left as |
+| `collectionRename` | nothing | `fromName` and `toName` |
 | `collectionDrop`, `databaseDrop` | never | none — `reversible = 0` |
 
-Four of the eight capture nothing or exactly one document, so no ceiling applies. `deleteMany` is bounded twice:
+`deleteOne`, `updateOne` and `collectionRename` capture nothing or exactly one document, so no ceiling applies. `import` gets its capture rule with its channel. `insertMany`, `deleteMany` and `updateMany` share the same bound, checked twice:
 
 1. `find(filter).limit(1001)` — 1001 results means the doc ceiling is breached. This never reads 100,000 documents to discover the set is too big.
 2. `ejsonEncodeArrayJson(docs, { maxBytes: 1_048_576 })` — which throws rather than truncating, so a half-captured Pre-image can never be stored.
 
 Either ceiling breached: **the Operation still runs**, the entry records `reversible = 0`, and nothing partial is stored.
 
-`replace` and `updateOne` additionally record what the Operation *left behind*, so §6 can detect a later change. `updateOne` returns only counts, so this is a second read after the write.
+`updateOne` additionally records what the Operation *left behind*, so §6 can detect a later change. Both images are taken atomically with the write, or not at all: the Pre-image is read first, then the write runs as a `findOneAndUpdate` whose filter also requires the document to still equal that Pre-image (`$expr: { $eq: ['$$ROOT', { $literal: preImage }] }`) and which returns the post-image in the same step. A separate read on either side would let another client's write land between the image and the Operation, and Undo would then restore over it. When the pinned write matches nothing — the document changed after the Pre-image was read — the caller's plain `updateOne` runs instead and the entry records `reversible = 0`; a Pre-image too large to put in the filter (over 4 MB) is treated the same way. The capture never blocks or alters the write.
+
+`updateMany` records the same pair per document: it re-reads the matched set by `_id` after the write and pairs each Pre-image with what it was left as. Unlike `updateOne` this read-back is not atomic with the write; a document missing from it (a concurrent delete) drops the whole capture rather than keeping a partial one, the same "nothing partial" rule the ceiling itself follows.
+
+`insertMany` needs no second read: the Node driver assigns `_id` onto each input document *in place* (unless `forceServerObjectId` is set — neither call sets it), so the same array holds exactly what was inserted, `_id` included, the moment the write returns.
 
 ## 6. Undo
 
@@ -164,21 +175,22 @@ Either ceiling breached: **the Operation still runs**, the entry records `revers
 
 Otherwise:
 
-- `insertMany` → `deleteMany({ _id: { $in: insertedIds } })`.
+- `insertMany` → re-reads the inserted `_id`s and deletes only the documents still byte-identical to what was inserted, reporting `{ restored, skipped }` — one already gone, or edited since, is a skip, not a failure. Undo must never discard an edit it didn't know about.
 - `deleteOne` → insert the Pre-image back. A reused `_id` is rejected by Mongo's unique index and surfaces as the existing `ConflictError`; no extra guard is needed.
 - `deleteMany` → `insertMany(preImages, { ordered: false })`, reporting `{ restored, skipped }` honestly — *"restored 47 of 50, 3 already exist"*.
-- `replace`, `updateOne` → replace the Pre-image back, after the `AUDIT_TARGET_CHANGED` check.
+- `updateOne` → replace the Pre-image back, after the `AUDIT_TARGET_CHANGED` check.
+- `updateMany` → the same compare-and-set as `updateOne`, once per paired Pre-/post-image; a document that changed again since is a skip rather than a whole-batch refusal, same honesty as `deleteMany`'s undo.
 - `collectionRename` → rename back; a collection already at the old name fails through the existing error path.
 
 On success the entry's `undone_at` is set. **No new entry is written for the Undo itself** — one column, no undo-of-undo, and the trail reads true.
 
-Because Undo refuses on a changed target, Operations against the same document unwind in reverse order. If the intervening change came from outside MongoLab there is nothing to unwind first, and Undo stays refused; the message must say so rather than implying the user can fix it from here.
+Because Undo refuses on a changed target, Operations against the same document unwind in reverse order. If the intervening change came from outside L'Atelier there is nothing to unwind first, and Undo stays refused; the message must say so rather than implying the user can fix it from here.
 
 ## 7. Retention
 
 Two calls added to `MaintenanceService.vacuum()`, which already runs at most once per 24h:
 
-- Pre-images: null `undo_json` and clear `reversible` past **7 days**, or beyond the most recent **200** revertible entries per Connection — whichever bites first.
+- Pre-images: null `undo_json` past **7 days**, or beyond the most recent **200** revertible entries per Connection — whichever bites first. The `reversible` column is left as recorded: it says a Pre-image was captured, which is what tells `AUDIT_UNDO_EXPIRED` apart from `AUDIT_NOT_REVERSIBLE`. `audit:list` reports an entry as reversible only while its Pre-image is still held and unused.
 - Rows: delete past **90 days**.
 
 The record outlives the Pre-image because they have different value curves. Undo happens within minutes; the record is worth reading months later.
@@ -187,15 +199,17 @@ The record outlives the Pre-image because they have different value curves. Undo
 
 **Undo on the success toast.** The audited write ops return their audit entry id; the success notification carries an **Undo** action that calls `audit:undo` and reports the outcome. This is the case that actually happens — the mistake is noticed seconds after it is made, not next Tuesday. It ships first.
 
-**The audit modal**, opened from the command palette (X07), scoped to the Active Connection. Newest-first list of entries — time, op, target, outcome, and a Revert control where `reversible` is true — filterable by database and collection. `SettingsModal` is the pattern.
+**The audit modal**, opened from the command palette (X07). It opens on the Focused Tab's Connection — or the first Connection when no tab is focused — with a picker to switch. Newest-first list of entries — time, op, target, outcome, and a Revert control where `reversible` is true — filterable by database and collection. `SettingsModal` is the pattern.
 
 Not a workspace tab: `workspace_tabs.kind` is a SQL `CHECK` constraint, so a new tab kind would mean a migration plus tab-state persistence, position, pinning and resize handles, to house a list the user opens, scans and closes.
 
-**Confirm dialogs.** `DeleteConfirm`, `DropCollectionConfirm` and `DropDatabaseConfirm` each gain one line stating whether the action can be undone. `confirmDeleteMany` already counts matches, so the delete dialog can say *"250,000 documents — above the 1,000-document undo limit, this cannot be undone"* with no new query. The drops always say they cannot be undone.
+**Confirm dialogs.** `DeleteConfirm`, `DropCollectionConfirm` and `DropDatabaseConfirm` each gain one line stating whether the action can be undone. `confirmDeleteMany` already counts matches, so the delete dialog can say *"250,000 documents — above the 1,000-document undo limit, this cannot be undone"* with no new query. The drops always say they cannot be undone. This copy states a fact about the specific action; it never changes which dialogs get type-to-confirm versus an undo toast in the first place — that's [ADR 0013](../docs/adr/0013-destructive-friction.md).
+
+`UpdateConfirm` (`updateMany`'s confirm dialog) postdates this list and gets the same line once its own confirmed count is known (after Review). Below the 1,000-document line, the copy states the byte condition rather than promising Undo outright ("…Undo will be offered if they total under 1 MB") — the confirmed count only proves the document-count half of the capture ceiling.
 
 ## 9. Acceptance criteria
 
-- [ ] Each of the eight channels writes exactly one `audit_log` row per invocation; no other channel writes any.
+- [ ] Each audited channel writes exactly one `audit_log` row per invocation; no other channel writes any.
 - [ ] A channel absent from the per-channel table produces no row.
 - [ ] A failed Operation is recorded with `outcome = 'error'` and its `IpcError` code, and is not reversible.
 - [ ] A partial `insertMany` is recorded with `outcome = 'partial'`, its `insertedCount`, and `reversible = 0`.
@@ -230,7 +244,7 @@ Explicitly **not** tested:
 | Recording, capture, ceilings, failures, undo, refusals | IPC handlers | `doc-handlers.spec.ts` |
 | Retention sweep | `MaintenanceService.runIfNeeded` | `maintenance-service.spec.ts` |
 | Cascade on Connection delete | FK, via repo | `cascade.spec.ts` |
-| Migration `010` applies cleanly | migration runner | `migration-007-collection-subtabs.spec.ts` |
+| Migration `012` applies cleanly | migration runner | `migration-007-collection-subtabs.spec.ts` |
 | Channel registration across the 5-file contract | — | `ipc-channel-registration.spec.ts` |
 | Toast Undo, audit modal, confirm-dialog copy | component, `atelierMock` | `tests/component/` |
 | Delete → toast → Undo → documents back | e2e | `tests/e2e/` |
@@ -257,10 +271,10 @@ Explicitly **not** tested:
 18. Deleting a Connection removes its `audit_log` rows and no other Connection's.
 19. The sweep nulls `undo_json` on an 8-day-old entry, leaves a 6-day-old one intact, deletes a 91-day-old row, and keeps an 89-day-old one.
 20. The sweep keeps the newest 200 revertible entries per Connection and nulls the 201st.
-21. Migration `010` applies to a database at `009` and is idempotent under the runner.
+21. Migration `012` applies to a database that predates it and is idempotent under the runner.
 22. Component: the success toast for `docDeleteMany` renders an Undo action; activating it calls `audit:undo` with the entry id and reports the restored count.
 23. Component: the toast surfaces `AUDIT_TARGET_CHANGED` as an explanation the user can act on, not a raw code.
-24. Component: the audit modal lists entries for the Active Connection only, and offers Revert only where `reversible` is true.
+24. Component: the audit modal lists entries for the picked Connection only, defaulting to the Focused Tab's, and offers Revert only where `reversible` is true.
 25. Component: `DeleteConfirm` states the pending delete is within the undo limit at 999 matches and beyond it at 1001; both drop dialogs state the action cannot be undone.
 26. e2e: delete documents from the result view, use Undo on the toast, confirm the rows return to the table.
 
@@ -270,4 +284,4 @@ Three known ceilings, recorded so nobody mistakes them for oversights:
 
 - **Scripts and the shell are invisible.** A `scriptRun` that deletes 400 documents leaves no entry. Instrumenting `dbProxy` is the upgrade path if this ever stings.
 - **Partial `insertMany` can't be undone.** Making it undoable means pre-generating `_id`s before the call — a change to how insert works, and its own ticket.
-- **`updateOne` costs a second read** when audited, to record what it left behind for the `AUDIT_TARGET_CHANGED` check. If that shows up in profiling, the alternative is comparing structurally against the Pre-image plus the update document rather than re-reading.
+- **`updateOne` costs a Pre-image read** when audited, and its write carries the whole Pre-image in its filter so both images stay atomic with it (§5). `$eq` treats numerically equal values of different types (`1` and `1.0`) as equal, so a change between them goes unseen by the compare-and-set.

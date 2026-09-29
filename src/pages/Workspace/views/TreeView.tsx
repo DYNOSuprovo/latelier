@@ -8,6 +8,7 @@ import {
 } from 'react-window';
 import { useRovingFocus } from '../../../hooks/useRovingFocus';
 import { useMenuFocus } from '../../../hooks/useMenuFocus';
+import { anchorFromRect, isEditKey } from '../../../utils/contextMenuKey';
 import { I } from '../../../icons';
 import { isRecord, toDisplayValue, valueToClipboardText } from '../../../utils/displayValue';
 import type { ReferenceRule } from '@shared/types';
@@ -20,6 +21,10 @@ import { insertAt, parseFilter, printFilter } from '../filterTree';
 import { useResultSelection } from '../resultSelection';
 import { DocFieldTree, DOC_FIELD_TREE_GRID_TEMPLATE, type FieldMenuOpenPayload } from './DocFieldTree';
 import { getDocId, getFullDocId } from './docId';
+import { deriveColumns, orderFields } from './tableColumns';
+import { SelectToggle } from './SelectToggle';
+import { DocActionsPopup } from './RowActionsMenu';
+import { useDocMenu } from './useDocMenu';
 
 interface TreeViewProps {
   documents: unknown[];
@@ -27,8 +32,6 @@ interface TreeViewProps {
   expandedRows?: Record<string, boolean>;
   onSelect: (doc: unknown) => void;
   onRowExpand: (docId: string, expanded: boolean) => void;
-  /** Fields shown in the collapsed preview strip; `null`/empty falls back to the first 4 keys. */
-  previewFields?: string[] | null;
   /** Map from dotted source-field path to the matching reference rule. */
   refsByField?: Map<string, ReferenceRule>;
   onRefHover?: (rule: ReferenceRule, value: unknown, rect: DOMRect) => void;
@@ -41,9 +44,10 @@ function getPreviewFields(
   override?: string[] | null,
 ): Array<[string, unknown]> {
   if (!isRecord(doc)) return [];
-  if (override && override.length > 0) {
+  if (override != null) {
     return override
       .filter((k) => k !== '_id' && k in doc)
+      .slice(0, 4)
       .map((k) => [k, doc[k]] as [string, unknown]);
   }
   const allKeys = Object.keys(doc).filter((k) => k !== '_id');
@@ -145,6 +149,14 @@ interface DocRowProps {
   onRowExpand: (docId: string, expanded: boolean) => void;
   onEditDoc: (doc: unknown) => void;
   onDeleteDoc: (doc: unknown) => void;
+  // Opens the shared `RowActionsMenu` (Duplicate — Edit/Delete already have
+  // their own visible buttons on this row) anchored to the "More actions"
+  // button.
+  onOpenRowMenu: (
+    doc: unknown,
+    anchor: { x: number; y: number },
+    focus?: { returnFocusTo?: HTMLElement | null; focusMenuOnOpen?: boolean },
+  ) => void;
   onSelect: (doc: unknown) => void;
   onToggleSelect: (index: number) => void;
   toggleDeepPath: (path: string) => void;
@@ -176,6 +188,7 @@ function DocRowImpl({
   onRowExpand,
   onEditDoc,
   onDeleteDoc,
+  onOpenRowMenu,
   onSelect,
   onToggleSelect,
   toggleDeepPath,
@@ -258,6 +271,14 @@ function DocRowImpl({
           outlineOffset: isActive ? '-2px' : undefined,
         }}
       >
+        <SelectToggle
+          selected={isSelected}
+          docLabel={getDocId(doc)}
+          onToggle={() => {
+            onToggleSelect(index);
+            setActiveIndex(index);
+          }}
+        />
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -340,6 +361,30 @@ function DocRowImpl({
           >
             {I.trash}
           </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const viaKeyboard = e.detail === 0;
+              onOpenRowMenu(doc, anchorFromRect(e.currentTarget.getBoundingClientRect()), {
+                returnFocusTo: viaKeyboard ? e.currentTarget : undefined,
+                focusMenuOnOpen: viaKeyboard,
+              });
+            }}
+            title="More actions"
+            aria-label={`More actions for document ${shortId}`}
+            style={{
+              background: 'none',
+              border: '1px solid var(--atelier-border)',
+              borderRadius: 'var(--atelier-radius-xs)',
+              padding: '4px 7px',
+              cursor: 'pointer',
+              color: 'var(--atelier-text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {I.more}
+          </button>
         </div>
       </div>
 
@@ -393,15 +438,31 @@ export function TreeView({
   expandedRows: expandedRowsProp,
   onSelect,
   onRowExpand,
-  previewFields,
   refsByField,
   onRefHover,
   onRefHoverLeave,
   onRefOpen,
 }: TreeViewProps) {
   const { state, actions, meta } = useCollectionWorkspace();
+  // Collapsed-row preview strip: the Fields control's per-tab columnConfig
+  // (hidden + order), same source TableView/FieldsControl already read —
+  // reordering or hiding a field in Fields changes the Tree preview too.
+  // No config at all (a fresh tab) falls back to `getPreviewFields`'s own
+  // per-doc default (that document's own first 4 keys), which is why this
+  // is `null` rather than `[]` in that case.
+  const columnConfig = state.columnConfig;
+  const hasFieldConfig =
+    (columnConfig?.order?.length ?? 0) > 0 || (columnConfig?.hidden?.length ?? 0) > 0;
+  const previewFields = React.useMemo(() => {
+    if (!hasFieldConfig) return null;
+    const derived = deriveColumns(documents);
+    const ordered = orderFields(derived, columnConfig?.order);
+    const hidden = new Set(columnConfig?.hidden ?? []);
+    return ordered.filter((f) => f !== '_id' && !hidden.has(f));
+  }, [hasFieldConfig, documents, columnConfig?.order, columnConfig?.hidden]);
   const onEditDoc = actions.openEdit;
   const onDeleteDoc = actions.openDelete;
+  const onDuplicateDoc = actions.openDuplicate;
   // Falls back to local state when rendered standalone (no provider mounted).
   const selection = useResultSelection(documents);
   const [deepPaths, setDeepPaths] = React.useState<Set<string>>(new Set());
@@ -453,11 +514,21 @@ export function TreeView({
     });
   }, []);
 
+  // "More actions" per-row menu — Duplicate only, since Edit/Delete already
+  // have their own always-visible buttons on this row. Separate from the
+  // field-level `contextMenu` above: this one is doc-level (opened from the
+  // row strip, not from inside an expanded field). Declared here, ahead of
+  // handleOpenMenu below, so both open handlers can close the other menu.
+  const { docMenu, docMenuRef, openDocMenu, closeDocMenu } = useDocMenu();
+
   const handleOpenMenu = React.useCallback(
     ({ anchor, fieldPath, value, returnFocusTo, focusMenuOnOpen }: FieldMenuOpenPayload) => {
+      // Symmetric with handleOpenRowMenu below: only one of the field-level
+      // and doc-level menus should ever be open at once.
+      closeDocMenu();
       setContextMenu({ ...anchor, fieldPath, value, returnFocusTo, focusMenuOnOpen });
     },
-    [],
+    [closeDocMenu],
   );
 
   // Menu disables up front when the filter bar's text doesn't parse, rather
@@ -501,6 +572,18 @@ export function TreeView({
   const closeContextMenu = React.useCallback(() => setContextMenu(null), []);
   useMenuFocus(fieldMenuRef, contextMenu, closeContextMenu);
 
+  const handleOpenRowMenu = React.useCallback(
+    (...args: Parameters<typeof openDocMenu>) => {
+      // The field-level context menu and this doc-level one both only close
+      // via useMenuFocus's window click listener, but this button already
+      // stops propagation — so opening one while the other is open would
+      // otherwise leave both on screen at once.
+      setContextMenu(null);
+      openDocMenu(...args);
+    },
+    [openDocMenu],
+  );
+
   // Virtualize the outer doc list with react-window v2. Collapsed rows are
   // ~44px; expanded rows grow with field count. useDynamicRowHeight observes
   // each rendered row and caches its measured height — no manual ref wiring,
@@ -527,6 +610,12 @@ export function TreeView({
       // mirrored on DocRow itself; that copy went when the rows stopped
       // being focusable, so this is now the only one.
       if (e.target !== e.currentTarget) return;
+      if (isEditKey(e)) {
+        if (documents.length === 0) return;
+        e.preventDefault();
+        onEditDoc(documents[roving.activeIndex]);
+        return;
+      }
       // ⌘/Ctrl+Enter is Run (PanelBody's handler), never this row's action.
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) return;
       if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -536,7 +625,7 @@ export function TreeView({
       const docId = getFullDocId(doc);
       onRowExpand(docId, !ownGet(expandedRows, docId));
     },
-    [roving, documents, expandedRows, onRowExpand],
+    [roving, documents, expandedRows, onRowExpand, onEditDoc],
   );
 
   // Memoize so react-window receives a stable rowProps reference. A fresh
@@ -555,6 +644,7 @@ export function TreeView({
       onRowExpand,
       onEditDoc,
       onDeleteDoc,
+      onOpenRowMenu: handleOpenRowMenu,
       onSelect,
       onToggleSelect: selection.toggle,
       toggleDeepPath,
@@ -579,6 +669,7 @@ export function TreeView({
       onRowExpand,
       onEditDoc,
       onDeleteDoc,
+      handleOpenRowMenu,
       onSelect,
       toggleDeepPath,
       handleCopy,
@@ -801,6 +892,17 @@ export function TreeView({
             </button>
           )}
         </div>
+      )}
+      {docMenu && (
+        <DocActionsPopup
+          menu={docMenu}
+          menuRef={docMenuRef}
+          onEdit={onEditDoc}
+          onDuplicate={onDuplicateDoc}
+          onDelete={onDeleteDoc}
+          isReadOnly={meta.isReadOnly}
+          onClose={closeDocMenu}
+        />
       )}
     </>
   );

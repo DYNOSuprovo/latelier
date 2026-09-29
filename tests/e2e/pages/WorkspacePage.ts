@@ -48,7 +48,7 @@ export class WorkspacePage {
   get queryBarRunButton() { return this.win.locator('[data-testid="query-run-btn"]'); }
 
   /**
-   * The collapsible advanced row (projection / sort / skip / limit). Only in
+   * The collapsible advanced row (sort / skip / limit). Only in
    * the DOM while expanded, so presence is the open/closed assertion (W14 §8).
    */
   get queryBarAdvanced() { return this.win.locator('#query-bar-advanced'); }
@@ -56,8 +56,11 @@ export class WorkspacePage {
   /** The QUERY label cell doubles as the advanced row's expand/collapse trigger. */
   get queryBarAdvancedToggle() { return this.win.locator('[aria-controls="query-bar-advanced"]'); }
 
-  /** PROJECTION input inside the advanced row. */
-  get queryBarProjection() { return this.win.locator('[data-testid="query-bar-projection"]'); }
+  /** The result bar's Fields control trigger; its name gains a badge's text when one shows. */
+  get fieldsButton() { return this.win.getByRole('button', { name: /^Fields/ }); }
+
+  /** Projection input in the Fields control's "fetch" section — only while the control is open. */
+  get fieldsProjection() { return this.win.locator('[data-testid="fields-projection"]'); }
 
   /** SORT input inside the advanced row. */
   get queryBarSort() { return this.win.locator('[data-testid="query-bar-sort"]'); }
@@ -82,12 +85,17 @@ export class WorkspacePage {
   /** The QueryBar "Run options" chevron — opens the Run/Explain menu. */
   get queryBarRunOptionsButton() { return this.win.locator('[data-testid="query-run-options-btn"]'); }
 
-  /** ResultBar overflow (kebab) menu trigger — hosts bulk/destructive actions. */
-  get resultOverflowMenuButton() { return this.win.getByLabel('More result actions'); }
+  /** ResultBar "Documents" menu trigger — hosts bulk/destructive document actions. */
+  get resultOverflowMenuButton() { return this.win.getByRole('button', { name: 'Documents' }); }
 
-  /** "Delete all matching…" item inside the ResultBar overflow menu. */
+  /** "Delete all matching…" item inside the ResultBar "Documents" menu. */
   get deleteAllMatchingMenuItem() {
     return this.win.getByRole('menuitem', { name: /Delete all matching/ });
+  }
+
+  /** "Update all matching…" item inside the ResultBar "Documents" menu. */
+  get updateAllMatchingMenuItem() {
+    return this.win.getByRole('menuitem', { name: /Update all matching/ });
   }
 
   // T0.4 — contextual bulk-action bar, visible once ≥1 result row is selected.
@@ -149,7 +157,12 @@ export class WorkspacePage {
     await this.dbRow(dbName).click();
     await expect(this.collectionRow(dbName, collection)).toBeVisible({ timeout: 5000 });
     await this.collectionRow(dbName, collection).click();
-    await expect(this.tabByName(collection)).toHaveAttribute('aria-selected', 'true', {
+    // The navigator row's own selection follows the focused tab's database
+    // and collection. A tab-name check can't tell same-named collections in
+    // two databases apart: with one already open it either matches both
+    // tabs, or passes against the old one before the new tab (created after
+    // an async IPC round-trip) exists.
+    await expect(this.collectionRow(dbName, collection)).toHaveAttribute('aria-selected', 'true', {
       timeout: 5000,
     });
   }

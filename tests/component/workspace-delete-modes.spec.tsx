@@ -108,7 +108,7 @@ describe('workspace delete modes (T1)', () => {
     mountWorkspace();
 
     await screen.findByText(/widget/);
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
 
     await waitFor(() =>
@@ -136,7 +136,7 @@ describe('workspace delete modes (T1)', () => {
     mountWorkspace();
 
     await screen.findByText(/widget/);
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
 
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -153,7 +153,7 @@ describe('workspace delete modes (T1)', () => {
     mountWorkspace();
 
     await screen.findByText(/widget/);
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
 
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -176,7 +176,7 @@ describe('workspace delete modes (T1)', () => {
     mountWorkspace();
 
     await screen.findByText(/widget/);
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
     await screen.findByRole('dialog');
 
@@ -206,7 +206,7 @@ describe('workspace delete modes (T1)', () => {
     fireEvent.click(within(rowDialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
 
     const dialog = await screen.findByRole('dialog');
@@ -229,7 +229,7 @@ describe('workspace delete modes (T1)', () => {
     mountWorkspace();
 
     await screen.findByText(/widget/);
-    fireEvent.click(screen.getByLabelText('More result actions'));
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
     fireEvent.click(screen.getByText('Delete all matching…'));
     const allDialog = await screen.findByRole('dialog');
     expect(within(allDialog).getByPlaceholderText('orders')).toBeTruthy();

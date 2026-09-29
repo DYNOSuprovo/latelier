@@ -140,7 +140,7 @@ describe(' a blank or invalid filter text has no runnable filter', () => {
     // can't silently defang the guard.
     const { confirmDeleteManySpy } = mountWith(makeState({ queryRaw: '   ' }));
 
-    const overflow = await screen.findByLabelText('More result actions');
+    const overflow = await screen.findByRole('button', { name: 'Documents' });
     fireEvent.click(overflow);
     const deleteAllItem = await screen.findByRole('menuitem', { name: /Delete all matching/ });
     fireEvent.click(deleteAllItem);
@@ -206,21 +206,28 @@ describe(' one SaveModal, owned above the builder pane', () => {
   // counts mounted modals wherever they render.
   const mountedSaveModals = () => screen.queryAllByLabelText(/Name/).length;
 
-  it('the drawer footer Save opens exactly one modal', async () => {
+  it('exactly one Save button renders in the Documents view, and it carries the save hint anchor', async () => {
     mountWith(makeState());
 
-    const drawerSave = await screen.findByRole('button', { name: 'Save query' });
-    expect(mountedSaveModals()).toBe(0);
-    fireEvent.click(drawerSave);
+    // The toolbar's Save exists…
+    await screen.findByRole('button', { name: /^Save$/ });
+    // …and the drawer footer's copy is gone rather than just hidden —
+    // `queryAllByRole` over the whole rendered tree, not a scoped query, so a
+    // stray second Save anywhere in the Documents view would fail this.
+    expect(screen.queryAllByRole('button', { name: /^Save$/ })).toHaveLength(1);
 
-    await waitFor(() => expect(mountedSaveModals()).toBe(1));
+    // The `saved.create` feature hint moved with the toolbar Save.
+    expect(document.querySelectorAll('[data-hint-anchor="saved.create"]')).toHaveLength(1);
   });
 
-  it('the toolbar Save opens the same single modal', async () => {
+  it('the toolbar Save opens exactly one modal', async () => {
     mountWith(makeState());
 
-    // The toolbar button is labelled by its visible text, not an aria-label.
+    // The toolbar button is labelled by its visible text, not an aria-label —
+    // it is the only Save button left; the builder-drawer footer's copy is
+    // gone.
     const toolbarSave = await screen.findByRole('button', { name: /^Save$/ });
+    expect(mountedSaveModals()).toBe(0);
     fireEvent.click(toolbarSave);
 
     await waitFor(() => expect(mountedSaveModals()).toBe(1));
@@ -230,13 +237,11 @@ describe(' one SaveModal, owned above the builder pane', () => {
     // The behavioural half of the fix: `query.save` used to be registered
     // inside BuilderPane, which is unmounted while collapsed — so the palette
     // command silently vanished exactly when the drawer's own Save button was
-    // also unreachable.
+    // also unreachable. The toolbar Save lives in QueryBar, outside
+    // BuilderPane, so it — and the command — survive the collapse.
     mountWith(makeState(), { 'ui.workspace.builderCollapsed': true });
 
-    await screen.findByTestId('query-run-btn');
-    await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Save query' })).toBeNull();
-    });
+    await screen.findByRole('button', { name: /^Save$/ });
 
     const ctx = { pathname: '/workspace', connectionId: 'c1' };
     const saveCmd = commandRegistry.list().find((c) => c.id === 'query.save');
@@ -400,12 +405,12 @@ describe('W13 §7 — ⌘↵ runs from anywhere in the Documents view', () => {
     expect(findSpy.mock.calls[0][0].sort).toBe('{"sku": 1}');
   });
 
+  // The projection's input sits in the Fields control's dropdown, a dialog
+  // the panel-level ⌘↵ skips — so the control runs this one itself.
   it('commits a projection draft that was never blurred, and runs it', async () => {
-    // A limit is set only so the advanced row (projection, sort) opens.
-    const { findSpy } = mountWith(
-      makeState({ builder: { projection: [], sort: '', limit: '5' } }),
-    );
-    const projection = await screen.findByTestId('query-bar-projection');
+    const { findSpy } = mountWith(makeState());
+    fireEvent.click(await screen.findByRole('button', { name: /^fields/i }));
+    const projection = await screen.findByTestId('fields-projection');
 
     fireEvent.change(projection, { target: { value: '{sku: 1}' } });
     fireEvent.keyDown(projection, cmdEnter);
@@ -512,7 +517,7 @@ describe('X15 T5 — ⌘B does not reach the builder from inside a dialog', () =
   it('⌘B from inside the portaled SaveModal leaves the builder alone', async () => {
     mountWith(makeState());
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Save query' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Save$/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Save query' });
 
     fireEvent.keyDown(within(dialog).getByLabelText(/Name/), { key: 'b', metaKey: true });

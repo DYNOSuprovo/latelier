@@ -247,7 +247,7 @@ describe('QueryBar — Shell Syntax input (X14 T2)', () => {
     await typeAndBlur('{age: {$gt: 60}}');
     fireEvent.click(await screen.findByTestId('query-run-btn'));
 
-    fireEvent.click(await screen.findByLabelText('More result actions'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Documents' }));
     fireEvent.click(await screen.findByText(/Delete all matching/));
 
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
@@ -328,9 +328,10 @@ describe('QueryBar sort / projection — Shell Syntax input (X14 T3)', () => {
   it('repairs {_id: 0} in the raw projection on blur, and runs it', async () => {
     const findSpy = findMock();
     setup('{}', { query: { find: findSpy, count: async () => ({ count: 0 }) } });
-    await openAdvanced();
+    // The projection lives in the Fields control (W14 §4).
+    fireEvent.click(await screen.findByRole('button', { name: /^fields/i }));
 
-    const proj = await fieldAndBlur('query-bar-projection', '{_id: 0}');
+    const proj = await fieldAndBlur('fields-projection', '{_id: 0}');
 
     await waitFor(() => expect(proj.value).toBe('{"_id": 0}'));
     const run = await screen.findByTestId('query-run-btn');

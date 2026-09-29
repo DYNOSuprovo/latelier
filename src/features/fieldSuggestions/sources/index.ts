@@ -1,13 +1,26 @@
 import type { FieldSource, ValueSource } from '../types';
 import { lastRunSource } from './lastRunSource';
-import { operatorSource } from './operatorSource';
+import { lastRunValuesSource } from './lastRunValuesSource';
+import { fieldOperatorSource, operatorSource } from './operatorSource';
+import { recentValuesSource } from './recentValuesSource';
 import { sampleSchemaSource } from './sampleSchemaSource';
 
-export { lastRunSource, operatorSource, sampleSchemaSource };
+export {
+  fieldOperatorSource,
+  lastRunSource,
+  lastRunValuesSource,
+  operatorSource,
+  recentValuesSource,
+  sampleSchemaSource,
+};
 export {
   invalidateSampleSchemaCache,
   setSampleSchemaCacheTtl,
 } from './sampleSchemaSource';
+export {
+  invalidateRecentValuesCache,
+  setRecentValuesCacheTtl,
+} from './recentValuesSource';
 
 /**
  * Default field-name composition. Used by the `useSuggestions` hook when a
@@ -22,5 +35,11 @@ export const DEFAULT_FIELD_SOURCES: readonly FieldSource[] = [
   sampleSchemaSource,
 ];
 
-/** Reserved for value sources; empty until the first consumer lands. */
-export const DEFAULT_VALUE_SOURCES: readonly ValueSource[] = [];
+/**
+ * Default value-position composition: the current results first (sync,
+ * instant), then values persisted from earlier runs (async, per-field).
+ */
+export const DEFAULT_VALUE_SOURCES: readonly ValueSource[] = [
+  lastRunValuesSource,
+  recentValuesSource,
+];

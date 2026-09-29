@@ -3,9 +3,15 @@ import {
   getDocId,
   getFullDocId,
   buildIdFilter,
-  isInlineEditable,
+  isInlineEditableKind,
+  reviveTableValue,
   stripIdForDuplicate,
 } from '../../src/pages/Workspace/views/docId';
+import { kindOf } from '../../src/pages/Workspace/documentFieldTypes';
+
+// The same pipeline `TableCell` runs on a raw wire value.
+const isInlineEditable = (value: unknown, fieldPath: string) =>
+  isInlineEditableKind(kindOf(reviveTableValue(value)), fieldPath);
 
 describe('getDocId', () => {
   it('takes the last 8 chars of an $oid', () => {
@@ -33,7 +39,17 @@ describe('getDocId', () => {
   });
 
   it('falls back to a truncated JSON form for non-record input', () => {
-    expect(getDocId('not a doc')).toBe(JSON.stringify('not a doc').slice(0, 12));
+    // Long enough that `.slice(0, 12)` actually cuts something off — a
+    // shorter fixture can't tell a truncating slice from a dropped one.
+    const input = 'this string is much longer than twelve characters';
+    expect(getDocId(input)).toBe(JSON.stringify(input).slice(0, 12));
+    expect(getDocId(input).length).toBe(12);
+  });
+
+  it('truncates a long primitive _id to 12 chars', () => {
+    const id = 'a-primitive-id-well-past-twelve-characters-long';
+    expect(getDocId({ _id: id })).toBe(String(id).slice(0, 12));
+    expect(getDocId({ _id: id }).length).toBe(12);
   });
 });
 
@@ -43,14 +59,35 @@ describe('getFullDocId', () => {
     expect(getFullDocId(doc)).toBe('507f1f77bcf86cd799439011');
   });
 
-  it('JSON-stringifies a custom-object _id', () => {
-    const doc = { _id: { a: 1, b: 2 } };
-    expect(getFullDocId(doc)).toBe(JSON.stringify({ a: 1, b: 2 }).slice(0, 24));
+  it('JSON-stringifies a custom-object _id, truncated to 24 chars', () => {
+    const doc = { _id: { a: 'a value long enough to push the JSON past 24 characters' } };
+    const expected = JSON.stringify(doc._id).slice(0, 24);
+    expect(getFullDocId(doc)).toBe(expected);
+    expect(getFullDocId(doc).length).toBe(24);
+  });
+
+  it('falls back to a truncated JSON form for non-record input', () => {
+    const input = 'this string is much longer than twenty-four characters';
+    expect(getFullDocId(input)).toBe(JSON.stringify(input).slice(0, 24));
+    expect(getFullDocId(input).length).toBe(24);
+  });
+
+  it('returns "(no _id)" when _id is missing or null', () => {
+    expect(getFullDocId({})).toBe('(no _id)');
+    expect(getFullDocId({ _id: null })).toBe('(no _id)');
   });
 });
 
-// T2.6 — shared `{_id}` filter for inline edit + EditDrawer (no drift between
-// the two write surfaces).
+describe('reviveTableValue', () => {
+  it('falls back to the raw value when it cannot be JSON-stringified', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(reviveTableValue(circular)).toBe(circular);
+  });
+});
+
+// T2.6 — shared `{_id}` filter for inline edit and delete (no drift between
+// the write surfaces).
 describe('buildIdFilter', () => {
   it('builds a JSON.stringify (not ejsonStringify) filter for an ObjectId sentinel _id', () => {
     const doc = { _id: { $oid: '507f1f77bcf86cd799439011' } };
@@ -77,7 +114,7 @@ describe('buildIdFilter', () => {
   });
 });
 
-describe('isInlineEditable', () => {
+describe('isInlineEditableKind', () => {
   it('allows a plain string value on a non-_id field', () => {
     expect(isInlineEditable('pending', 'status')).toBe(true);
   });
@@ -86,18 +123,29 @@ describe('isInlineEditable', () => {
     expect(isInlineEditable('abc123', '_id')).toBe(false);
   });
 
-  it('rejects EJSON sentinel objects (number/date/long/decimal/objectid/binary) to avoid silent BSON-type corruption', () => {
-    expect(isInlineEditable({ $numberInt: '5' }, 'qty')).toBe(false);
-    expect(isInlineEditable({ $numberDouble: '5.5' }, 'qty')).toBe(false);
-    expect(isInlineEditable({ $numberLong: '5' }, 'qty')).toBe(false);
-    expect(isInlineEditable({ $numberDecimal: '5.5' }, 'qty')).toBe(false);
+  // W18 §8 — widened from v1: the BSON numeric sentinels keep their loaded
+  // type through the guarded save path (`documentDiff.ts`), so they're no
+  // longer routed away from the cell.
+  it('allows the BSON numeric sentinels (Int32/Int64/Double/Decimal128)', () => {
+    expect(isInlineEditable({ $numberInt: '5' }, 'qty')).toBe(true);
+    expect(isInlineEditable({ $numberDouble: '5.5' }, 'qty')).toBe(true);
+    expect(isInlineEditable({ $numberLong: '5' }, 'qty')).toBe(true);
+    expect(isInlineEditable({ $numberDecimal: '5.5' }, 'qty')).toBe(true);
+  });
+
+  // W18 §8 — booleans are the other type this widens to allow.
+  it('allows booleans', () => {
+    expect(isInlineEditable(true, 'active')).toBe(true);
+    expect(isInlineEditable(false, 'active')).toBe(true);
+  });
+
+  it('rejects sentinel types the inline editor still doesn\'t handle (Date, ObjectId, Binary) — those open the Document Editor on the field instead', () => {
     expect(isInlineEditable({ $date: '2026-01-01T00:00:00Z' }, 'createdAt')).toBe(false);
     expect(isInlineEditable({ $oid: '507f1f77bcf86cd799439011' }, 'userId')).toBe(false);
     expect(isInlineEditable({ $binary: { base64: 'AA==', subType: '00' } }, 'blob')).toBe(false);
   });
 
-  it('rejects boolean, null, array, and plain-object values in v1', () => {
-    expect(isInlineEditable(true, 'active')).toBe(false);
+  it('rejects null, array, and plain-object values', () => {
     expect(isInlineEditable(null, 'note')).toBe(false);
     expect(isInlineEditable([1, 2], 'tags')).toBe(false);
     expect(isInlineEditable({ city: 'Springfield' }, 'address')).toBe(false);
@@ -131,5 +179,20 @@ describe('stripIdForDuplicate', () => {
     expect(stripIdForDuplicate('not a doc')).toBe('{}');
     expect(stripIdForDuplicate(null)).toBe('{}');
     expect(stripIdForDuplicate(42)).toBe('{}');
+  });
+
+  it('falls back to "{}" when the round-tripped document is not a record', () => {
+    // A document whose only key is itself a BSON sentinel round-trips
+    // through `ejsonStringify`/`ejsonParse` to that sentinel's *revived
+    // value*, not a record — `{ $undefined: true }` revives to `null`.
+    expect(stripIdForDuplicate({ $undefined: true })).toBe('{}');
+  });
+
+  it('falls back to "{}" when the document fails to encode as EJSON', () => {
+    // An invalid $oid hex string encodes fine (it's just a string at that
+    // point) but throws on the way back in — proves the catch is reached,
+    // not just theoretical.
+    const doc = { _id: { $oid: 'not-a-valid-hex-string' }, name: 'x' };
+    expect(stripIdForDuplicate(doc)).toBe('{}');
   });
 });

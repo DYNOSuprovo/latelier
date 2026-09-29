@@ -29,7 +29,8 @@ import {
   isUserChosenBuilderSplit,
 } from './panelSizes';
 import { AggregationTab } from './Aggregation/AggregationTab';
-import { SchemaView } from './SchemaView';
+import { StructureView } from './StructureView';
+import type { IndexCreateRequest } from '../IndexesTab';
 import { QueryBar } from './QueryBar';
 import { ResultViewer } from './ResultViewer';
 import { BuilderPane } from './BuilderPane';
@@ -55,7 +56,7 @@ const SUB_TABS: ReadonlyArray<{
 }> = [
   { key: 'documents', label: 'Documents', icon: '⚡' },
   { key: 'aggregation', label: 'Aggregation', icon: 'Σ' },
-  { key: 'schema', label: 'Schema', icon: '⚙' },
+  { key: 'structure', label: 'Structure', icon: '⚙' },
 ];
 
 function SubTabStrip({
@@ -143,9 +144,6 @@ export interface PanelBodyCollectionProps {
   view: CollectionView;
   aggregationState: AggregationTabState;
   schemaState: SchemaTabState;
-  previewKnownFields: string[];
-  activePreviewFields: string[] | null;
-  setActivePreviewFields: (fields: string[]) => void;
   suggestionContext: SuggestionContext | null;
   savedRefreshKey: number;
 }
@@ -172,6 +170,9 @@ export interface PanelBodyProps {
   builderPanelRef: React.RefObject<PanelImperativeHandle | null>;
   toggleBuilder: () => void;
   notchRef: React.RefObject<HTMLButtonElement | null>;
+  /** See `IndexCreateRequest` — scoped to `collection`'s own tab by the caller (`Workspace.tsx`) before it reaches here. */
+  structureInitialCreate?: IndexCreateRequest | null;
+  onStructureInitialCreateConsumed?: () => void;
 }
 
 export function PanelBody({
@@ -196,6 +197,8 @@ export function PanelBody({
   builderPanelRef,
   toggleBuilder,
   notchRef,
+  structureInitialCreate,
+  onStructureInitialCreateConsumed,
 }: PanelBodyProps) {
   const T = themeVars;
   const {
@@ -215,11 +218,10 @@ export function PanelBody({
     patchAggregation,
     patchSchema,
   } = collectionTabActions;
-  const { openInsertModal, setDeleteSelected } = documentDialogs;
+  const { setDeleteSelected } = documentDialogs;
   const {
     refStack, setRefStack,
     refDrawerPinned, setRefDrawerPinned,
-    setRefEditorOpen,
     handleRefHover, handleRefHoverLeave, handleRefOpen,
   } = refDrawer;
 
@@ -314,7 +316,7 @@ export function PanelBody({
             onPatch={patchActiveScript}
           />
         ) : collection ? (
-            // Builder pane always renders; agg/schema views just dim it via overlay rather than unmounting.
+            // Builder pane always renders; agg/structure views just dim it via overlay rather than unmounting.
             <CollectionWorkspaceProvider
               state={collection.tab.state}
               actions={collection.actions}
@@ -348,12 +350,7 @@ export function PanelBody({
                         connectionId={collection.tab.connectionId}
                         dbName={collection.tab.dbName}
                         collection={collection.tab.collection}
-                        onInsert={openInsertModal}
-                        onOpenReferences={() => setRefEditorOpen(true)}
-                        referenceRuleCount={referenceRules.rules.length}
-                        previewKnownFields={collection.previewKnownFields}
-                        previewFields={collection.activePreviewFields}
-                        onPreviewFieldsChange={collection.setActivePreviewFields}
+                        refreshSignal={documentDialogs.writeVersion}
                       />
                       <QueryBar
                         suggestionContext={collection.suggestionContext}
@@ -368,7 +365,6 @@ export function PanelBody({
                             onColumnResize={handleColumnResize}
                             onRowExpand={handleRowExpand}
                             onSortField={handleSortField}
-                            previewFields={collection.activePreviewFields}
                             refsByField={referenceRules.byField}
                             onRefHover={handleRefHover}
                             onRefHoverLeave={handleRefHoverLeave}
@@ -414,13 +410,15 @@ export function PanelBody({
                       onPatch={patchAggregation}
                     />
                   )}
-                  {collection.view === 'schema' && (
-                    <SchemaView
+                  {collection.view === 'structure' && (
+                    <StructureView
                       connectionId={collection.tab.connectionId}
                       dbName={collection.tab.dbName}
                       collection={collection.tab.collection}
                       state={collection.schemaState}
                       onPatch={patchSchema}
+                      initialCreate={structureInitialCreate}
+                      onInitialCreateConsumed={onStructureInitialCreateConsumed}
                     />
                   )}
                 </Panel>
@@ -432,7 +430,7 @@ export function PanelBody({
                     position: 'relative',
                     zIndex: 2,
                   }}
-                  aria-label="Resize builder pane"
+                  aria-label="Resize Query Builder"
                 />
                 <Panel
                   id="h-builder"
@@ -456,7 +454,7 @@ export function PanelBody({
                         side="left"
                         collapsed
                         onClick={toggleBuilder}
-                        ariaLabel="Open builder pane"
+                        ariaLabel="Open Query Builder"
                         buttonRef={notchRef}
                       />
                     </div>
@@ -492,7 +490,7 @@ export function PanelBody({
                         side="left"
                         collapsed={false}
                         onClick={toggleBuilder}
-                        ariaLabel="Collapse builder pane"
+                        ariaLabel="Collapse Query Builder"
                         buttonRef={notchRef}
                       />
                       {collection.view !== 'documents' && (
@@ -513,7 +511,7 @@ export function PanelBody({
                             style={{ maxWidth: 280, pointerEvents: 'auto' }}
                             styles={{ message: { fontSize: 12, lineHeight: 1.5 } }}
                           >
-                            The query builder only applies to the Documents
+                            The Query Builder only applies to the Documents
                             view.{' '}
                             <Button
                               variant="subtle"

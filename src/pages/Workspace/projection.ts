@@ -1,8 +1,10 @@
-// Formatting / parsing for the QueryBar's PROJECTION cell. Lives outside
-// QueryBar.tsx so the helpers can be unit-tested without bundling React,
-// and so the QueryBar module stays single-export-component for fast-refresh.
+// Formatting / parsing for the Fields control's projection input. Lives
+// outside FieldsControl.tsx so the helpers can be unit-tested without
+// bundling React, and so that module stays single-export-component for
+// fast-refresh.
 
-import { isEjsonDocument } from '../../utils/ejson';
+import { ejsonParse, isEjsonDocument } from '../../utils/ejson';
+import type { BuilderState } from '@shared/types';
 
 export function formatProjection(projection: string[]): string {
   if (projection.length === 0) return '';
@@ -10,7 +12,7 @@ export function formatProjection(projection: string[]): string {
 }
 
 // Why a projection was refused. The two causes call for different user
-// actions, so the QueryBar can say which one happened (W14 §3):
+// actions, so the Fields control can say which one happened (W14 §3):
 //   - 'malformed'   — the text isn't a projection at all; fix the text.
 //   - 'unmodelable' — a real projection BuilderState can't express (an
 //                     exclusion, `$slice`). That is no longer a
@@ -28,8 +30,9 @@ export type ProjectionParse =
 // `$slice`), so the caller keeps the user's draft text instead of silently
 // dropping fields. BuilderState.projection only models inclusions.
 export function parseProjection(text: string): ProjectionParse {
+  // Blank needs no early return: `JSON.parse('')` throws, and the lenient
+  // path below strips it to nothing and answers "no projection".
   const t = text.trim();
-  if (!t) return { ok: true, fields: [] };
   try {
     const obj = JSON.parse(t) as unknown;
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
@@ -45,6 +48,7 @@ export function parseProjection(text: string): ProjectionParse {
   } catch {
     // Fall through to lenient parsing.
   }
+  // Stryker disable next-line MethodExpression: dropping this .trim() is unobservable — `t` is already outer-trimmed, so the only string shaped "{" + whitespace + "}" is valid empty-object JSON handled above, and every per-field token gets its own .trim() in the split loop below (fuzzed 200k random {}/whitespace/field strings against both versions with zero diffs)
   const stripped = t.replace(/^\{|\}$/g, '').trim();
   if (!stripped) return { ok: true, fields: [] };
   const fields: string[] = [];
@@ -80,4 +84,56 @@ export function parseProjection(text: string): ProjectionParse {
  */
 export function isRawProjection(text: string): boolean {
   return isEjsonDocument(text);
+}
+
+// `0`, `false`, or a boxed numeric zero (`{"$numberInt": "0"}` revives to an
+// Int32) — the values that drop a field. A plain object's `valueOf` is itself,
+// and a null-prototype one is not an `Object` instance, so neither matches.
+function isExclusion(v: unknown): boolean {
+  return v === false || ((typeof v === 'number' || v instanceof Object) && v.valueOf() === 0);
+}
+
+// `{a: {$slice: n}}` trims an array but decides nothing about which fields
+// come back, so it counts toward neither mode.
+function isSliceOnly(v: unknown): boolean {
+  // A primitive has no own keys, so only `null` needs keeping away from
+  // `Object.keys`, which throws on it.
+  // Stryker disable next-line ArrayDeclaration: the null branch's array content only matters through `keys[0] === '$slice'` below, and no mutant literal is ever the string '$slice'
+  const keys = v === null ? [] : Object.keys(v as object);
+  return keys.length === 1 && keys[0] === '$slice';
+}
+
+/**
+ * Which top-level fields the committed projection keeps the server from
+ * returning, so the Fields control can name them "not fetched" instead of
+ * letting them vanish from the list.
+ *
+ * `known` is every top-level name the caller can vouch for without asking
+ * the server. An inclusion projection names what comes back, so its
+ * complement is only as complete as `known`; an exclusion names what does
+ * not, so its own top-level keys are reported whether or not `known` has
+ * them. A dotted exclusion (`"a.b": 0`) trims inside `a` and never drops
+ * `a` itself. A raw projection the app cannot read reports nothing —
+ * `projectionProblem` is what speaks for that one.
+ */
+export function notFetchedFields(builder: BuilderState, known: readonly string[]): string[] {
+  const raw = builder.projectionRaw?.trim();
+  if (raw && !isRawProjection(raw)) return [];
+  // No projection at all is an empty modelled list, which falls through to
+  // the exclusion branch with nothing excluded. The modelled path's `_id: 1`
+  // (`compileFindOptions` sends it) needs no entry: the inclusion branch
+  // keeps `_id` unless it is excluded.
+  const entries: [string, unknown][] = raw
+    ? Object.entries(ejsonParse<Record<string, unknown>>(raw))
+    : builder.projection.map((f): [string, unknown] => [f, 1]);
+  const excluded = entries.filter(([, v]) => isExclusion(v)).map(([k]) => k);
+  const included = entries.filter(([, v]) => !isExclusion(v) && !isSliceOnly(v)).map(([k]) => k);
+  const inclusion = included.some((k) => k !== '_id') || (included.length > 0 && excluded.length === 0);
+  if (inclusion) {
+    const fetched = new Set(entries.filter(([, v]) => !isExclusion(v)).map(([k]) => k.split('.')[0]));
+    if (!excluded.includes('_id')) fetched.add('_id');
+    return known.filter((f) => !fetched.has(f));
+  }
+  const dropped = excluded.filter((k) => !k.includes('.'));
+  return [...known.filter((f) => dropped.includes(f)), ...dropped.filter((k) => !known.includes(k))];
 }

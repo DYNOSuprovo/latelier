@@ -1,17 +1,21 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTheme } from '../ThemeContext';
 import { useSettings } from '../pages/SettingsContext';
+import { AuditLogModal } from '../pages/AuditLogModal';
 import { useRegisterCommands } from './useRegisterCommands';
 
 /**
  * Registers commands available from every route: theme toggle, settings,
- * navigation jumps, and `New connection`. Mount once near the App root,
- * inside the router and theme provider.
+ * the audit log, navigation jumps, and `New connection`. Mount once near the
+ * App root, inside the router and theme provider. Renders the audit log modal
+ * itself, since nothing but this command opens it.
  */
 export function GlobalCommands() {
   const navigate = useNavigate();
   const [, toggleTheme] = useTheme();
   const settings = useSettings();
+  const [audit, setAudit] = useState<{ connectionId: string | null } | null>(null);
 
   useRegisterCommands(
     [
@@ -28,6 +32,13 @@ export function GlobalCommands() {
         group: 'general',
         keywords: ['preferences', 'config'],
         perform: () => settings.open(),
+      },
+      {
+        id: 'audit.open',
+        title: 'Open audit log',
+        group: 'general',
+        keywords: ['history', 'operations', 'changes'],
+        perform: (ctx) => setAudit({ connectionId: ctx.connectionId }),
       },
       {
         id: 'nav.workspace',
@@ -70,5 +81,7 @@ export function GlobalCommands() {
     [navigate, toggleTheme, settings],
   );
 
-  return null;
+  return audit ? (
+    <AuditLogModal initialConnectionId={audit.connectionId} onClose={() => setAudit(null)} />
+  ) : null;
 }

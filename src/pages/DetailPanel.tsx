@@ -11,14 +11,13 @@ import type {
   ServerInfo,
 } from '@shared/ipc';
 import type { ConnectionRuntime, ConnectionSummary } from '@shared/types';
-import { IndexesTab } from './IndexesTab';
 import { UsersTab } from './UsersTab';
 import { CreateCollectionDrawer } from './Workspace/CreateCollectionDrawer';
 import { useTroubleshooting } from '../troubleshooting/TroubleshootingContext';
 import { relativeTime } from '../utils/relativeTime';
 import { ownGet } from '../utils/ownProperty';
 
-const TABS = ['Overview', 'Collections', 'Indexes', 'Users'] as const;
+const TABS = ['Overview', 'Collections', 'Users'] as const;
 type Tab = typeof TABS[number];
 
 function humanBytes(n: number): string {
@@ -707,7 +706,6 @@ export function DetailPanel({ selected, loading, onDelete, onDisconnect }: {
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         {activeTab === 'Overview' && <OverviewTab conn={selected} runtime={effective} />}
         {activeTab === 'Collections' && <CollectionsTab conn={selected} runtime={effective} />}
-        {activeTab === 'Indexes' && <IndexesTab conn={selected} runtime={effective} />}
         {activeTab === 'Users' && <UsersTab conn={selected} runtime={effective} />}
       </div>
     </div>

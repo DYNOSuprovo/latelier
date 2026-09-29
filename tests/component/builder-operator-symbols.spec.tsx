@@ -4,7 +4,7 @@
 // What only a rendered row can show is *when* it fires: on blur, never per
 // keystroke, and not at all when the popover already chose the operator.
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '../helpers/render';
+import { render, screen, fireEvent, waitFor } from '../helpers/render';
 import { MemoryRouter } from 'react-router-dom';
 import Workspace from '../../src/pages/Workspace';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
@@ -240,5 +240,104 @@ describe('Query Builder — symbolic operators', () => {
     fireEvent.change(opInput, { target: { value: '$in' } });
 
     expect(await screen.findByText('is one of')).toBeTruthy();
+  });
+});
+
+describe('Query Builder — op box suggests only field operators', () => {
+  it('lists $eq, $exists, $elemMatch for "$e" — not $expr, $exp or $expMovingAvg', async () => {
+    const opInput = await openConditionRow();
+    fireEvent.focus(opInput);
+    fireEvent.change(opInput, { target: { value: '$e' } });
+
+    const rows = await screen.findAllByRole('option');
+    const names = rows.map((r) => r.querySelector('span')?.textContent).sort();
+    expect(names).toEqual(['$elemMatch', '$eq', '$exists']);
+  });
+
+  it('never surfaces an expression, accumulator, window, stage or update operator', async () => {
+    const opInput = await openConditionRow();
+    fireEvent.focus(opInput);
+    // Bare "$" ranks the whole catalog; assert none of the excluded classes leak in.
+    fireEvent.change(opInput, { target: { value: '$' } });
+
+    const rows = await screen.findAllByRole('option');
+    const names = new Set(rows.map((r) => r.querySelector('span')?.textContent));
+    for (const excluded of ['$exp', '$expMovingAvg', '$expr', '$sum', '$group', '$set', '$setWindowFields']) {
+      expect(names.has(excluded)).toBe(false);
+    }
+  });
+});
+
+/**
+ * Mounts a row seeded from an existing filter (non-blank field, so §5's
+ * pending rule doesn't swallow the op problem the way a fresh "+ Condition"
+ * row would) and returns its op box plus the `query.find` spy.
+ */
+async function openExistingRow(queryRaw: string) {
+  const state = makeState();
+  state.queryRaw = queryRaw;
+  const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
+    documents: [],
+    durationMs: 1,
+    hasMore: false,
+  }));
+  installAtelierMock({
+    tabs: {
+      list: async () => [makeTab(state)],
+      setActive: async (id) => ({ id }),
+      update: (vi.fn(async () => makeTab(state)) as unknown) as IpcApi['tabs']['update'],
+    },
+    conn: { list: async () => [CONNECTION] },
+    query: { find: findSpy, count: async () => ({ count: 0 }) },
+  });
+  render(
+    <MemoryRouter initialEntries={['/workspace']}>
+      <Workspace />
+    </MemoryRouter>,
+  );
+  const opInput = (await screen.findByPlaceholderText('$op')) as HTMLInputElement;
+  findSpy.mockClear();
+  return { opInput, findSpy };
+}
+
+// The op box is a draft until it commits (blur / Enter / a suggestion
+// pick), so a half-typed operator never reaches `printFilter` mid-keystroke.
+describe('Query Builder — operator draft', () => {
+  it('shows no banner and no red border while typing an invalid operator', async () => {
+    const { opInput } = await openExistingRow('{"qty":{"$gt":5}}');
+
+    fireEvent.change(opInput, { target: { value: '$e' } });
+
+    expect(opInput.value).toBe('$e');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(opInput.getAttribute('aria-invalid')).not.toBe('true');
+  });
+
+  it('commits on blur and shows the banner once the op is still invalid', async () => {
+    const { opInput } = await openExistingRow('{"qty":{"$gt":5}}');
+
+    fireEvent.change(opInput, { target: { value: '$e' } });
+    expect(screen.queryByRole('status')).toBeNull();
+
+    fireEvent.blur(opInput);
+
+    await screen.findByRole('status');
+    expect(screen.getByRole('status').textContent).toContain('1 not applied');
+    expect(
+      ((await screen.findByPlaceholderText('$op')) as HTMLInputElement).getAttribute('aria-invalid'),
+    ).toBe('true');
+  });
+
+  it('⌘Enter with a half-typed op still runs the last committed filter', async () => {
+    const { opInput, findSpy } = await openExistingRow('{"qty":{"$gt":5}}');
+    expect(opInput.value).toBe('$gt');
+
+    fireEvent.change(opInput, { target: { value: '$e' } });
+    fireEvent.keyDown(opInput, { key: 'Enter', metaKey: true });
+
+    await waitFor(() => expect(findSpy).toHaveBeenCalledTimes(1));
+    expect(findSpy.mock.calls[0]?.[0]?.filter).toBe('{"qty":{"$gt":5}}');
+    // The box itself still shows the unfinished draft — ⌘Enter didn't commit it.
+    expect(opInput.value).toBe('$e');
   });
 });

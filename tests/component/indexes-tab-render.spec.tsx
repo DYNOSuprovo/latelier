@@ -3,50 +3,18 @@ import { render, screen, waitFor, expectKeyboardDisclosureToggle } from '../help
 import userEvent from '@testing-library/user-event';
 import { IndexesTab } from '../../src/pages/IndexesTab';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
-import type { ConnectionRuntime, ConnectionSummary, IndexInfo } from '@shared/types';
+import type { IndexInfo } from '@shared/types';
 
 afterEach(() => {
   uninstallAtelierMock();
   vi.restoreAllMocks();
 });
 
-const conn: ConnectionSummary = {
-  id: 'c1',
-  name: 'test',
-  color: '#1A6835',
-  host: 'localhost',
-  port: 27017,
-  connectionType: 'standard',
-  readOnly: false,
-  status: 'connected',
-};
-
-const runtime: ConnectionRuntime = { id: 'c1', status: 'connected' };
-
 function renderTab() {
   return render(
-      <IndexesTab conn={conn} runtime={runtime} />
+      <IndexesTab connectionId="c1" dbName="alpha" collection="people" />
   );
 }
-
-/**
- * The one database + collection every IndexesTab test mounts against. Hoisted
- * because three tests needed it verbatim — an exact 11-line repeat is the
- * shape that took the SonarCloud duplication gate to 10.9% on this stack (#72).
- */
-const ALPHA_PEOPLE_META = {
-  listDatabases: async () => [{ name: 'alpha', sizeOnDisk: 0, empty: false }],
-  listCollections: async () => [
-    {
-      name: 'people',
-      type: 'collection' as const,
-      documentCount: 0,
-      sizeBytes: 0,
-      indexCount: 1,
-      capped: false,
-    },
-  ],
-};
 
 const ID_INDEX: IndexInfo = {
   name: '_id_',
@@ -85,35 +53,24 @@ const UNIQUE_INDEX: IndexInfo = {
 };
 
 describe('IndexesTab — render', () => {
-  it('auto-picks the first DB and collection on mount and lists indexes', async () => {
+  it('lists the given namespace\'s indexes with no picker', async () => {
     installAtelierMock({
-      meta: {
-        listDatabases: async () => [
-          { name: 'alpha', sizeOnDisk: 0, empty: false },
-          { name: 'beta', sizeOnDisk: 0, empty: false },
-        ],
-        listCollections: async ({ dbName }) => {
-          if (dbName === 'alpha') {
-            return [
-              {
-                name: 'people',
-                type: 'collection' as const,
-                documentCount: 0,
-                sizeBytes: 0,
-                indexCount: 3,
-                capped: false,
-              },
-            ];
-          }
-          return [];
-        },
-      },
       index: {
-        list: async () => [ID_INDEX, TTL_INDEX, UNIQUE_INDEX],
+        list: async ({ connectionId, dbName, collection }) => {
+          expect({ connectionId, dbName, collection }).toEqual({
+            connectionId: 'c1',
+            dbName: 'alpha',
+            collection: 'people',
+          });
+          return [ID_INDEX, TTL_INDEX, UNIQUE_INDEX];
+        },
       },
     });
 
     renderTab();
+
+    expect(screen.queryByLabelText('Database')).toBeNull();
+    expect(screen.queryByLabelText('Collection')).toBeNull();
 
     await waitFor(() => {
       expect(screen.getByText('_id_')).toBeTruthy();
@@ -133,7 +90,6 @@ describe('IndexesTab — render', () => {
 
   it('expands the row drill-down on click and shows version + usage detail', async () => {
     installAtelierMock({
-      meta: ALPHA_PEOPLE_META,
       index: {
         list: async () => [
           {
@@ -157,7 +113,6 @@ describe('IndexesTab — render', () => {
 
   it('is keyboard-operable: Enter and Space toggle aria-expanded, and focus stays on the toggle', async () => {
     installAtelierMock({
-      meta: ALPHA_PEOPLE_META,
       index: { list: async () => [UNIQUE_INDEX] },
     });
 
@@ -169,7 +124,6 @@ describe('IndexesTab — render', () => {
   it('does not strand focus on <body> when the expanded index is dropped', async () => {
     let dropped = false;
     installAtelierMock({
-      meta: ALPHA_PEOPLE_META,
       index: {
         list: async () => (dropped ? [] : [UNIQUE_INDEX]),
         drop: async () => {
@@ -194,54 +148,28 @@ describe('IndexesTab — render', () => {
     expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Indexes' }));
   });
 
-  it('persists the selected target via prefs.set', async () => {
-    const setSpy = vi.fn<(key: string, value: unknown) => void>();
-    // `prefs.set` is generic; a vitest Mock erases the type parameter, so the
-    // spy is wrapped by a delegating arrow that keeps the real signature.
-    const set = async <T,>(key: string, value: T) => { setSpy(key, value); return value; };
+  it('reloads the list when the namespace prop changes', async () => {
+    const calls: Array<{ dbName: string; collection: string }> = [];
     installAtelierMock({
-      meta: {
-        listDatabases: async () => [
-          { name: 'alpha', sizeOnDisk: 0, empty: false },
-          { name: 'beta', sizeOnDisk: 0, empty: false },
-        ],
-        listCollections: async ({ dbName }) =>
-          dbName === 'beta'
-            ? [
-                {
-                  name: 'logs',
-                  type: 'collection' as const,
-                  documentCount: 0,
-                  sizeBytes: 0,
-                  indexCount: 0,
-                  capped: false,
-                },
-              ]
-            : [
-                {
-                  name: 'people',
-                  type: 'collection' as const,
-                  documentCount: 0,
-                  sizeBytes: 0,
-                  indexCount: 0,
-                  capped: false,
-                },
-              ],
+      index: {
+        list: async ({ dbName, collection }) => {
+          calls.push({ dbName, collection });
+          return dbName === 'beta' ? [ID_INDEX] : [UNIQUE_INDEX];
+        },
       },
-      index: { list: async () => [ID_INDEX] },
-      prefs: { get: async () => null, set },
     });
 
-    renderTab();
+    const { rerender } = render(
+      <IndexesTab connectionId="c1" dbName="alpha" collection="people" />,
+    );
+    await waitFor(() => expect(screen.getByText('email_unique')).toBeTruthy());
+
+    rerender(<IndexesTab connectionId="c1" dbName="beta" collection="logs" />);
 
     await waitFor(() => expect(screen.getByText('_id_')).toBeTruthy());
-
-    // Switch DB → triggers a prefs.set('ui.indexes.lastTarget', { dbName: 'beta', ... })
-    await userEvent.selectOptions(screen.getByLabelText('Database'), 'beta');
-
-    await waitFor(() => {
-      const calls = setSpy.mock.calls.filter((c) => c[0] === 'ui.indexes.lastTarget');
-      expect(calls.length).toBeGreaterThan(0);
-    });
+    expect(calls).toEqual([
+      { dbName: 'alpha', collection: 'people' },
+      { dbName: 'beta', collection: 'logs' },
+    ]);
   });
 });

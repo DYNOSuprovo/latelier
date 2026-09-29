@@ -139,6 +139,18 @@ export function stageBodyCompletionSource(opts: StageBodyCompletionOpts): Comple
     // Inside a quoted key (`"na|"`) only non-quote characters can extend the
     // token; a bare/unquoted key allows the same identifier charset the
     // grammar detector itself scans with ($, ., word chars).
+    //
+    // `hit.replaceStart` is always a valid non-negative index into `doc`
+    // (0..doc.length) by construction in aggGrammar.ts — it's derived from
+    // scanning `doc` itself and never exceeds its bounds. So `> 0` vs `>= 0`
+    // vs an unconditional `true` guard here are all observationally
+    // identical (verified by exhaustively sweeping every doc/replaceStart
+    // combination for short docs with a Node probe: 0 mismatches across all
+    // three), and the `?? ''` fallback on `doc[hit.replaceStart - 1]` is
+    // dead — that index is only read once the guard has confirmed
+    // `replaceStart > 0`, at which point `replaceStart - 1` is always a
+    // valid in-bounds index and never `undefined`.
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,StringLiteral: see comment above — replaceStart is never negative, and doc[replaceStart-1] is never out of bounds when the guard passes.
     const quoteBefore = hit.replaceStart > 0 && /["']/.test(doc[hit.replaceStart - 1] ?? '');
     const validFor = quoteBefore ? /^[^"'\n]*$/ : /^[\w$.]*$/;
 

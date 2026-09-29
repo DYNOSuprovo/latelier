@@ -1,5 +1,15 @@
 # C09 — Indexes tab (real listing + create / drop)
 
+> **Removed by W16 Tier 2 (ADR 0003).** The Connection Manager's Indexes tab
+> is gone, along with `IndexesHost`, the DB/collection picker wrapper it used
+> in the interim. `IndexesTab` is namespace-scoped (`{connectionId, dbName,
+> collection}`) and now lives in the collection tab's Structure sub-view,
+> stacked above the sampled schema (`src/pages/Workspace/StructureView.tsx`),
+> with no picker of its own — the namespace comes from the open tab. The
+> `ui.indexes.lastTarget` preference stays retired (W16 Tier 1). Read this
+> spec's "pick a database, drill into a collection" framing as history, not
+> the current component boundary.
+
 ## Purpose
 
 Replace the C08 `StubTab` for the Indexes tab in `DetailPanel.tsx` with a real, per-collection index manager. Lets the user list indexes for any collection on the active connection, see their key spec / options / usage stats, create a new index, and drop a non-default one.
@@ -222,8 +232,8 @@ Replaces `<StubTab title="Index management" .../>` at `DetailPanel.tsx:635`.
 - DB picker reuses `meta:listDatabases({ connectionId, includeSystem: showSystem })` with the same `ui.showSystemDbs` pref as Collections.
 - Collection picker calls `meta:listCollections` once per DB; cached for the lifetime of the tab.
 - Selecting (db, collection) calls `index:list`. List re-fetches on Refresh and after every successful create/drop.
-- Last (db, collection) selection persists to `app_state['ui.indexes.lastTarget']` (per app, not per connection — small enough to be a single key) so re-opening the tab restores the view.
-- Pickers are dropdown buttons styled like the existing tab bar — keep the visual language consistent with `CollectionsTab`. No tree/sidebar.
+- ~~Last (db, collection) selection persists to `app_state['ui.indexes.lastTarget']` (per app, not per connection — small enough to be a single key) so re-opening the tab restores the view.~~ **Removed by W16 Tier 2** — there is no picker any more; `IndexesTab` takes its namespace from the open collection tab.
+- ~~Pickers are dropdown buttons styled like the existing tab bar — keep the visual language consistent with `CollectionsTab`. No tree/sidebar.~~ **Removed by W16 Tier 2.**
 
 ### Index row anatomy
 
@@ -308,7 +318,7 @@ Type the index name to confirm:
 
 ## 5. State & persistence
 
-- No new SQLite tables, no migration. The only persisted state is `ui.indexes.lastTarget = { dbName, collection }` in `app_state` via existing `prefs` channels. Reset on disconnect or when the targeted (db, collection) no longer exists at refresh time.
+- ~~No new SQLite tables, no migration. The only persisted state is `ui.indexes.lastTarget = { dbName, collection }` in `app_state` via existing `prefs` channels. Reset on disconnect or when the targeted (db, collection) no longer exists at refresh time.~~ **Removed by W16 Tier 2** — no persisted state remains; the tab is namespace-scoped by the open collection tab, which owns its own persistence.
 - No caching of the index list — it's small and changes rarely; refetch on every (db, collection) switch and on Refresh.
 
 ## 6. Error handling
@@ -336,7 +346,7 @@ Type the index name to confirm:
 - [ ] Creating a duplicate index keeps the drawer open with an inline `CONFLICT` error.
 - [ ] Dropping a non-`_id_` index removes it from the list after the two-step confirm.
 - [ ] Dropping `_id_` is impossible from the UI (no Drop button on its row) and refused server-side with `VALIDATION` if invoked via raw IPC.
-- [ ] `ui.indexes.lastTarget` persists across reload: after restart, opening the Indexes tab re-selects the last DB / collection viewed (when both still exist).
+- [ ] ~~`ui.indexes.lastTarget` persists across reload: after restart, opening the Indexes tab re-selects the last DB / collection viewed (when both still exist).~~ **Retired by W16 Tier 1** — no longer applies; see that spec's Tier 1 acceptance criteria instead.
 - [ ] `npm run audit:ipc` passes with no allowlist changes (no `SECRET_INPUT` channels added).
 
 ## 8. Test cases

@@ -50,6 +50,15 @@ export interface LegacySavedFindPayload {
 
 // ─── legacyCompileFilter — frozen copy of pre-W13 compileMql's filter half ──
 
+// Stryker disable next-line ArrayDeclaration,StringLiteral: SIMPLE_OPS gates
+// an early `return buildTypedValue(cond)` in buildCondValue below, but every
+// other branch there is disjoint from these six op strings, so the function
+// falls through all of them to its own final `return buildTypedValue(cond)`
+// for any op this set does or doesn't contain — the early return and the
+// fallthrough return the identical value either way (verified empirically:
+// probe-legacy-simpleops.mjs). This set's actual membership is unobservable
+// as long as it stays disjoint from $regex/$type/$mod/$size/BITS_OPS, which
+// this frozen file's contents already are.
 const SIMPLE_OPS = new Set<string>(['$eq', '$ne', '$gt', '$gte', '$lt', '$lte']);
 const ARRAY_VALUE_OPS = new Set<string>(['$in', '$nin', '$all']);
 const BITS_OPS = new Set<string>(['$bitsAllClear', '$bitsAnyClear', '$bitsAllSet', '$bitsAnySet']);
@@ -66,6 +75,10 @@ function parseJsonArray(raw: string): unknown[] {
 function buildTypedValue(cond: LegacyCond): unknown {
   const { valType, value } = cond;
   switch (valType) {
+    // Stryker disable next-line StringLiteral: this case's body and the
+    // `default` case's body below are both `return value` verbatim — a case
+    // label mutated away from 'string' just falls through to that identical
+    // default, so the observable result is unchanged either way.
     case 'string':
       return value;
     case 'number':
@@ -110,6 +123,11 @@ function coerceArrayElement(el: unknown, valType: LegacyValType): unknown {
     case 'date':
       return typeof el === 'string' ? { $date: el } : el;
     case 'number':
+      // Stryker disable next-line ConditionalExpression,StringLiteral: for
+      // any real JS number el, Number(el) === el (a no-op round trip), so
+      // forcing the branch to always coerce — or comparing typeof against
+      // the wrong literal — produces the identical value either way
+      // (Number() is idempotent on values that are already numbers).
       return typeof el === 'number' ? el : Number(el);
     case 'boolean':
       return typeof el === 'boolean' ? el : el === 'true';
@@ -123,6 +141,12 @@ function coerceArrayElement(el: unknown, valType: LegacyValType): unknown {
 function buildCondValue(cond: LegacyCond): unknown {
   const { op, value, valType } = cond;
   if (op === '$exists') return true;
+  // Stryker disable next-line ConditionalExpression: every other branch
+  // below is disjoint from SIMPLE_OPS's members ($eq/$ne/$gt/$gte/$lt/$lte
+  // never match $regex/$type/$mod/$size/BITS_OPS), so forcing this to false
+  // for a SIMPLE_OPS op just falls through all of them to the function's own
+  // final `return buildTypedValue(cond)` — the identical value this early
+  // return already gives (verified empirically: probe-legacy-simpleops.mjs).
   if (SIMPLE_OPS.has(op)) return buildTypedValue(cond);
   if (ARRAY_VALUE_OPS.has(op)) {
     return parseJsonArray(value).map((el) => coerceArrayElement(el, valType));

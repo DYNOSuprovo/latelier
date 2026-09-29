@@ -104,6 +104,7 @@ export function useMenuFocus(
   // menu has ever opened to set it) — so `null?.focus()` is a no-op
   // regardless of which way `suppressRef` starts. The initial value is
   // provably unobservable from either effect.
+  // Stryker disable next-line BooleanLiteral: the dismiss effect resets this to false on every open before it's read, and the one render where it's read unreset (the very first, menu still null) is a no-op regardless of its value — see the paragraph above.
   const suppressRef = React.useRef(false);
   const returnFocusToRef = React.useRef<HTMLElement | null>(null);
 
@@ -122,8 +123,8 @@ export function useMenuFocus(
       // `null` — the moment a body exists, which it always does by the
       // time this listener can run. The check documents the spec-true
       // case rather than one this app can ever actually observe.
-      suppressRef.current =
-        el !== null && el !== document.body && !menuRef.current?.contains(el);
+      // Stryker disable next-line ConditionalExpression: document.activeElement is null only for a document with no body at all, never reachable by the time this window listener can fire — the check documents a spec case this app never observes.
+      suppressRef.current = el !== null && el !== document.body && !menuRef.current?.contains(el);
       close();
     };
     const onKey = (e: KeyboardEvent) => {

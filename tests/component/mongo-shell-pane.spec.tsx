@@ -163,4 +163,128 @@ describe('MongoShellPane', () => {
     expect(len).toBeLessThan(220_000);
     expect(len).toBeGreaterThan(150_000);
   });
+
+  // ─── Stick-to-bottom scrolling ─────────────────────────────────────────
+  //
+  // jsdom never lays out content, so scrollHeight/clientHeight/scrollTop are
+  // all 0 by default. Stub them via Object.defineProperty on the output
+  // <pre> to simulate a scrolled-up viewport before dispatching output.
+
+  function stubScrollMetrics(el: HTMLElement, metrics: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: metrics.scrollHeight });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: metrics.clientHeight });
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: metrics.scrollTop,
+    });
+  }
+
+  it('keeps following new output when the user was at the bottom', async () => {
+    let outputCb: ((evt: ShellOutputEvent) => void) | null = null;
+    installAtelierMock({
+      mshell: {
+        start: async (): Promise<ShellSessionInfo> => ({
+          sessionId: 's1',
+          connectionId: 'c1',
+          startedAt: new Date().toISOString(),
+        }),
+        write: async () => undefined,
+        stop: async () => undefined,
+        list: async () => [],
+        onOutput: (cb) => {
+          outputCb = cb;
+          return () => {
+            outputCb = null;
+          };
+        },
+      },
+    });
+
+    mount();
+    await waitFor(() => expect(outputCb).toBeTruthy());
+
+    const output = await screen.findByTestId('mongo-shell-output');
+    // Simulate a viewport where the user is pinned to the bottom.
+    stubScrollMetrics(output, { scrollHeight: 500, clientHeight: 200, scrollTop: 300 });
+    fireEvent.scroll(output);
+
+    // The next chunk grows scrollHeight; a pinned user should be scrolled
+    // to follow it.
+    stubScrollMetrics(output, { scrollHeight: 600, clientHeight: 200, scrollTop: 300 });
+    outputCb!({ sessionId: 's1', kind: 'stdout', data: 'more output\n' });
+
+    await waitFor(() => expect(output.textContent).toContain('more output'));
+    expect(output.scrollTop).toBe(600);
+  });
+
+  it('leaves scrollTop unchanged when the user has scrolled up', async () => {
+    let outputCb: ((evt: ShellOutputEvent) => void) | null = null;
+    installAtelierMock({
+      mshell: {
+        start: async (): Promise<ShellSessionInfo> => ({
+          sessionId: 's1',
+          connectionId: 'c1',
+          startedAt: new Date().toISOString(),
+        }),
+        write: async () => undefined,
+        stop: async () => undefined,
+        list: async () => [],
+        onOutput: (cb) => {
+          outputCb = cb;
+          return () => {
+            outputCb = null;
+          };
+        },
+      },
+    });
+
+    mount();
+    await waitFor(() => expect(outputCb).toBeTruthy());
+
+    const output = await screen.findByTestId('mongo-shell-output');
+    // Simulate the user having scrolled up, away from the bottom.
+    stubScrollMetrics(output, { scrollHeight: 500, clientHeight: 200, scrollTop: 50 });
+    fireEvent.scroll(output);
+
+    outputCb!({ sessionId: 's1', kind: 'stdout', data: 'more output\n' });
+
+    await waitFor(() => expect(output.textContent).toContain('more output'));
+    // scrollTop must stay put — no forced jump to the bottom.
+    expect(output.scrollTop).toBe(50);
+  });
+
+  it('re-pins to the bottom when the user submits a command while scrolled up', async () => {
+    installAtelierMock({
+      mshell: {
+        start: async (): Promise<ShellSessionInfo> => ({
+          sessionId: 's1',
+          connectionId: 'c1',
+          startedAt: new Date().toISOString(),
+        }),
+        write: async () => undefined,
+        stop: async () => undefined,
+        list: async () => [],
+        onOutput: () => () => {},
+      },
+    });
+
+    mount();
+    const input = await screen.findByLabelText('Mongo shell input');
+    await waitFor(() => expect((input as HTMLInputElement).disabled).toBe(false));
+
+    const output = await screen.findByTestId('mongo-shell-output');
+    // Simulate the user having scrolled up, away from the bottom.
+    stubScrollMetrics(output, { scrollHeight: 500, clientHeight: 200, scrollTop: 50 });
+    fireEvent.scroll(output);
+    expect(output.scrollTop).toBe(50);
+
+    // Submitting a command — even while scrolled up — must surface its
+    // echo and output, like a real terminal.
+    fireEvent.change(input, { target: { value: 'db.stats()' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(output.textContent).toContain('db.stats()'));
+    expect(output.scrollTop).toBe(output.scrollHeight);
+  });
 });
