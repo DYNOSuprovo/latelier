@@ -73,6 +73,8 @@
     "src/pages/Workspace/schemaSummary.ts",
     "src/commands/rank.ts",
     "electron/services/tabStateResults.ts",
-    "src/state/tabResultCarry.ts"
+    "src/state/tabResultCarry.ts",
+    "electron/security/permissions.ts",
+    "electron/security/appMenu.ts"
   ]
 }
