@@ -183,10 +183,10 @@ describe('ejson', () => {
   });
 
   it('honours maxBytes at the exact boundary (> not >=)', () => {
-    // The guard checks `bytes` before the closing ']' is appended, so the
-    // measured boundary is one byte short of the full output length.
+    // After fixing #379, the closing ']' is counted, so the boundary is the
+    // full output length (in UTF-8 bytes, not JavaScript string length).
     const exact = ejsonEncodeArrayJson([{ a: 1 }]);
-    const boundary = exact.length - 1;
+    const boundary = Buffer.byteLength(exact, 'utf8');
     expect(() => ejsonEncodeArrayJson([{ a: 1 }], { maxBytes: boundary })).not.toThrow();
     expect(() => ejsonEncodeArrayJson([{ a: 1 }], { maxBytes: boundary - 1 })).toThrow(
       new RegExp(`${boundary - 1} byte cap`),
@@ -298,6 +298,68 @@ describe('ejson', () => {
 
   it('ejsonEncodeArrayJson(docs, {relaxed:true}) produces relaxed output, not canonical', () => {
     expect(ejsonEncodeArrayJson([5], { relaxed: true })).toBe('[5]');
+  });
+
+  // ─── Byte cap fixes for #379: closing bracket count + UTF-8 bytes ────────
+  //
+  // The previous implementation had two bugs:
+  // 1. Did not count the closing ']', so arrays at maxBytes+1 would pass
+  // 2. Used piece.length (UTF-16 code units) instead of UTF-8 byte length
+
+  it('byte cap: empty array [] is exactly 2 bytes, succeeds at maxBytes 2, throws at 1', () => {
+    const out = ejsonEncodeArrayJson([], { relaxed: true });
+    expect(out).toBe('[]');
+    expect(Buffer.byteLength(out, 'utf8')).toBe(2);
+    expect(() => ejsonEncodeArrayJson([], { relaxed: true, maxBytes: 2 })).not.toThrow();
+    expect(() => ejsonEncodeArrayJson([], { relaxed: true, maxBytes: 1 })).toThrow();
+  });
+
+  it('byte cap boundary: output exactly M bytes succeeds at M, throws at M-1', () => {
+    // Create an array with docs that produce an exact byte length.
+    const out = ejsonEncodeArrayJson([{ x: 1 }], { relaxed: true });
+    const M = Buffer.byteLength(out, 'utf8');
+    expect(() => ejsonEncodeArrayJson([{ x: 1 }], { relaxed: true, maxBytes: M })).not.toThrow();
+    expect(() => ejsonEncodeArrayJson([{ x: 1 }], { relaxed: true, maxBytes: M - 1 })).toThrow(
+      new RegExp(`${M - 1} byte cap`),
+    );
+  });
+
+  it('off-by-one regression: old code did not count closing bracket', () => {
+    // Build an array that would pass the old check but should throw now.
+    // The old code: bytes = 1 + piece1 + piece2 + ... (no closing ']')
+    // We want output length to be exactly maxBytes + 1 if closing bracket was skipped.
+    const M = 100;
+    const docs = ['a'.repeat(M - 6), 'b']; // -6 for: '[' + '"a...a"' + ',' + '"b"' + ']'
+    const out = ejsonEncodeArrayJson(docs, { relaxed: true });
+    const outBytes = Buffer.byteLength(out, 'utf8');
+    // If old code didn't count ']', it would pass at maxBytes = outBytes - 1.
+    // Our fix should throw at that threshold.
+    if (outBytes > M) {
+      expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes - 1 })).toThrow();
+    }
+  });
+
+  it('multi-byte UTF-8: accented characters exceed cap if using UTF-16 length', () => {
+    // 'é' is 1 UTF-16 code unit but 2 UTF-8 bytes in canonical form.
+    // Build a doc that fits UTF-16 but not UTF-8.
+    const accent = 'é'.repeat(50); // 50 UTF-16 units = 100 UTF-8 bytes for this char
+    const docs = [accent];
+    const out = ejsonEncodeArrayJson(docs, { relaxed: true });
+    const outBytes = Buffer.byteLength(out, 'utf8');
+    // Should throw at a maxBytes lower than actual size.
+    expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes - 1 })).toThrow();
+    expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes })).not.toThrow();
+  });
+
+  it('byte cap accumulates separator commas in UTF-8 bytes', () => {
+    // Each comma separator is 1 UTF-8 byte. Make sure it's counted.
+    const docs = [1, 2, 3];
+    const out = ejsonEncodeArrayJson(docs, { relaxed: true });
+    const outBytes = Buffer.byteLength(out, 'utf8');
+    // Commas should be included in the byte count.
+    expect(out).toContain(',');
+    expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes })).not.toThrow();
+    expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes - 1 })).toThrow();
   });
 
   it('ejsonEncodeArray maps each doc through ejsonEncode with the same relaxed flag', () => {
