@@ -19,7 +19,22 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
  * Field names whose value is replaced with '<redacted>' before serialisation.
  * Matched case-insensitively against object keys at any nesting depth.
  */
-const REDACTED_KEYS = new Set(['password', 'pwd', 'sshpassword', 'sshpassphrase']);
+const REDACTED_KEYS = new Set([
+  'password', 'pwd', 'sshpassword', 'sshpassphrase',
+  'passphrase', 'secret', 'token', 'apikey', 'authorization',
+  'ssh_password', 'ssh_passphrase',
+]);
+
+/**
+ * Credentials embedded in a string value (most often a connection URI echoed
+ * in an error message) are masked whatever key they sit under. The userinfo
+ * runs to the last `@` before the first `/` or whitespace, so an unencoded `@`
+ * inside a password is covered too. One quantifier, so it stays linear. A
+ * password holding a literal `/` still leaves its tail visible — the URI is
+ * malformed at that point and no pattern can tell where the userinfo ends.
+ */
+const URI_USERINFO = /(mongodb(?:\+srv)?:\/\/)[^/\s]*@/gi;
+const scrubString = (s: string): string => s.replace(URI_USERINFO, '$1***@');
 
 /**
  * True when a dotted field path (e.g. `user.password`) has any segment that
@@ -46,6 +61,7 @@ export function redactSecrets<T>(value: T): T {
 // entry holds IN_PROGRESS, so a true cycle back to an ancestor resolves to a
 // circular marker rather than infinite-recursing or leaking the original.
 function walk(value: unknown, seen: Map<object, unknown>): unknown {
+  if (typeof value === 'string') return scrubString(value);
   if (value === null || typeof value !== 'object') return value;
   const obj = value as object;
   if (seen.has(obj)) {
@@ -81,7 +97,12 @@ function todayStamp(d = new Date()): string {
 
 const isLogFile = (name: string): boolean => name.startsWith('mongolab.') && name.endsWith('.log');
 
-function pruneOldLogs(dir: string, retentionDays: number): void {
+/**
+ * Deletes log files past retention. A failure stops the sweep (nothing more is
+ * pruned this run), so it is returned for the caller to report once it has a
+ * logger — silently stopping would let logs outlive their retention unnoticed.
+ */
+function pruneOldLogs(dir: string, retentionDays: number): StartupWarning[] {
   try {
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     for (const name of fs.readdirSync(dir)) {
@@ -90,8 +111,9 @@ function pruneOldLogs(dir: string, retentionDays: number): void {
       const stat = fs.statSync(full);
       if (stat.mtimeMs < cutoff) fs.unlinkSync(full);
     }
-  } catch {
-    // best-effort; never block startup
+    return [];
+  } catch (err) {
+    return [{ msg: 'could not prune old log files', data: { message: String(err) } }];
   }
 }
 
@@ -139,9 +161,9 @@ export function createLogger(userDataDir: string, opts: {
     if (!(err instanceof PrivateModeError)) throw err;
     startupWarnings.push({ msg: 'could not restrict logs directory permissions', data: { message: err.message } });
   }
-  pruneOldLogs(logsDir, retention);
-  startupWarnings.push(...tightenLogFiles(logsDir));
+  startupWarnings.push(...pruneOldLogs(logsDir, retention), ...tightenLogFiles(logsDir));
 
+  let diskFailureReported = false;
   const filePath = () => path.join(logsDir, `mongolab.${todayStamp()}.log`);
 
   function write(lvl: LogLevel, tag: string, msg: string, data?: unknown): void {
@@ -150,7 +172,7 @@ export function createLogger(userDataDir: string, opts: {
       t: new Date().toISOString(),
       level: lvl,
       tag,
-      msg,
+      msg: scrubString(msg),
       // Stryker disable next-line ConditionalExpression: redactSecrets(undefined) returns undefined unchanged (walk's `typeof !== 'object'` guard), and JSON.stringify drops an undefined-valued key entirely, so `{ data: undefined }` and no `data` key at all serialize byte-identically — verified with a node probe.
       ...(data !== undefined ? { data: redactSecrets(data) } : {}),
     };
@@ -158,7 +180,13 @@ export function createLogger(userDataDir: string, opts: {
     try {
       fs.appendFileSync(filePath(), serialized, { mode: 0o600 });
     } catch {
-      // ignore disk errors; logging must never crash the app
+      // Logging must never crash the app, and the failing logger cannot report
+      // its own failure, so say so once on stderr. Fixed text, no re-entry into
+      // write(): a disk that stays broken would otherwise recurse or spam.
+      if (!diskFailureReported) {
+        diskFailureReported = true;
+        process.stderr.write('log: cannot write the log file; further disk errors are not reported\n');
+      }
     }
     if (toStderr) process.stderr.write(serialized);
   }

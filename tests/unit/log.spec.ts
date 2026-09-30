@@ -61,11 +61,64 @@ describe('createLogger', () => {
   });
 
   it('never throws on disk failure', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const log = createLogger(dir, { toStderr: false });
     const logsDir = path.join(dir, 'logs');
     // Remove the logs dir between writes to provoke ENOENT on appendFileSync.
     fs.rmSync(logsDir, { recursive: true, force: true });
     expect(() => log.info('t', 'still alive')).not.toThrow();
+    expect(stderr).toHaveBeenCalledTimes(1);
+  });
+
+  it('masks URI credentials in msg and in data strings before they reach the file', () => {
+    const log = createLogger(dir, { toStderr: false });
+    log.error('t', 'connect failed for mongodb://alice:hunter2@host/db', { cause: 'retry mongodb+srv://bob:s3cret@c.example.net' });
+    const logsDir = path.join(dir, 'logs');
+    const raw = fs.readFileSync(path.join(logsDir, fs.readdirSync(logsDir)[0]!), 'utf8');
+    expect(raw).not.toContain('hunter2');
+    expect(raw).not.toContain('s3cret');
+    expect(JSON.parse(raw.trim())).toMatchObject({
+      msg: 'connect failed for mongodb://***@host/db',
+      data: { cause: 'retry mongodb+srv://***@c.example.net' },
+    });
+  });
+
+  it('reports a failed prune as a warn line, keeps pruning what it can, and keeps logging', () => {
+    const logsDir = path.join(dir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const old = path.join(logsDir, 'mongolab.2000-01-01.log');
+    fs.writeFileSync(old, 'stale\n');
+    const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(old, tenDaysAgo / 1000, tenDaysAgo / 1000);
+    vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {
+      throw new Error('EBUSY: file is locked');
+    });
+
+    const log = createLogger(dir, { toStderr: false });
+    log.info('t', 'after');
+
+    const today = fs.readdirSync(logsDir).filter((f) => f !== 'mongolab.2000-01-01.log');
+    const lines = fs.readFileSync(path.join(logsDir, today[0]!), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines[0]).toMatchObject({ level: 'warn', tag: 'log', msg: 'could not prune old log files' });
+    expect(lines[0].data.message).toContain('EBUSY: file is locked');
+    expect(lines[1]).toMatchObject({ msg: 'after' });
+  });
+
+  it('reports a disk write failure once on stderr, without re-entering the logger', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const log = createLogger(dir, { toStderr: false });
+    const append = vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
+      throw new Error('ENOSPC: no space left');
+    });
+
+    expect(() => {
+      log.info('t', 'first');
+      log.info('t', 'second');
+    }).not.toThrow();
+
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr).toHaveBeenCalledWith('log: cannot write the log file; further disk errors are not reported\n');
   });
 
   it('log.debug actually writes a debug-level line when the threshold allows it', () => {
