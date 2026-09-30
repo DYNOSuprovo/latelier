@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { carryResultFields, stripResultPatch } from '../../src/state/tabResultCarry';
+import { stripResultFields } from '../../electron/services/tabStateResults';
 import type {
   AggregationLastRun,
   AggregationTabState,
@@ -77,9 +78,34 @@ describe('carryResultFields', () => {
 
   it('leaves the listed aggregation object as is when only the find run is carried', () => {
     const next = [coll('a', { aggregation: agg })];
-    const [out] = carryResultFields([coll('a', { lastRun: run })], next) as CollectionTab[];
+    const prev = [coll('a', { lastRun: run, aggregation: { ...agg } })];
+    const [out] = carryResultFields(prev, next) as CollectionTab[];
     expect(out!.state.lastRun).toBe(run);
     expect(out!.state.aggregation).toBe(agg);
+  });
+
+  it('does not carry the old aggregation output onto a pipeline main reseeded (different stages, name or savedId)', () => {
+    const stage = { id: 1, op: '$match', body: '{}', enabled: true };
+    const old = { ...agg, stages: [stage], name: 'a', savedId: 's1', lastRun: aggRun };
+    const prev = [coll('a', { aggregation: old })];
+    const reseeded = [
+      { ...agg, stages: [{ ...stage, body: '{"x":1}' }], name: 'a', savedId: 's1' },
+      { ...agg, stages: [stage], name: 'b', savedId: 's1' },
+      { ...agg, stages: [stage], name: 'a', savedId: 's2' },
+      { ...agg, stages: [], name: 'a', savedId: 's1' },
+    ];
+    for (const next of reseeded) {
+      const [out] = carryResultFields(prev, [coll('a', { aggregation: next })]) as CollectionTab[];
+      expect(out!.state.aggregation).toBe(next);
+    }
+  });
+
+  it('still carries the aggregation output when the listed pipeline is identical to the local one', () => {
+    const stage = { id: 1, op: '$match', body: '{}', enabled: true };
+    const prev = [coll('a', { aggregation: { ...agg, stages: [stage], name: 'a', savedId: 's1', lastRun: aggRun } })];
+    const next = [coll('a', { aggregation: { ...agg, stages: [{ ...stage }], name: 'a', savedId: 's1' } })];
+    const [out] = carryResultFields(prev, next) as CollectionTab[];
+    expect(out!.state.aggregation?.lastRun).toBe(aggRun);
   });
 
   it('does not invent an aggregation object the listed tab does not have', () => {
@@ -132,4 +158,38 @@ describe('stripResultPatch', () => {
   it('leaves a non-object aggregation value alone', () => {
     expect(stripResultPatch({ aggregation: null } as object)).toEqual({ aggregation: null });
   });
+});
+
+describe('stripResultPatch / stripResultFields parity', () => {
+  const cases: Record<string, Record<string, unknown>> = {
+    empty: {},
+    'top-level result keys': {
+      page: 2,
+      lastRunHasMore: true,
+      lastRun: { documents: [1] },
+      lastResult: { valueJson: '1' },
+      lastError: { code: 'X' },
+    },
+    'aggregation with lastRun': { aggregation: { stages: [1], dirty: true, lastRun: { rows: [1] } } },
+    'aggregation without lastRun': { aggregation: { stages: [1] } },
+    'null aggregation': { aggregation: null },
+    'string aggregation': { aggregation: 'x' },
+    'array aggregation': { aggregation: [{ lastRun: 1 }] },
+    'everything at once': {
+      queryRaw: '{}',
+      lastRun: 1,
+      lastResult: 2,
+      lastError: 3,
+      aggregation: { lastRun: 4, k: 5 },
+      schema: { entries: [] },
+    },
+  };
+
+  for (const [name, input] of Object.entries(cases)) {
+    it(`produce identical output: ${name}`, () => {
+      const before = JSON.stringify(input);
+      expect(stripResultPatch(input)).toEqual(stripResultFields(input));
+      expect(JSON.stringify(input)).toBe(before);
+    });
+  }
 });

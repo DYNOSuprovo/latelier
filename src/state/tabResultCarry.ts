@@ -1,4 +1,15 @@
-import type { CollectionTab, ScriptTab, WorkspaceTab } from '@shared/types';
+import type { AggregationTabState, CollectionTab, ScriptTab, WorkspaceTab } from '@shared/types';
+
+// Main reseeds `aggregation` (new stages, name, savedId) when a saved pipeline
+// is loaded into an already-open tab; the old output must not follow along.
+// The seed only ever changes these three, so they define "same pipeline".
+function samePipeline(a: AggregationTabState, b: AggregationTabState): boolean {
+  return (
+    a.name === b.name &&
+    a.savedId === b.savedId &&
+    JSON.stringify(a.stages) === JSON.stringify(b.stages)
+  );
+}
 
 /**
  * Result documents are never persisted (main strips them on every write), so
@@ -32,7 +43,12 @@ export function carryResultFields(
     const aggLastRun = aggregation?.lastRun;
     if (lastRun === undefined && aggLastRun === undefined) return t;
     const state = { ...t.state, ...(lastRun !== undefined ? { lastRun } : {}) };
-    if (aggLastRun !== undefined && t.state.aggregation) {
+    if (
+      aggLastRun !== undefined &&
+      t.state.aggregation &&
+      aggregation &&
+      samePipeline(aggregation, t.state.aggregation)
+    ) {
       state.aggregation = { ...t.state.aggregation, lastRun: aggLastRun };
     }
     return { ...t, state };

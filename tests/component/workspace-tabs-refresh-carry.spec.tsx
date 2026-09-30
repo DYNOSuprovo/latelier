@@ -122,3 +122,52 @@ describe('useWorkspaceTabs — results survive a refresh', () => {
     expect(update).toHaveBeenCalledWith('a', { state: { page: 2 } });
   });
 });
+
+describe('useWorkspaceTabs — openAggregation reseeding', () => {
+  it('does not show the previous pipeline output under a pipeline main reseeded', async () => {
+    const stage = { id: 1, op: '$match', body: '{}', enabled: true };
+    const base = { stages: [stage], activeStageId: 1, outputHeight: 260, outputView: 'Tree' as const };
+    const withAgg = (aggregation: typeof base & { name?: string; savedId?: string }) => {
+      const tab = collectionTab('a');
+      return { ...tab, state: { ...tab.state, aggregation } };
+    };
+    let listed = withAgg({ ...base });
+    installAtelierMock({
+      tabs: {
+        list: async () => [listed],
+        openAggregation: async () => {
+          // main replaces `aggregation` with the seed of the loaded saved pipeline
+          listed = withAgg({ ...base, stages: [{ ...stage, body: '{"x":1}' }], name: 'saved', savedId: 's1' });
+          return listed;
+        },
+      },
+    });
+    const { result } = renderHook(() => useWorkspaceTabs());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const aggRun = {
+      rows: [{ old: true }],
+      durationMs: 1,
+      ranAt: now,
+      stageCounts: {},
+      stageSamples: {},
+    };
+    act(() => {
+      result.current.patchAggregationState('a', { lastRun: aggRun });
+    });
+    expect((result.current.tabs[0] as CollectionTab).state.aggregation?.lastRun).toEqual(aggRun);
+
+    await act(async () => {
+      await result.current.openAggregation({
+        connectionId: 'c1',
+        dbName: 'db',
+        collection: 'a',
+        savedId: 's1',
+        name: 'saved',
+      });
+    });
+    const agg = (result.current.tabs[0] as CollectionTab).state.aggregation;
+    expect(agg?.savedId).toBe('s1');
+    expect(agg?.lastRun).toBeUndefined();
+  });
+});
