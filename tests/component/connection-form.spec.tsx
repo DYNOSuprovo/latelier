@@ -403,3 +403,43 @@ describe('Toggle is a real control, not a div that happens to be clickable', () 
     expect(toggle().getAttribute('aria-checked')).toBe('true');
   });
 });
+
+describe('ConnectionForm: TLS tab warns when transport security is weakened', () => {
+  async function openTlsTab(host: string, toggles: { off?: 'tls' | 'verify' } = {}) {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await userEvent.type(await screen.findByPlaceholderText(/cluster\.mongodb\.net/i), host);
+    await userEvent.click(screen.getByRole('tab', { name: 'TLS' }));
+    if (toggles.off === 'tls') {
+      await userEvent.click(await screen.findByRole('switch', { name: 'Enable TLS / SSL' }));
+    }
+    if (toggles.off === 'verify') {
+      await userEvent.click(await screen.findByRole('switch', { name: 'Verify server certificate' }));
+    }
+  }
+
+  it('shows no warning by default (TLS on, verified)', async () => {
+    await openTlsTab('db.example.com');
+    await screen.findByRole('switch', { name: 'Enable TLS / SSL' });
+    expect(screen.queryByTestId('tls-warning')).toBeNull();
+  });
+
+  it('warns, as text in a status region, when Verify is turned off', async () => {
+    await openTlsTab('localhost', { off: 'verify' });
+    const warning = await screen.findByRole('status');
+    expect(warning.textContent).toMatch(/Warning:.*impersonate this server and read your credentials/);
+  });
+
+  it('warns when TLS is off for a remote host', async () => {
+    await openTlsTab('db.example.com', { off: 'tls' });
+    expect((await screen.findByTestId('tls-warning')).textContent).toMatch(/cleartext/);
+  });
+
+  it.each(['localhost', '127.0.0.1', '::1'])('does not warn when TLS is off for %s', async (host) => {
+    await openTlsTab(host, { off: 'tls' });
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: 'Enable TLS / SSL' }).getAttribute('aria-checked')).toBe('false');
+    });
+    expect(screen.queryByTestId('tls-warning')).toBeNull();
+  });
+});

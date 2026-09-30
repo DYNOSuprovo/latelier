@@ -152,7 +152,7 @@ export type ConnectionUpdate = Partial<ConnectionInput> & {
  * dropped).
  */
 export interface ParsedUriWarning {
-  code: 'MULTI_HOST_TRUNCATED' | 'OPTION_DROPPED';
+  code: 'MULTI_HOST_TRUNCATED' | 'OPTION_DROPPED' | 'TLS_VERIFY_DISABLED';
   detail?: string;
 }
 
