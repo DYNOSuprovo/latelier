@@ -1057,7 +1057,13 @@ function ConnectionFormImpl({
 
   const enablePlaintextFallbackAndRetry = async () => {
     try {
-      await api.prefs.set('secrets.allowPlaintextFallback', true);
+      // Main asks for its own confirmation before enabling; cancelling there
+      // comes back disabled, and a save would only hit the same error again.
+      const { enabled } = await api.secrets.setPlaintextFallback(true);
+      if (!enabled) {
+        setShowPlaintextModal(false);
+        return;
+      }
       setPlaintextFallback(true);
     } catch (err) {
       notify.error(isIpcError(err) ? err.message : String(err), { title: 'Could not enable fallback' });
@@ -1070,7 +1076,7 @@ function ConnectionFormImpl({
 
   const disablePlaintextFallback = async () => {
     try {
-      await api.prefs.set('secrets.allowPlaintextFallback', false);
+      await api.secrets.setPlaintextFallback(false);
       setPlaintextFallback(false);
       setToast('Plaintext password storage disabled. New saves will require an OS keychain.');
     } catch (err) {

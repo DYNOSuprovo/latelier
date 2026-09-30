@@ -120,6 +120,11 @@ const api: IpcApi = {
     },
   },
 
+  secrets: {
+    setPlaintextFallback: (enabled) =>
+      call(IPC_CHANNELS.secretsSetPlaintextFallback, { enabled }),
+  },
+
   query: {
     find: async (input) => parseFindResult(
       await call<FindResultWire>(IPC_CHANNELS.queryFind, input),

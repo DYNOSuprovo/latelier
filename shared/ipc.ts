@@ -238,6 +238,14 @@ export interface IpcApi {
     onThemeChanged: (cb: (mode: 'light' | 'dark' | 'system') => void) => () => void;
   };
 
+  secrets: {
+    /**
+     * Enabling makes main show its own warning dialog first; the result is the
+     * value now in force, so a cancelled enable comes back `{ enabled: false }`.
+     */
+    setPlaintextFallback: (enabled: boolean) => Promise<{ enabled: boolean }>;
+  };
+
   query: {
     find: (input: FindInput) => Promise<FindResult>;
     count: (input: Omit<FindInput, 'limit' | 'skip' | 'projection' | 'sort' | 'cancelToken'>) => Promise<{ count: number }>;
@@ -465,6 +473,9 @@ export const IPC_CHANNELS = {
   prefsGetTheme:  'prefs:getTheme',
   prefsSetTheme:  'prefs:setTheme',
   prefsThemeEvent: 'prefs:theme-event',
+
+  // Secrets settings (main-confirmed) -----------------------------
+  secretsSetPlaintextFallback: 'secrets:set-plaintext-fallback',
 
   // Query runner -----------------------------------------
   queryFind:             'query:find',

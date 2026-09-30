@@ -75,6 +75,7 @@
     "electron/services/tabStateResults.ts",
     "src/state/tabResultCarry.ts",
     "electron/security/permissions.ts",
-    "electron/security/appMenu.ts"
+    "electron/security/appMenu.ts",
+    "electron/ipc/prefKeys.ts"
   ]
 }

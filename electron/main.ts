@@ -33,6 +33,8 @@ import { registerIndexChannels } from './ipc/handlers/indexes.ts';
 import { registerCollectionAdminChannels } from './ipc/handlers/collectionAdmin.ts';
 import { registerUserChannels } from './ipc/handlers/users.ts';
 import { registerPrefsChannels } from './ipc/handlers/prefs.ts';
+import { registerSecretsChannels } from './ipc/handlers/secrets.ts';
+import { PLAINTEXT_FALLBACK_KEY } from './ipc/prefKeys.ts';
 import { registerTabsChannels } from './ipc/handlers/tabs.ts';
 import { registerQueryChannels } from './ipc/handlers/query.ts';
 import { registerDocChannels } from './ipc/handlers/doc.ts';
@@ -555,7 +557,7 @@ app.whenReady().then(() => {
     vaultCrypto,
     {
       getAllowPlaintext: () =>
-        appStateRef.get<boolean>('secrets.allowPlaintextFallback') === true,
+        appStateRef.get<boolean>(PLAINTEXT_FALLBACK_KEY) === true,
     },
   );
 
@@ -631,6 +633,24 @@ app.whenReady().then(() => {
   registerCollectionAdminChannels(router, collectionAdminSvc);
   registerUserChannels(router, userSvc);
   registerPrefsChannels(router, appState, () => win?.webContents ?? null);
+  // The renderer cannot write this switch through prefs:set; this dialog is
+  // the only way to turn it on, and a compromised renderer cannot answer it.
+  registerSecretsChannels(router, appState, async () => {
+    const options = {
+      type: 'warning' as const,
+      buttons: ['Cancel', 'Store unencrypted'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Store passwords unencrypted?',
+      message: 'Store connection passwords without encryption?',
+      detail:
+        'No OS keychain is available. Passwords you save will be written to disk as plain text, readable by anyone or anything that can read your user data folder.',
+    };
+    const result = await (win
+      ? dialog.showMessageBox(win, options)
+      : dialog.showMessageBox(options));
+    return result.response === 1;
+  });
   registerTabsChannels(router, tabsSvc);
   // Same window-lookup + `saveFilters` pattern as `app.ts`'s `saveFile`,
   // kept as a closure here rather than an import into query.ts so that file

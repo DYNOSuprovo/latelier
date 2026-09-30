@@ -174,13 +174,10 @@ describe('NewConnection (create mode)', () => {
       }
       return { id: 'c1' } as never;
     });
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       conn: { create: createSpy as never },
-      prefs: {
-        get: async () => null,
-        set: setSpy,
-      } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
 
     renderNew();
@@ -205,7 +202,7 @@ describe('NewConnection (create mode)', () => {
     fireEvent.click(screen.getByText(/Store as plaintext/i));
 
     await waitFor(() => {
-      expect(setSpy).toHaveBeenCalledWith('secrets.allowPlaintextFallback', true);
+      expect(setSpy).toHaveBeenCalledWith(true);
     });
     await waitFor(() => {
       expect(createSpy).toHaveBeenCalledTimes(2);
@@ -216,13 +213,10 @@ describe('NewConnection (create mode)', () => {
     const createSpy = vi.fn(async () => {
       throw { code: 'SECRETS_UNAVAILABLE', message: 'OS keychain not accessible' };
     });
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       conn: { create: createSpy as never },
-      prefs: {
-        get: async () => null,
-        set: setSpy,
-      } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
 
     renderNew();
@@ -246,14 +240,45 @@ describe('NewConnection (create mode)', () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a cancelled main-process confirmation closes the modal without retrying the save', async () => {
+    const createSpy = vi.fn(async () => {
+      throw { code: 'SECRETS_UNAVAILABLE', message: 'OS keychain not accessible' };
+    });
+    // Main answers a declined dialog with the value still in force: disabled.
+    const setSpy = vi.fn(async () => ({ enabled: false }));
+    installAtelierMock({
+      conn: { create: createSpy as never },
+      secrets: { setPlaintextFallback: setSpy },
+    });
+
+    renderNew();
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    await userEvent.click(screen.getByText('Auth'));
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'scram256');
+    await userEvent.type(screen.getAllByPlaceholderText('admin')[0]!, 'alice');
+    await userEvent.type(await screen.findByPlaceholderText(/^••••••••$/), 'pw');
+    fireEvent.click(screen.getByText(/^Save$/));
+
+    const modal = await screen.findByTestId('plaintext-fallback-modal');
+    fireEvent.click(within(modal).getByText(/Store as plaintext/i));
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledWith(true));
+    await waitFor(() => {
+      expect(screen.queryByTestId('plaintext-fallback-modal')).toBeNull();
+    });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('plaintext-fallback-banner')).toBeNull();
+  });
+
   it('renders the plaintext-fallback banner when the pref is on and disables it on click', async () => {
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       prefs: {
         get: async (k: string) =>
           k === 'secrets.allowPlaintextFallback' ? true : null,
-        set: setSpy,
       } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
     renderNew();
     const banner = await screen.findByTestId('plaintext-fallback-banner');
@@ -261,7 +286,7 @@ describe('NewConnection (create mode)', () => {
 
     fireEvent.click(screen.getByText(/^Disable$/));
     await waitFor(() => {
-      expect(setSpy).toHaveBeenCalledWith('secrets.allowPlaintextFallback', false);
+      expect(setSpy).toHaveBeenCalledWith(false);
     });
     await waitFor(() => {
       expect(screen.queryByTestId('plaintext-fallback-banner')).toBeNull();
