@@ -69,6 +69,7 @@ import { ImportService } from './mongo/ImportService.ts';
 import { DEFAULT_EXPORT_CAP, QueryService } from './mongo/QueryService.ts';
 import { DocumentService } from './mongo/DocumentService.ts';
 import { createLogger, type Logger } from './log.ts';
+import { PrivateModeError } from './utils/privateFs.ts';
 import { createRouter } from './ipc/router.ts';
 import { senderCheck } from './ipc/senderGuard.ts';
 import { makeAppLocationCheck } from './security/appLocation.ts';
@@ -490,7 +491,10 @@ app.whenReady().then(() => {
     log.error('boot', 'db open failed', { message });
     dialog.showErrorBox(
       "L'Atelier failed to start",
-      `Could not open the database.\n\n${message}\n\nYou may need to delete:\n${userDataDir}/mongolab.db`,
+      // Deleting the DB does not fix a permissions problem on a healthy one.
+      err instanceof PrivateModeError
+        ? `Could not open the database.\n\n${message}`
+        : `Could not open the database.\n\n${message}\n\nYou may need to delete:\n${userDataDir}/mongolab.db`,
     );
     app.exit(1);
     return;

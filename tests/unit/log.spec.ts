@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createLogger } from '../../electron/log';
+import { useUmask022 } from '../helpers/umask';
 
 describe('createLogger', () => {
   let dir: string;
@@ -206,6 +207,103 @@ describe('createLogger', () => {
 
       expect(fs.existsSync(wrongPrefix)).toBe(true);
       expect(fs.existsSync(wrongExt)).toBe(true);
+    });
+  });
+  describe.skipIf(process.platform === 'win32')('file modes', () => {
+    let restoreUmask: () => void;
+    const mode = (p: string): number => fs.statSync(p).mode & 0o777;
+
+    beforeEach(() => {
+      restoreUmask = useUmask022();
+    });
+
+    afterEach(() => {
+      restoreUmask();
+    });
+
+    it('creates the logs dir 0700 and the log file 0600 under a permissive umask', () => {
+      const log = createLogger(dir, { toStderr: false });
+      log.info('t', 'hello');
+      const logsDir = path.join(dir, 'logs');
+      expect(mode(logsDir)).toBe(0o700);
+      const files = fs.readdirSync(logsDir);
+      expect(files.length).toBe(1);
+      expect(mode(path.join(logsDir, files[0]!))).toBe(0o600);
+    });
+
+    it('tightens a pre-existing 0755 logs dir and 0644 log file at startup, before any write', () => {
+      const logsDir = path.join(dir, 'logs');
+      fs.mkdirSync(logsDir, { mode: 0o755 });
+      const old = path.join(logsDir, 'mongolab.2999-01-01.log');
+      const other = path.join(logsDir, 'notes.txt');
+      fs.writeFileSync(old, 'x\n', { mode: 0o644 });
+      fs.writeFileSync(other, 'x\n', { mode: 0o644 });
+
+      createLogger(dir, { toStderr: false });
+
+      expect(mode(logsDir)).toBe(0o700);
+      expect(mode(old)).toBe(0o600);
+      expect(mode(other)).toBe(0o644);
+    });
+
+    it('reports a log file it could not tighten instead of swallowing it, and keeps logging', () => {
+      const logsDir = path.join(dir, 'logs');
+      fs.mkdirSync(logsDir);
+      const stuck = path.join(logsDir, 'mongolab.2999-01-01.log');
+      fs.writeFileSync(stuck, 'x\n');
+      const realChmod = fs.chmodSync;
+      vi.spyOn(fs, 'chmodSync').mockImplementation((p, m) => {
+        if (String(p) === stuck) throw new Error('EPERM: nope');
+        realChmod(p, m);
+      });
+
+      const log = createLogger(dir, { toStderr: false });
+      log.info('t', 'after');
+
+      const today = fs.readdirSync(logsDir).filter((f) => f !== 'mongolab.2999-01-01.log');
+      const lines = fs.readFileSync(path.join(logsDir, today[0]!), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(lines[0]).toMatchObject({
+        level: 'warn',
+        tag: 'log',
+        msg: 'could not restrict log file permissions',
+        data: { file: 'mongolab.2999-01-01.log' },
+      });
+      expect(lines[0].data.message).toContain('EPERM: nope');
+      expect(lines[1]).toMatchObject({ msg: 'after' });
+    });
+
+    it('lets a failed mkdir of the logs dir surface at startup, unchanged', () => {
+      vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+        throw new Error('EACCES: cannot create logs');
+      });
+      expect(() => createLogger(dir, { toStderr: false })).toThrow('EACCES: cannot create logs');
+    });
+
+    it('degrades a failed chmod of the logs dir to a warn line instead of aborting', () => {
+      const logsDir = path.join(dir, 'logs');
+      fs.mkdirSync(logsDir, { mode: 0o755 });
+      const realChmod = fs.chmodSync;
+      vi.spyOn(fs, 'chmodSync').mockImplementation((p, m) => {
+        if (String(p) === logsDir) throw new Error('EPERM: not the owner');
+        realChmod(p, m);
+      });
+
+      const log = createLogger(dir, { toStderr: false });
+      log.info('t', 'after');
+
+      const lines = fs
+        .readFileSync(path.join(logsDir, fs.readdirSync(logsDir)[0]!), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      expect(lines[0]).toMatchObject({
+        level: 'warn',
+        tag: 'log',
+        msg: 'could not restrict logs directory permissions',
+      });
+      expect(lines[0].data.message).toContain(logsDir);
+      expect(lines[0].data.message).toContain('EPERM: not the owner');
+      expect(lines[1]).toMatchObject({ msg: 'after' });
     });
   });
 });

@@ -17,6 +17,7 @@ Provide a single, well-typed, versioned SQLite store for every piece of persiste
 ## 1. Location & bootstrap
 
 - DB path: `path.join(app.getPath('userData'), 'mongolab.db')`.
+- On POSIX the user-data dir is `0700` and `mongolab.db`, `-wal` and `-shm` are `0600` (existing ones are tightened at open; the db file is created before SQLite opens it so the side files inherit the mode); a chmod failure aborts startup. No-op on Windows.
 - Opened synchronously on app startup (F06) before any window is created.
 - Pragmas (applied once, in order, on every open):
   ```sql
