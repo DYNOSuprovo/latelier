@@ -234,7 +234,7 @@ describe('AuditLogModal', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Revert' }));
 
-      expect((await screen.findByRole('alert')).textContent).toMatch(/too old to undo/);
+      expect((await screen.findByRole('alert')).textContent).toMatch(/can't be undone any more/);
     });
   });
 });

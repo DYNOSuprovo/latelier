@@ -106,8 +106,9 @@ export function undoCaptureOf(result: unknown): UndoCapture | undefined {
 
 /**
  * Refuses an Undo before anything is written (X13 §6). `reversible` records
- * whether a Pre-image was ever captured and never changes afterwards; the
- * sweep only nulls `undo_json`, which is how an expired entry stays
+ * whether a Pre-image was ever captured and never changes afterwards; a
+ * Pre-image lives in memory only, so `undo_json` (read from the store) is null
+ * once L'Atelier has restarted, which is how an expired entry stays
  * distinguishable from one that was never reversible.
  */
 export function assertUndoable(row: {
@@ -122,6 +123,6 @@ export function assertUndoable(row: {
     throw new SystemError('AUDIT_ALREADY_UNDONE', 'This change has already been undone.');
   }
   if (row.undo_json === null) {
-    throw new SystemError('AUDIT_UNDO_EXPIRED', 'This change is too old to undo.');
+    throw new SystemError('AUDIT_UNDO_EXPIRED', "This change can't be undone after L'Atelier restarts.");
   }
 }

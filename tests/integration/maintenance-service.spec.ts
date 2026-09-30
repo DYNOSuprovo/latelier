@@ -129,60 +129,6 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', ()
     expect(ids).toEqual(['audit-89d', 'audit-now']);
   });
 
-  describe('Pre-image sweep', () => {
-    const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
-    const insertReversible = (id: string, ranAt: string, connectionId = CONNECTION_ID) =>
-      tmp.db.prepare(`
-        INSERT INTO audit_log (id, connection_id, db_name, collection, op, summary_json, outcome,
-                               ran_at, duration_ms, reversible, undo_json)
-        VALUES (?, ?, 'mydb', 'items', 'deleteOne', '{"op":"deleteOne","filter":"{}"}', 'ok', ?, 3, 1,
-                '{"preImage":{"_id":1}}')
-      `).run(id, connectionId, ranAt);
-    const held = () =>
-      (tmp.db.prepare('SELECT id FROM audit_log WHERE undo_json IS NOT NULL ORDER BY id').all() as { id: string }[])
-        .map((r) => r.id);
-    const sweep = () => {
-      const store = new Map<string, unknown>();
-      new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), recentFieldValueRepo: new RecentFieldValueRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded({
-        get: <T>(key: string) => (store.get(key) ?? null) as T | null,
-        set: <T>(key: string, value: T) => void store.set(key, value),
-      });
-    };
-
-    it('drops Pre-images past 7 days and keeps newer ones, leaving the rows and their reversible flag', () => {
-      insertReversible('8d', daysAgo(8));
-      insertReversible('6d', daysAgo(6));
-
-      sweep();
-
-      expect(held()).toEqual(['6d']);
-      const rows = tmp.db.prepare('SELECT id, reversible FROM audit_log ORDER BY id').all();
-      expect(rows).toEqual([{ id: '6d', reversible: 1 }, { id: '8d', reversible: 1 }]);
-    });
-
-    it('keeps the newest 200 Pre-images per Connection and drops the 201st', () => {
-      const other = 'conn-other';
-      tmp.db.prepare(`
-        INSERT INTO connections (id, name, connection_type, host, port, auth_mech, created_at, updated_at)
-        VALUES (?, 'Other', 'standard', 'localhost', 27017, 'none', ?, ?)
-      `).run(other, daysAgo(0), daysAgo(0));
-      const base = Date.now() - 3_600_000;
-      for (let i = 0; i < 201; i++) {
-        insertReversible(`e${String(i).padStart(3, '0')}`, new Date(base + i * 1000).toISOString());
-      }
-      // Older than every entry above, but alone on its Connection.
-      insertReversible('other-oldest', new Date(base - 1000).toISOString(), other);
-
-      sweep();
-
-      const kept = held();
-      expect(kept).toHaveLength(201);
-      expect(kept).not.toContain('e000');
-      expect(kept).toContain('e001');
-      expect(kept).toContain('other-oldest');
-    });
-  });
-
   describe('RecentFieldValueRepo.deleteOlderThan + MaintenanceService.purgeExpired', () => {
     const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
     const insertFieldValue = (id: string, value: string, lastUsedAt: string) =>

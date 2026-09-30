@@ -84,7 +84,7 @@ describe('migration 014 — strip persisted results', () => {
     const array = '[{"lastRun":1}]';
     seedTab(db, 'arr', 'collection', array);
 
-    runMigrations(db, all);
+    runMigrations(db, all.filter((m) => m.version <= 14));
 
     expect(JSON.parse(stateOf(db, 'coll'))).toEqual({
       queryRaw: '{"a":1}',
