@@ -945,7 +945,9 @@ function ConnectionFormImpl({
           tlsVerify: c.tls.verify,
           tlsCaPath: c.tls.caPath ?? '',
           tlsClientCertPath: c.tls.clientCertPath ?? '',
-          sshEnabled: Boolean(c.ssh?.enabled),
+          // A legacy row may carry ssh.enabled=true. SSH is unsupported and the schema now
+          // rejects it, so load it as off; the next save sends ssh.enabled=false and clears it.
+          sshEnabled: false,
           sshHost: c.ssh?.host ?? '',
           sshPort: c.ssh?.port ? String(c.ssh.port) : '22',
           sshUsername: c.ssh?.username ?? '',

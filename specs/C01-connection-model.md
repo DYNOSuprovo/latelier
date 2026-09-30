@@ -129,6 +129,8 @@ const TlsBlock = z.object({
 - Timeouts ≥ 1000 ms and ≤ 600 000 ms.
 - `maxPoolSize` 1–500.
 - If `tls.caPath` / `tls.clientCertPath` / `ssh.privateKeyPath` are present, they must be absolute paths. Existence is **not** checked at save time — validation only catches malformed strings; real failures surface at connect/probe time with a helpful error.
+- `ssh.enabled: true` is rejected (`VALIDATION`, field `ssh.enabled`) on create, update and test until SSH tunnels exist. `MongoPool.connect()` also refuses a stored `ssh_enabled = 1` row with the same error rather than connecting directly, so legacy data can never bypass the tunnel. The edit form loads such a row with the toggle off and sends `ssh: { enabled: false }`, which clears the stored flag on the next save.
+- **When SSH is built, server host-key verification (known_hosts or pinning) is a hard requirement**, not an option: an unverified tunnel endpoint defeats the point of the tunnel.
 
 ## 3. URI parser
 

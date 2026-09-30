@@ -27,6 +27,8 @@ const TlsSchema = z.object({
   clientCertPath: z.string().optional(),
 });
 
+const SSH_UNSUPPORTED_MESSAGE = 'SSH tunnels are not supported yet';
+
 const SshSchema = z
   .object({
     enabled: z.boolean(),
@@ -167,22 +169,14 @@ function applyCrossFieldRules(
   absOrThrow(data.tls?.clientCertPath, ['tls', 'clientCertPath']);
   absOrThrow(data.ssh?.privateKeyPath, ['ssh', 'privateKeyPath']);
 
-  // 6. SSH: if enabled, host and username required.
+  // 6. SSH tunnels are not implemented: an enabled flag would be stored and then
+  // silently connect directly, so reject it until a tunnel exists.
   if (data.ssh?.enabled) {
-    if (!data.ssh.host) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['ssh', 'host'],
-        message: 'SSH host is required when SSH is enabled',
-      });
-    }
-    if (!data.ssh.username) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['ssh', 'username'],
-        message: 'SSH username is required when SSH is enabled',
-      });
-    }
+    ctx.addIssue({
+      code: 'custom',
+      path: ['ssh', 'enabled'],
+      message: SSH_UNSUPPORTED_MESSAGE,
+    });
   }
 }
 
@@ -193,7 +187,7 @@ export const ConnectionInputSchema: z.ZodType<ConnectionInput> = z
 /**
  * Variant used for conn:test: never requires a password, because probes are
  * how users discover that their credentials don't work. Other cross-field
- * rules (X.509 needs TLS, SSH requires host/user, etc.) still apply.
+ * rules (X.509 needs TLS, SSH unsupported, etc.) still apply.
  */
 export const ConnectionTestInputSchema: z.ZodType<ConnectionInput> = z
   .object(BaseInputShape)
@@ -214,13 +208,11 @@ export const ConnectionTestInputSchema: z.ZodType<ConnectionInput> = z
       }
     }
     if (data.ssh?.enabled) {
-      if (!data.ssh.host) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['ssh', 'host'],
-          message: 'SSH host is required when SSH is enabled',
-        });
-      }
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ssh', 'enabled'],
+        message: SSH_UNSUPPORTED_MESSAGE,
+      });
     }
   });
 
