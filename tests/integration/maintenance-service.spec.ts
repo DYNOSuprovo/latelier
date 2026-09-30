@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo';
+import { RecentFieldValueRepo } from '../../electron/db/repositories/RecentFieldValueRepo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
 import { MaintenanceService } from '../../electron/services/MaintenanceService';
 import { createTempDb, type TempDb } from '../helpers/db';
@@ -88,7 +89,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', ()
       },
     };
 
-    const svc = new MaintenanceService({ recentRepo: repo, auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} });
+    const svc = new MaintenanceService({ recentRepo: repo, recentFieldValueRepo: new RecentFieldValueRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} });
 
     // First run — old row gone, lastRunAt set.
     svc.runIfNeeded(appState);
@@ -122,7 +123,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', ()
       set: <T>(key: string, value: T) => void store.set(key, value),
     };
 
-    new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded(appState);
+    new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), recentFieldValueRepo: new RecentFieldValueRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded(appState);
 
     const ids = (tmp.db.prepare('SELECT id FROM audit_log ORDER BY id').all() as { id: string }[]).map((r) => r.id);
     expect(ids).toEqual(['audit-89d', 'audit-now']);
@@ -142,7 +143,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', ()
         .map((r) => r.id);
     const sweep = () => {
       const store = new Map<string, unknown>();
-      new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded({
+      new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), recentFieldValueRepo: new RecentFieldValueRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded({
         get: <T>(key: string) => (store.get(key) ?? null) as T | null,
         set: <T>(key: string, value: T) => void store.set(key, value),
       });
@@ -179,6 +180,48 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', ()
       expect(kept).not.toContain('e000');
       expect(kept).toContain('e001');
       expect(kept).toContain('other-oldest');
+    });
+  });
+
+  describe('RecentFieldValueRepo.deleteOlderThan + MaintenanceService.purgeExpired', () => {
+    const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
+    const insertFieldValue = (id: string, value: string, lastUsedAt: string) =>
+      tmp.db.prepare(`
+        INSERT INTO recent_field_values
+          (id, connection_id, db_name, collection, field, value, val_type, last_used_at)
+        VALUES (?, ?, 'mydb', 'items', 'status', ?, 'string', ?)
+      `).run(id, CONNECTION_ID, value, lastUsedAt);
+
+    it('deleteOlderThan removes rows older than the threshold and keeps newer rows', () => {
+      const repo = new RecentFieldValueRepo(tmp.db);
+      insertFieldValue('old-91d', 'value-old-91', daysAgo(91));
+      insertFieldValue('old-31d', 'value-old-31', daysAgo(31));
+      insertFieldValue('fresh-1d', 'value-fresh', daysAgo(1));
+
+      const deleted = repo.deleteOlderThan(30);
+      expect(deleted).toBe(2);
+
+      expect(repo.list({ connectionId: CONNECTION_ID, dbName: 'mydb', collection: 'items', field: 'status' }).map((r) => r.id)).toEqual(['fresh-1d']);
+    });
+
+    it('MaintenanceService.runIfNeeded calls deleteOlderThan on recent_field_values', () => {
+      const queryRepo = new RecentQueryRepo(tmp.db);
+      const fieldValueRepo = new RecentFieldValueRepo(tmp.db);
+      insertFieldValue('field-31d', 'value-31', daysAgo(31));
+      insertFieldValue('field-fresh', 'value-fresh', daysAgo(1));
+
+      const store = new Map<string, unknown>();
+      const appState = {
+        get: <T>(key: string) => (store.get(key) ?? null) as T | null,
+        set: <T>(key: string, value: T) => {
+          store.set(key, value);
+        },
+      };
+
+      new MaintenanceService({ recentRepo: queryRepo, recentFieldValueRepo: fieldValueRepo, auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded(appState);
+
+      const remaining = fieldValueRepo.list({ connectionId: CONNECTION_ID, dbName: 'mydb', collection: 'items', field: 'status' });
+      expect(remaining.map((r) => r.id)).toEqual(['field-fresh']);
     });
   });
 });

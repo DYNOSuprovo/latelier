@@ -565,6 +565,7 @@ app.whenReady().then(() => {
   const checkpointLog = log;
   const maintenance = new MaintenanceService({
     recentRepo,
+    recentFieldValueRepo,
     auditRepo,
     checkpoint: () => {
       if (!truncateWal(checkpointDb)) checkpointLog.warn('maintenance', 'wal checkpoint was blocked');

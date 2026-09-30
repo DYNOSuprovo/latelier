@@ -3,6 +3,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo';
+import { RecentFieldValueRepo } from '../../electron/db/repositories/RecentFieldValueRepo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
 import { MaintenanceService } from '../../electron/services/MaintenanceService';
 import os from 'node:os';
@@ -42,6 +43,7 @@ describe('secure_delete and WAL truncation', () => {
     const store = new Map<string, unknown>();
     new MaintenanceService({
       recentRepo: new RecentQueryRepo(tmp.db),
+      recentFieldValueRepo: new RecentFieldValueRepo(tmp.db),
       auditRepo: new AuditRepo(tmp.db),
       checkpoint: () => void truncateWal(tmp.db),
     }).runIfNeeded({
