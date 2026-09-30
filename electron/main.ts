@@ -4,9 +4,12 @@ import {
   dialog,
   globalShortcut,
   ipcMain,
+  Menu,
   nativeTheme,
   safeStorage,
   screen,
+  session,
+  type WebContents,
 } from 'electron';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +76,8 @@ import { PrivateModeError } from './utils/privateFs.ts';
 import { createRouter } from './ipc/router.ts';
 import { senderCheck } from './ipc/senderGuard.ts';
 import { makeAppLocationCheck } from './security/appLocation.ts';
+import { installPermissionHandlers } from './security/permissions.ts';
+import { buildAppMenuTemplate } from './security/appMenu.ts';
 import { IPC_CHANNELS } from '@shared/ipc';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -251,13 +256,17 @@ function contentSecurityPolicy(dev: boolean): string {
   ].join('; ');
 }
 
-function hardenWindow(w: BrowserWindow): void {
+/**
+ * Session-wide hardening, installed once before any window exists. Everything
+ * here runs on the default session — the app never creates another partition.
+ */
+function hardenSession(): void {
   const dev = !!VITE_DEV_SERVER_URL;
 
   // Serve the policy as a header rather than a <meta> tag: one document, two
   // origins (the dev server over http, the build over file:), and a meta tag
   // would have to carry the looser of the two policies into the shipped app.
-  w.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -266,21 +275,33 @@ function hardenWindow(w: BrowserWindow): void {
     });
   });
 
+  installPermissionHandlers(session.defaultSession);
+}
+
+/**
+ * Applied to every webContents via `web-contents-created`, the main window
+ * included, so a window or view added later inherits the guard instead of
+ * needing someone to remember to call it.
+ */
+function guardWebContents(wc: WebContents): void {
   // Nothing in this app opens a second window. Denying by default means a
   // window.open or a target=_blank that slipped past review cannot spawn one
   // with this app's privileges. External links go through app:openExternal,
   // which validates the protocol and hands off to the system browser.
-  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   // Top-level navigation is likewise never legitimate here — the renderer is a
   // single-page app. Without this, a link click could replace the app with a
   // remote page that still holds the preload bridge.
-  w.webContents.on('will-navigate', (event, url) => {
+  wc.on('will-navigate', (event, url) => {
     if (!isAppLocation(url)) {
       event.preventDefault();
       log?.warn('window', 'blocked navigation', { url });
     }
   });
+
+  // No <webview> anywhere in the app; one would get its own renderer process.
+  wc.on('will-attach-webview', (event) => event.preventDefault());
 }
 
 function createWindow(): void {
@@ -312,11 +333,11 @@ function createWindow(): void {
       // this up, and the OS-level sandbox is worth more than the convenience.
       sandbox: true,
       webSecurity: true,
+      // Blocks Cmd/Ctrl+Alt+I and programmatic openDevTools in a shipped build.
+      devTools: !app.isPackaged,
       preload: path.join(MAIN_DIST, 'preload.cjs'),
     },
   });
-
-  hardenWindow(win);
 
   win.once('ready-to-show', () => {
     const w = win;
@@ -482,6 +503,18 @@ app.whenReady().then(() => {
   // as "development" in every shipped build. `isPackaged` cannot be omitted.
   log = createLogger(userDataDir, { level: app.isPackaged ? 'info' : 'debug' });
   log.info('boot', 'starting', { userDataDir, platform: process.platform });
+
+  // Security posture first: nothing may create a webContents before these are
+  // in place. The listener also fires for the main window.
+  hardenSession();
+  app.on('web-contents-created', (_e, wc) => guardWebContents(wc));
+  // The default menu carries View > Toggle Developer Tools and Reload. Dev
+  // keeps it; a packaged build gets a role-based menu without a View menu.
+  if (app.isPackaged) {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(buildAppMenuTemplate(process.platform === 'darwin', app.name)),
+    );
+  }
 
   // 1. DB + migrations
   try {
