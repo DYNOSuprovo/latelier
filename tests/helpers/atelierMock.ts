@@ -88,6 +88,9 @@ export function installAtelierMock(overrides: Deep<IpcApi> = {}): IpcApi {
       setTheme: async () => undefined,
       onThemeChanged: () => () => {},
     },
+    secrets: {
+      setPlaintextFallback: async (enabled) => ({ enabled }),
+    },
     query: {
       find: async () => ({ documents: [], durationMs: 0, hasMore: false }),
       count: async () => ({ count: 0 }),
@@ -188,6 +191,7 @@ export function installAtelierMock(overrides: Deep<IpcApi> = {}): IpcApi {
     user:   { ...base.user,   ...(overrides.user   ?? {}) } as IpcApi['user'],
     role:   { ...base.role,   ...(overrides.role   ?? {}) } as IpcApi['role'],
     prefs:  { ...base.prefs,  ...(overrides.prefs  ?? {}) } as IpcApi['prefs'],
+    secrets: { ...base.secrets, ...(overrides.secrets ?? {}) } as IpcApi['secrets'],
     query:  { ...base.query,  ...(overrides.query  ?? {}) } as IpcApi['query'],
     doc:    { ...base.doc,    ...(overrides.doc    ?? {}) } as IpcApi['doc'],
     saved:  { ...base.saved,  ...(overrides.saved  ?? {}) } as IpcApi['saved'],
@@ -391,6 +395,9 @@ function makePermissiveStub(): IpcApi {
       getTheme: async () => 'system' as const,
       setTheme: async () => undefined,
       onThemeChanged: () => noopFn,
+    },
+    secrets: {
+      setPlaintextFallback: async (enabled) => ({ enabled }),
     },
     query: {
       find: async () => ({ documents: [], durationMs: 0, hasMore: false }),

@@ -2,11 +2,29 @@ import { z } from 'zod';
 import type { WebContents } from 'electron';
 import { IPC_CHANNELS } from '@shared/ipc';
 import type { Router } from '../router.ts';
-import { NonEmpty, zodValidator } from '../validators.ts';
+import { zodValidator } from '../validators.ts';
+import { isPrefGetKey, prefSetSchema } from '../prefKeys.ts';
 import type { AppStateService } from '../../services/AppStateService.ts';
 
-const GetInput = z.object({ key: NonEmpty });
-const SetInput = z.object({ key: NonEmpty, value: z.unknown() });
+// Every refusal is a ZodError, which the router reports as VALIDATION.
+const GetInput = z.object({
+  key: z.string().refine(isPrefGetKey, { message: 'Unknown preference key' }),
+});
+const SetInput = z
+  .object({ key: z.string(), value: z.unknown() })
+  .superRefine(({ key, value }, ctx) => {
+    const schema = prefSetSchema(key);
+    if (!schema) {
+      ctx.addIssue({ code: 'custom', path: ['key'], message: 'Unknown preference key' });
+      return;
+    }
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({ code: 'custom', path: ['value', ...issue.path], message: issue.message });
+      }
+    }
+  });
 
 const SetThemeInput = z.object({
   mode: z.enum(['light', 'dark', 'system']),
