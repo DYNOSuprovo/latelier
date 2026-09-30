@@ -3,6 +3,7 @@ import { Button, Group, Modal, Table, Text, TextInput, VisuallyHidden } from '@m
 import { themeVars } from '../../theme/themeVars';
 import { I } from '../../icons';
 import { api } from '../../api/atelier';
+import { tlsWarning } from '../../utils/hostLocality';
 import { relativeTime } from '../../utils/relativeTime';
 import { useRovingHighlight } from '../../hooks/useRovingHighlight';
 import { STATUS_PRESENTATION, matchesConnectionQuery } from './connectionStatus';
@@ -54,13 +55,14 @@ function formatConnectionType(t: ConnectionSummary['connectionType']): string {
   return t === 'srv' ? 'SRV' : 'Standard';
 }
 
-function DetailField({ label, value }: { label: string; value: string }) {
+function DetailField({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   const T = themeVars;
   return (
     <Text size="xs" c="dimmed">
       <span style={{ color: T.textMuted }}>{label}</span>
       {' · '}
-      {value}
+      {/* The value text states the weakness itself; the colour only reinforces it. */}
+      {warn ? <span style={{ color: T.redText, fontWeight: 600 }}>{value}</span> : value}
     </Text>
   );
 }
@@ -124,6 +126,13 @@ function ConnectionDetailRow({
       </Text>
     );
   }
+  const tlsIsWeak =
+    tlsWarning({
+      enabled: detail.tls.enabled,
+      verify: detail.tls.verify,
+      host: detail.host,
+      viaSshTunnel: Boolean(detail.ssh?.enabled),
+    }) !== null;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 24, rowGap: 6 }}>
       <DetailField label="Default DB" value={detail.defaultDb || '—'} />
@@ -139,8 +148,11 @@ function ConnectionDetailRow({
             ? detail.tls.verify
               ? 'Enabled, verified'
               : 'Enabled, unverified'
-            : 'Disabled'
+            : tlsIsWeak
+              ? 'Disabled, plaintext to a remote host'
+              : 'Disabled'
         }
+        warn={tlsIsWeak}
       />
       <DetailField
         label="SSH tunnel"
