@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { wrapSource } from '../../electron/services/ScriptService';
+import { wrapSource } from '../../electron/script-runner/scriptSource';
 
 describe('wrapSource (last-expression rewrite)', () => {
   it('wraps a single expression with `return`', () => {
@@ -45,5 +45,9 @@ describe('wrapSource (last-expression rewrite)', () => {
   it('returns an IIFE for empty source', () => {
     const out = wrapSource('');
     expect(out).toMatch(/^\(async \(\) => \{[\s\S]*\}\)\(\)$/);
+  });
+
+  it('splices `return ` in at the last statement, leaving everything before it intact', () => {
+    expect(wrapSource('const x = 5;\nx + 1')).toBe('(async () => {\nconst x = 5;\nreturn x + 1\n})()');
   });
 });

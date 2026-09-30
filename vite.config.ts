@@ -32,24 +32,51 @@ export default defineConfig({
           },
         },
       },
-      preload: {
-        input: path.join(__dirname, 'electron/preload.ts'),
-        vite: {
-          resolve: {
-            alias: {
-              '@shared': path.resolve(__dirname, 'shared'),
+      // An array: each item is its own build. The second emits the script
+      // runner that ScriptService forks as an Electron utilityProcess. It must
+      // be `.cjs` (utilityProcess loads it with require), and it resolves
+      // `mongodb` and `bson` from node_modules at run time, like main does.
+      preload: [
+        {
+          input: path.join(__dirname, 'electron/preload.ts'),
+          vite: {
+            resolve: {
+              alias: {
+                '@shared': path.resolve(__dirname, 'shared'),
+              },
             },
-          },
-          build: {
-            rolldownOptions: {
-              output: {
-                format: 'cjs',
-                entryFileNames: '[name].cjs',
+            build: {
+              rolldownOptions: {
+                output: {
+                  format: 'cjs',
+                  entryFileNames: '[name].cjs',
+                },
               },
             },
           },
         },
-      },
+        {
+          input: { 'script-runner': path.join(__dirname, 'electron/script-runner/runner.ts') },
+          // Nothing in the renderer depends on the runner; skip the page reload.
+          onstart() {},
+          vite: {
+            resolve: {
+              alias: {
+                '@shared': path.resolve(__dirname, 'shared'),
+              },
+            },
+            build: {
+              rolldownOptions: {
+                external: ['mongodb', 'bson'],
+                output: {
+                  format: 'cjs',
+                  entryFileNames: '[name].cjs',
+                },
+              },
+            },
+          },
+        },
+      ],
     }),
   ],
 });

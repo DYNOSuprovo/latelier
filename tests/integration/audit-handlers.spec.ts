@@ -18,6 +18,7 @@ import { QueryService } from '../../electron/mongo/QueryService';
 import { IndexService } from '../../electron/mongo/IndexService';
 import { UserService } from '../../electron/mongo/UserService';
 import { ScriptService } from '../../electron/services/ScriptService';
+import { createTestSpawner } from '../helpers/runnerSpawner';
 import { RecentQueryService } from '../../electron/services/RecentQueryService';
 import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
@@ -109,7 +110,7 @@ describe('audit log via the router', () => {
     });
     logSpy = silentLogger();
     docSvc = new DocumentService(pool, { log: logSpy.log });
-    scriptSvc = new ScriptService({ pool });
+    scriptSvc = new ScriptService({ pool, spawner: createTestSpawner() });
     auditRepo = new AuditRepo(tmp.db);
     undoStore = new UndoStore();
     shim = createShim();

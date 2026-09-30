@@ -1,12 +1,16 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import type { MongoClient } from 'mongodb';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { MongoClient } from 'mongodb';
 import type { MongoMemoryServer } from 'mongodb-memory-server';
 import { ScriptService } from '../../electron/services/ScriptService';
+import { ConnectionRepo } from '../../electron/db/repositories/ConnectionRepo';
+import { ConnectionService, connectionReader } from '../../electron/mongo/ConnectionService';
 import { MongoPool } from '../../electron/mongo/MongoPool';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
-import { AppError, ReadOnlyConnectionError } from '../../electron/errors';
+import { AppError, ReadOnlyConnectionError, SystemError } from '../../electron/errors';
 import { createSafeStorageMock } from '../helpers/safeStorageMock';
 import { createTempDb, type TempDb } from '../helpers/db';
+import { createTestSpawner, type TestSpawner } from '../helpers/runnerSpawner';
 import {
   getSharedServer,
   stopSharedServer,
@@ -15,391 +19,217 @@ import {
   makeReader,
 } from '../helpers/mongo';
 
-/** Sleep that rejects on abort, used to simulate slow driver ops. */
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      const err = new Error('aborted');
-      (err as { name: string }).name = 'AbortError';
-      reject(err);
-      return;
-    }
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(t);
-        const err = new Error('aborted');
-        (err as { name: string }).name = 'AbortError';
-        reject(err);
-      },
-      { once: true },
-    );
-  });
+// Scripts run against the `test` database unless the call names another.
+const DB = 'test';
+
+let server: MongoMemoryServer;
+let hp: { host: string; port: number };
+let tmp: TempDb | undefined;
+let pool: MongoPool | undefined;
+let spawner: TestSpawner;
+let svc: ScriptService | undefined;
+
+beforeAll(async () => {
+  server = await getSharedServer();
+  hp = uriToHostPort(server.getUri());
+}, 60_000);
+
+afterAll(async () => {
+  await stopSharedServer();
+});
+
+afterEach(async () => {
+  // A leaked runner would hold vitest open after the suite: every run must
+  // have reaped its child, whichever way it ended. Checked before any cleanup
+  // so cleanup cannot hide a leak.
+  const deadline = Date.now() + 3000;
+  while (spawner.alive().length > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const leaked = spawner.alive().length;
+  svc?.cancelAll();
+  svc = undefined;
+  spawner.killAll();
+  if (pool) await pool.disconnectAll();
+  pool = undefined;
+  tmp?.cleanup();
+  tmp = undefined;
+  expect(leaked, 'runner children still alive after the test').toBe(0);
+});
+
+/** A service over a real pool and the shared mongod, forking the real runner. */
+function setup(overrides: Record<string, Partial<Parameters<typeof makeConnection>[2]>> = {}): ScriptService {
+  tmp = createTempDb();
+  const vault = new SecretsVault(tmp.db, createSafeStorageMock());
+  const conns = ['c1', 'ro', 'rw'].map((id) =>
+    makeConnection(id, hp, { defaultDb: DB, readOnly: id === 'ro', ...overrides[id] }),
+  );
+  pool = new MongoPool({ repo: makeReader(conns), vault });
+  spawner = createTestSpawner();
+  svc = new ScriptService({ pool, spawner });
+  return svc;
 }
 
-/**
- * Fake MongoClient — only the surface the script tests exercise.
- */
-function fakeClient(): MongoClient {
-  return {
-    db(name?: string) {
-      const dbName = name ?? 'test';
-      return {
-        databaseName: dbName,
-        command: async () => ({ ok: 1, db: dbName }),
-        listCollections: () => ({
-          toArray: async () => [{ name: 'users' }, { name: 'orders' }],
-        }),
-        collection: (cn: string) => ({
-          findOne: async () => ({ _id: 'x', name: cn, value: 42 }),
-          countDocuments: async (
-            _filter?: unknown,
-            opts?: { signal?: AbortSignal },
-          ) => {
-            // Simulate a slow op so cancel/timeout tests can interrupt.
-            if (opts?.signal) {
-              await new Promise<void>((resolve, reject) => {
-                const t = setTimeout(resolve, 200);
-                opts.signal!.addEventListener(
-                  'abort',
-                  () => {
-                    clearTimeout(t);
-                    const err = new Error('aborted');
-                    (err as { name: string }).name = 'AbortError';
-                    reject(err);
-                  },
-                  { once: true },
-                );
-              });
-            }
-            return 7;
-          },
-          find: (_filter?: unknown, opts?: { signal?: AbortSignal }) => {
-            // Capture the signal that the driver/cursor would normally hold,
-            // and surface it back through `toArray`/`forEach` so the
-            // wrapper's behaviour can be observed in tests.
-            const collSignal = opts?.signal;
-            return {
-              // Cursor-shaping methods return `this` so the chain stays alive.
-              sort() {
-                return this;
-              },
-              limit() {
-                return this;
-              },
-              project() {
-                return this;
-              },
-              toArray: async (cursorOpts?: { signal?: AbortSignal }) => {
-                const sig = cursorOpts?.signal ?? collSignal;
-                if (sig) {
-                  await abortableSleep(200, sig);
-                }
-                return [{ _id: 'a', __sigSeen: !!sig }, { _id: 'b' }];
-              },
-              forEach: async (
-                cb: (doc: unknown) => void,
-                cursorOpts?: { signal?: AbortSignal },
-              ) => {
-                const sig = cursorOpts?.signal ?? collSignal;
-                if (sig) {
-                  await abortableSleep(200, sig);
-                }
-                cb({ _id: 'a', __sigSeen: !!sig });
-              },
-              next: async (cursorOpts?: { signal?: AbortSignal }) => {
-                const sig = cursorOpts?.signal ?? collSignal;
-                if (sig) {
-                  await abortableSleep(200, sig);
-                }
-                return { _id: 'a', __sigSeen: !!sig };
-              },
-            };
-          },
-        }),
-      } as unknown;
+/** A pool stand-in for phases that never reach a real connection. */
+function fakePool(readClient: () => Promise<unknown>): MongoPool {
+  return Object.assign(new EventEmitter(), {
+    readClient,
+    connectionSpec: () => {
+      throw new Error('connectionSpec must not be reached');
     },
-  } as unknown as MongoClient;
+  }) as unknown as MongoPool;
 }
 
-function fakePool(client: MongoClient): MongoPool {
-  return {
-    readClient: async () => client,
-    isReadOnly: () => false,
-  } as unknown as MongoPool;
+async function countDocs(coll: string): Promise<number> {
+  const client = new MongoClient(server.getUri());
+  try {
+    return await client.db(DB).collection(coll).countDocuments();
+  } finally {
+    await client.close();
+  }
 }
 
-/**
- * Pool whose `readClient` never resolves on its own, but rejects when the
- * caller's cancel token aborts. This models a network hang during connect.
- */
-function hangingPool(): { pool: MongoPool; abortGetClient: () => void } {
-  let externalAbort: () => void = () => {};
-  const pool = {
-    readClient: () =>
-      new Promise<MongoClient>((_, reject) => {
-        externalAbort = () => {
-          const err = new Error('aborted');
-          (err as { name: string }).name = 'AbortError';
-          reject(err);
-        };
-      }),
-  } as unknown as MongoPool;
-  return { pool, abortGetClient: () => externalAbort() };
+async function until(cond: () => Promise<boolean>, what: string, ms = 10_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await cond()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`timed out waiting for ${what}`);
 }
 
-describe('ScriptService', () => {
+/** Resolves once a run has reached the point of writing `coll`'s marker doc. */
+function markerSeen(coll: string): Promise<void> {
+  return until(async () => (await countDocs(coll)) > 0, `marker in ${coll}`);
+}
+
+describe('ScriptService — results', () => {
   it('captures the last expression as the result', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: '1 + 2',
-    });
+    const r = await setup().run({ connectionId: 'c1', source: '1 + 2' });
     expect(r.valueJson).toBe('3');
     expect(r.printBuffer).toBe('');
   });
 
   it('returns null valueJson when the last statement is not an expression', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: 'const x = 5;',
-    });
+    const r = await setup().run({ connectionId: 'c1', source: 'const x = 5;' });
     expect(r.valueJson).toBeNull();
   });
 
-  it('supports top-level await', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: 'await db.runCommand({ ping: 1 })',
-    });
+  it('supports top-level await against the real server', async () => {
+    const r = await setup().run({ connectionId: 'c1', source: 'await db.runCommand({ ping: 1 })' });
     // valueJson is canonical EJSON, so numbers come back wrapped.
-    const value = JSON.parse(r.valueJson!);
-    expect(value.ok.$numberInt).toBe('1');
-    expect(value.db).toBe('test');
+    expect(JSON.parse(r.valueJson!)).toEqual({ ok: { $numberInt: '1' } });
   });
 
   it('respects dbName override', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
+    const r = await setup().run({
       connectionId: 'c1',
-      dbName: 'prod',
-      source: 'await db.runCommand({ ping: 1 })',
+      dbName: 'another_db',
+      source: 'await db.runCommand({ dbStats: 1 })',
     });
-    const value = JSON.parse(r.valueJson!);
-    expect(value.db).toBe('prod');
+    expect(JSON.parse(r.valueJson!).db).toBe('another_db');
+  });
+
+  it('use() switches the database for later calls', async () => {
+    const r = await setup().run({
+      connectionId: 'c1',
+      source: 'use("switched_db"); await db.runCommand({ dbStats: 1 })',
+    });
+    expect(JSON.parse(r.valueJson!).db).toBe('switched_db');
   });
 
   it('captures print() output', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: 'print("hello", "world"); 42',
-    });
+    const r = await setup().run({ connectionId: 'c1', source: 'print("hello", "world"); 42' });
     expect(r.printBuffer).toContain('hello world');
     // Plain primitives (numbers/booleans/strings) bypass EJSON wrapping.
     expect(r.valueJson).toBe('42');
   });
 
   it('caps the print buffer at ~64 KB', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
+    const r = await setup().run({
       connectionId: 'c1',
       source: 'for (let i = 0; i < 10000; i++) print("x".repeat(100));',
-      maxTimeMs: 5000,
+      maxTimeMs: 10_000,
     });
     expect(r.printBuffer.length).toBeLessThanOrEqual(64 * 1024);
+    expect(r.printBuffer.length).toBeGreaterThan(60 * 1024);
   });
 
-  it('throws ValidationError on syntax errors', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    await expect(
-      svc.run({
-        connectionId: 'c1',
-        source: 'const x = ;',
-      }),
-    ).rejects.toMatchObject({ code: 'VALIDATION' });
-  });
-
-  it('enforces maxTimeMs on a CPU-bound runaway', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const t0 = Date.now();
-    await expect(
-      svc.run({
-        connectionId: 'c1',
-        source: 'while (true) {}',
-        maxTimeMs: 200,
-      }),
-    ).rejects.toMatchObject({ code: 'TIMEOUT' });
-    // Should kill within a reasonable margin of the limit.
-    expect(Date.now() - t0).toBeLessThan(2000);
-  });
-
-  it('cancel(token) aborts an in-flight driver-bound script', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-1';
-    const promise = svc.run({
+  it('reports an un-awaited rejection in the print buffer instead of crashing the runner', async () => {
+    const r = await setup().run({
       connectionId: 'c1',
-      source: 'await db.users.countDocuments({})',
-      cancelToken: token,
+      // The awaited server call keeps the script alive past the tick in which
+      // Node reports the stray rejection.
+      source: 'Promise.reject(new Error("stray")); await db.runCommand({ ping: 1 }); 7',
     });
-    // Cancel after a tick — the fake's countDocuments waits 200ms with the
-    // signal it received from the auto-thread.
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(r.valueJson).toBe('7');
+    expect(r.printBuffer).toContain('ERROR: unhandled rejection:');
+    expect(r.printBuffer).toContain('stray');
   });
 
   it('round-trips an array of documents through EJSON', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const r = await svc.run({
+    const s = setup();
+    await s.run({
       connectionId: 'c1',
-      source: 'await db.users.find().toArray()',
+      source: 'await db.rt_docs.deleteMany({}); await db.rt_docs.insertMany([{ _id: "a" }, { _id: "b" }]); 1',
     });
+    const r = await s.run({ connectionId: 'c1', source: 'await db.rt_docs.find().sort({ _id: 1 }).toArray()' });
     const docs = JSON.parse(r.valueJson!);
-    expect(Array.isArray(docs)).toBe(true);
-    expect(docs).toHaveLength(2);
-    expect(docs[0]._id).toBe('a');
+    expect(docs).toEqual([{ _id: 'a' }, { _id: 'b' }]);
+  });
+
+  it('a normal small result still encodes fine and fast', async () => {
+    const t0 = Date.now();
+    const r = await setup().run({ connectionId: 'c1', source: '({ a: 1, b: [1, 2, 3] })' });
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(JSON.parse(r.valueJson!).b).toHaveLength(3);
+  });
+
+  it('refuses a result over the 50 MB cap with a clear error', async () => {
+    const promise = setup().run({
+      connectionId: 'c1',
+      // 60 MB across a handful of strings: over the cap, cheap to build.
+      source: 'Array.from({ length: 60 }, () => "x".repeat(1024 * 1024))',
+      maxTimeMs: 30_000,
+    });
+    await expect(promise).rejects.toMatchObject({ code: 'INTERNAL' });
+    await expect(promise).rejects.toThrow(/exceeds 52428800 byte cap/);
+  }, 60_000);
+
+  it('a result just under the cap is returned whole', async () => {
+    const r = await setup().run({
+      connectionId: 'c1',
+      source: '"x".repeat(1024 * 1024)',
+      maxTimeMs: 30_000,
+    });
+    expect(JSON.parse(r.valueJson!)).toHaveLength(1024 * 1024);
+  });
+});
+
+describe('ScriptService — errors', () => {
+  it('throws ValidationError on syntax errors', async () => {
+    await expect(setup().run({ connectionId: 'c1', source: 'const x = ;' })).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
   });
 
   it('the AppError thrown carries a stable code', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
     let caught: unknown;
     try {
-      await svc.run({ connectionId: 'c1', source: 'throw new Error("boom")' });
+      await setup().run({ connectionId: 'c1', source: 'throw new Error("boom")' });
     } catch (e) {
       caught = e;
     }
     expect(caught).toBeInstanceOf(AppError);
-  });
-
-  // ── Regression tests for reviewer feedback ─────────────────────────────
-
-  it('cancel(token) aborts a script even while the pool connect is hung', async () => {
-    // Repro: token-during-connect — register the controller before
-    // awaiting `pool.readClient`, otherwise `cancel(token)` finds nothing
-    // in `active` and the run is uncancelable.
-    const { pool, abortGetClient } = hangingPool();
-    const svc = new ScriptService({ pool });
-    const token = 'tok-hang';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: '1 + 1',
-      cancelToken: token,
-    });
-    // After a tick, fire the cancel. The hung connect's promise rejects
-    // (modelling the driver responding to abort) and the run surfaces
-    // a TIMEOUT error.
-    setTimeout(() => {
-      svc.cancel(token);
-      abortGetClient();
-    }, 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-  });
-
-  it('wall-clock timeout fires for an async hang that vm.timeout cannot catch', async () => {
-    // Repro: vm `timeout` only catches sync CPU runaways. An async wait
-    // on a never-resolving promise (or an async loop awaiting a slow op
-    // that ignores the signal) would hang `await result` forever
-    // without the wall-clock race.
-    //
-    // We use `new Promise(() => {})` rather than `while (true) await
-    // Promise.resolve()` because the latter would churn microtasks
-    // forever and prevent the worker from exiting after the assertion.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const t0 = Date.now();
-    await expect(
-      svc.run({
-        connectionId: 'c1',
-        source: 'await new Promise(() => {})',
-        maxTimeMs: 200,
-      }),
-    ).rejects.toMatchObject({ code: 'TIMEOUT' });
-    expect(Date.now() - t0).toBeLessThan(2000);
-  });
-
-  it('cancel() reaches cursor.toArray() through the wrapped cursor', async () => {
-    // Repro: prior wrapCollection only threaded signal into the
-    // collection method; .toArray() ran uncancelable. With cursor
-    // wrapping, the signal flows through.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-cursor';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.find().toArray()',
-      cancelToken: token,
-    });
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-  });
-
-  it('cancel() reaches cursor.forEach() through the wrapped cursor', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-foreach';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.find().forEach(() => {})',
-      cancelToken: token,
-    });
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-  });
-
-  it('cancel() reaches cursor.next() after sort/limit chaining', async () => {
-    // Cursor-shaping methods return `this`; the wrapper must keep the
-    // signal threaded across the chain.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-chain';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.find().sort({ _id: 1 }).limit(10).next()',
-      cancelToken: token,
-    });
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-  });
-
-  it('signal threads into cursor.toArray() even when find() is called with no args', async () => {
-    // Repro: prior `args.length === positional` rejected `find()` (0
-    // args, positional=1). With padded positionals, `find()` still
-    // gets the signal, and so do its cursor terminals.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-no-args';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.find().toArray()',
-      cancelToken: token,
-    });
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-  });
-
-  it('cancel() works on countDocuments() called with zero args', async () => {
-    // Same family as above but for a non-cursor-returning method.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'tok-count-no-args';
-    const promise = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.countDocuments()',
-      cancelToken: token,
-    });
-    setTimeout(() => svc.cancel(token), 20);
-    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect((caught as AppError).code).toBe('MONGO_ERROR');
+    expect((caught as AppError).message).toContain('boom');
   });
 
   it('reports SyntaxError line numbers that match the user source', async () => {
-    // Repro: the IIFE wrapper shifts every line by +1. Line 2 in the
-    // user's source must report as `script.js:2`, not `script.js:3`.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
     let caught: { code: string; message: string } | undefined;
     try {
-      await svc.run({
-        connectionId: 'c1',
-        // `const x = ;` is on line 1; expect `script.js:1` — never
-        // `script.js:2` (the wrapper would put it there).
-        source: 'const x = ;',
-      });
+      // `const x = ;` is on line 1; expect `script.js:1`, never the wrapper's `script.js:2`.
+      await setup().run({ connectionId: 'c1', source: 'const x = ;' });
     } catch (e) {
       caught = e as { code: string; message: string };
     }
@@ -408,487 +238,523 @@ describe('ScriptService', () => {
   });
 
   it('reports runtime stack lines that match the user source', async () => {
-    // Line 3 of the user's source throws; the surfaced stack/message
-    // should reference line 3, not line 4.
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    let caught: { code: string; message: string; stack?: string } | undefined;
+    let caught: { stack?: string } | undefined;
     try {
-      await svc.run({
+      await setup().run({
         connectionId: 'c1',
         source: ['const a = 1;', 'const b = 2;', 'throw new Error("boom")'].join('\n'),
       });
     } catch (e) {
-      caught = e as { code: string; message: string; stack?: string };
+      caught = e as { stack?: string };
     }
-    expect(caught).toBeDefined();
-    const blob = `${caught?.message ?? ''}\n${caught?.stack ?? ''}`;
-    // Wrapper-shifted line number is +1 — it must NOT appear.
-    expect(blob).not.toMatch(/script\.js:4\b/);
+    // The throw is on line 3. The wrapper-shifted line 4 must not appear.
+    expect(caught?.stack).toMatch(/script\.js:3\b/);
+    expect(caught?.stack).not.toMatch(/script\.js:4\b/);
   });
 
-  // ── Fuzz-found bug 1: shared cancelToken orphans the earlier run ──────
-  // A duplicate cancelToken used to silently overwrite the first run's
-  // AbortController in `active`, so `cancel(token)` only ever reached the
-  // second run — the first ran to completion uncancelable. The fix rejects
-  // a `run()` call whose token is already registered, instead of clobbering
-  // the earlier controller.
-
-  it('rejects run() with a cancelToken that is already in flight, instead of orphaning the earlier run', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'dup-token';
-    const runA = svc.run({
-      connectionId: 'c1',
-      // Fake driver call waits 200ms and honors the AbortSignal.
-      source: 'await db.users.countDocuments({})',
-      cancelToken: token,
-    });
-    // Let run A register its controller before run B reuses the token.
-    await new Promise((r) => setImmediate(r));
-
+  it('classifies a driver error the way the in-process runner did', async () => {
+    const s = setup();
+    await s.run({ connectionId: 'c1', source: 'await db.dup_keys.deleteMany({}); await db.dup_keys.insertOne({ _id: 1 }); 1' });
     await expect(
-      svc.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token }),
+      s.run({ connectionId: 'c1', source: 'await db.dup_keys.insertOne({ _id: 1 })' }),
     ).rejects.toMatchObject({ code: 'CONFLICT' });
-
-    // The token was never orphaned — cancel() still reaches run A.
-    svc.cancel(token);
-    await expect(runA).rejects.toMatchObject({ code: 'TIMEOUT' });
   });
 
-  it('frees a cancelToken for reuse once the run holding it finishes', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'reuse-token';
-    await svc.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token });
-    // `finally` deletes the token on completion — a second run may reuse it.
-    const r = await svc.run({ connectionId: 'c1', source: '2 + 2', cancelToken: token });
-    expect(r.valueJson).toBe('4');
-  });
-
-  it('two different cancelTokens cancel independently (adjacent-case regression)', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const pA = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.countDocuments({})',
-      cancelToken: 'tok-indep-a',
+  it('surfaces a connect failure from the pool before any runner is spawned', async () => {
+    setup();
+    await expect(svcRun({ connectionId: 'no-such-connection', source: '1' })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
     });
-    const pB = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.countDocuments({})',
-      cancelToken: 'tok-indep-b',
-    });
-    await new Promise((r) => setImmediate(r));
-    svc.cancel('tok-indep-a');
-    await expect(pA).rejects.toMatchObject({ code: 'TIMEOUT' });
-    // B was never cancelled — it completes normally.
-    const rB = await pB;
-    expect(rB.valueJson).toBe('7');
-  });
-
-  // ── P1 review regression: cancel-then-immediate-reuse re-orphans a run ──
-  // cancel(token) used to delete the map entry immediately. A same-token
-  // run() fired right after would then see the token as free, start, and
-  // get its own controller silently destroyed when the *first* run's
-  // `finally` unconditionally deleted whatever was in the map for that
-  // token by then. The fix keeps the entry until its owning run's own
-  // cleanup removes it, so a same-token run() right after cancel() still
-  // sees the token as in-use (CONFLICT) until the cancelled run actually
-  // finishes.
-
-  it('rejects a same-token run() fired immediately after cancel(), until the cancelled run actually finishes', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const token = 'cancel-then-reuse-token';
-
-    const runA = svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.countDocuments({})',
-      cancelToken: token,
-    });
-    // Let run A register its controller before cancel/reuse.
-    await new Promise((r) => setImmediate(r));
-
-    svc.cancel(token);
-
-    // Immediately reuse the token, before run A's own `finally` has run.
-    // The token is still legitimately held by A — this must be rejected,
-    // not allowed to start and later be silently destroyed by A's cleanup.
-    await expect(
-      svc.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token }),
-    ).rejects.toMatchObject({ code: 'CONFLICT' });
-
-    // Let run A's own cleanup settle.
-    await expect(runA).rejects.toMatchObject({ code: 'TIMEOUT' });
-
-    // Now that A has genuinely finished, the token is reusable.
-    const r = await svc.run({ connectionId: 'c1', source: '3 + 3', cancelToken: token });
-    expect(r.valueJson).toBe('6');
-  });
-
-  // ── Fuzz-found bug 2: unbounded, uncancelable EJSON encode ─────────────
-  // `safeEjsonEncodeJson` used to run outside the vm/wall-clock race, so a
-  // large-but-under-cap array result could block the single-threaded main
-  // process for seconds, independent of maxTimeMs and not stoppable via
-  // cancel(). The fix encodes arrays incrementally, checking the same
-  // deadline/AbortSignal every batch and yielding to the event loop
-  // between batches.
-
-  const LARGE_ARRAY_SOURCE =
-    'Array.from({ length: 600000 }, (_, i) => ({ n: i, s: "x" }))';
-
-  it(
-    'enforces maxTimeMs during EJSON-encoding of a large result, not just script execution',
-    async () => {
-      const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-      const t0 = Date.now();
-      await expect(
-        svc.run({
-          connectionId: 'c1',
-          // Fast to build inside the vm; encoding 600k docs takes far
-          // longer than the 300ms budget below.
-          source: LARGE_ARRAY_SOURCE,
-          maxTimeMs: 300,
-        }),
-      ).rejects.toMatchObject({ code: 'TIMEOUT' });
-      // Must bail out DURING encode, nowhere near the multi-second wall
-      // time a full unbounded encode of 600k docs takes. Generous slack
-      // for CI, still nothing like "ran to completion".
-      expect(Date.now() - t0).toBeLessThan(5000);
-    },
-    15000,
-  );
-
-  it(
-    'cancel() stops an in-progress EJSON encode of a large result',
-    async () => {
-      const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-      const token = 'tok-encode-cancel';
-      const t0 = Date.now();
-      const promise = svc.run({
-        connectionId: 'c1',
-        source: LARGE_ARRAY_SOURCE,
-        cancelToken: token,
-        // Large budget — only cancel() should be able to stop this run.
-        maxTimeMs: 20000,
-      });
-      // Give the vm time to finish building the array and enter the
-      // encode step, then cancel mid-encode.
-      setTimeout(() => svc.cancel(token), 50);
-      await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT' });
-      expect(Date.now() - t0).toBeLessThan(5000);
-    },
-    15000,
-  );
-
-  it(
-    'does not block the event loop for the full duration of encoding a large result',
-    async () => {
-      const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-      let ticks = 0;
-      const timer = setInterval(() => {
-        ticks++;
-      }, 10);
-      await svc.run({
-        connectionId: 'c1',
-        source: LARGE_ARRAY_SOURCE,
-        maxTimeMs: 20000,
-      });
-      clearInterval(timer);
-      // A fully-synchronous encode would starve this timer for the whole
-      // run — several event-loop ticks proves the main thread was freed
-      // up periodically during encoding.
-      expect(ticks).toBeGreaterThan(2);
-    },
-    15000,
-  );
-
-  it('a normal small result still encodes fine and fast (adjacent-case regression)', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    const t0 = Date.now();
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.find().toArray()',
-    });
-    expect(Date.now() - t0).toBeLessThan(1000);
-    const docs = JSON.parse(r.valueJson!);
-    expect(docs).toHaveLength(2);
-  });
-
-  it('a script needing close to its full maxTimeMs still completes (adjacent-case regression)', async () => {
-    const svc = new ScriptService({ pool: fakePool(fakeClient()) });
-    // Fake driver waits 200ms; budget is comfortably above that but far
-    // from unlimited.
-    const r = await svc.run({
-      connectionId: 'c1',
-      source: 'await db.users.countDocuments({})',
-      maxTimeMs: 1000,
-    });
-    expect(r.valueJson).toBe('7');
+    expect(spawner.spawns).toHaveLength(0);
   });
 });
 
-// ── Real-cursor behaviour against mongodb-memory-server ───────────────────
-// The fakeClient above returns plain objects, not real `AbstractCursor`
-// instances, so it can't exercise the cursor auto-iterate path. These
-// tests hit a real Mongo so `db.coll.find()` returns a true FindCursor.
+function svcRun(input: Parameters<ScriptService['run']>[0]): ReturnType<ScriptService['run']> {
+  return svc!.run(input);
+}
+
+describe('ScriptService — timeouts kill the runner', () => {
+  it('enforces maxTimeMs on a CPU-bound runaway', async () => {
+    const t0 = Date.now();
+    await expect(
+      setup().run({ connectionId: 'c1', source: 'while (true) {}', maxTimeMs: 300 }),
+    ).rejects.toMatchObject({
+      code: 'TIMEOUT',
+      message: 'script exceeded 300ms (cancel and rerun, or raise the limit)',
+    });
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it('a microtask loop times out, the app stays responsive, and the next run works', async () => {
+    const s = setup();
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 20);
+    const t0 = Date.now();
+    try {
+      await expect(
+        s.run({
+          connectionId: 'c1',
+          source: 'while (true) await Promise.resolve()',
+          maxTimeMs: 500,
+        }),
+      ).rejects.toMatchObject({ code: 'TIMEOUT' });
+    } finally {
+      clearInterval(timer);
+    }
+    expect(Date.now() - t0).toBeLessThan(1500);
+    // This process shares nothing with the runner, so its own loop kept turning.
+    expect(ticks).toBeGreaterThan(5);
+
+    const next = await s.run({ connectionId: 'c1', source: '1 + 1' });
+    expect(next.valueJson).toBe('2');
+  });
+
+  it('the microtask loop really ran before it was killed', async () => {
+    const s = setup();
+    await expect(
+      s.run({
+        connectionId: 'c1',
+        source: 'await db.micro_marker.insertOne({ started: 1 }); while (true) await Promise.resolve()',
+        maxTimeMs: 3000,
+      }),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(await countDocs('micro_marker')).toBeGreaterThan(0);
+  });
+
+  it('a promise that never settles times out', async () => {
+    const t0 = Date.now();
+    await expect(
+      setup().run({ connectionId: 'c1', source: 'await new Promise(() => {})', maxTimeMs: 300 }),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it('a long-awaited server call times out at maxTimeMs, not when the server answers', async () => {
+    const s = setup();
+    await s.run({ connectionId: 'c1', source: 'await db.slow_coll.insertOne({ n: 1 }); 1' });
+    const t0 = Date.now();
+    await expect(
+      s.run({
+        connectionId: 'c1',
+        // Server-side sleep of 5 s, itself bounded so it cannot outlive the test.
+        source: 'await db.slow_coll.find({ $where: "sleep(5000) || true" }).maxTimeMS(6000).toArray()',
+        maxTimeMs: 1000,
+      }),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(Date.now() - t0).toBeLessThan(3500);
+  }, 20_000);
+
+  it('enforces maxTimeMs during the encode of a large result', async () => {
+    const t0 = Date.now();
+    await expect(
+      setup().run({
+        connectionId: 'c1',
+        source: 'Array.from({ length: 600000 }, (_, i) => ({ n: i, s: "x" }))',
+        maxTimeMs: 300,
+      }),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(Date.now() - t0).toBeLessThan(5000);
+  }, 15_000);
+
+  it('a script needing close to its maxTimeMs still completes', async () => {
+    const r = await setup().run({
+      connectionId: 'c1',
+      source: 'await new Promise((r) => { const t = Date.now(); (function spin() { Promise.resolve().then(() => Date.now() - t > 400 ? r() : spin()); })(); }); "done"',
+      maxTimeMs: 5000,
+    });
+    expect(r.valueJson).toBe('"done"');
+  });
+});
+
+describe('ScriptService — runner lifecycle', () => {
+  it('one runner per run, and each is reaped', async () => {
+    const s = setup();
+    await s.run({ connectionId: 'c1', source: '1' });
+    await s.run({ connectionId: 'c1', source: '2' });
+    expect(spawner.spawns).toHaveLength(2);
+    await until(async () => spawner.alive().length === 0, 'runners to exit', 3000);
+  });
+
+  it('a runner that dies mid-run surfaces a clean SystemError', async () => {
+    const t0 = Date.now();
+    let caught: unknown;
+    try {
+      // Escape attempt, kept here on purpose: it is how a hostile script
+      // would take its own process down.
+      await setup().run({
+        connectionId: 'c1',
+        source: 'this.constructor.constructor("return process")().exit(3)',
+        maxTimeMs: 30_000,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SystemError);
+    expect((caught as SystemError).code).toBe('INTERNAL');
+    expect((caught as SystemError).message).toMatch(/exited unexpectedly \(exit code 3\)/);
+    // Reported promptly, not at the 30 s wall clock.
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+
+  it('cancelAll kills live runners, including runs with no cancel token', async () => {
+    const s = setup();
+    const promise = s.run({
+      connectionId: 'c1',
+      source: 'await db.cancelall_marker.insertOne({ t: 1 }); await new Promise(() => {})',
+      maxTimeMs: 30_000,
+    });
+    const settled = promise.then(
+      () => 'resolved',
+      (e: AppError) => e,
+    );
+    await markerSeen('cancelall_marker');
+    expect(spawner.alive()).toHaveLength(1);
+    s.cancelAll();
+    const outcome = await settled;
+    expect(outcome).toMatchObject({ code: 'TIMEOUT', message: 'script cancelled' });
+    await until(async () => spawner.alive().length === 0, 'runner to die', 3000);
+  });
+
+  it('never puts credentials in argv or env; they travel only in the request message', async () => {
+    setup();
+    // The user is unknown to the server, so the run fails at authentication:
+    // the spawn, which is what this test inspects, has happened by then.
+    // A script-visible secret would show up in argv, env or the request.
+    const sentinel = 'pw-SENTINEL-9f3a';
+    const now = new Date().toISOString();
+    tmp!.db
+      .prepare(
+        `INSERT INTO connections (id, name, connection_type, host, port, auth_mech, created_at, updated_at)
+         VALUES ('authed', 'authed', 'standard', 'localhost', 27017, 'scram256', ?, ?)`,
+      )
+      .run(now, now);
+    const vault = new SecretsVault(tmp!.db, createSafeStorageMock());
+    vault.set('authed', 'password', sentinel);
+    const authed = makeConnection('authed', hp, {
+      defaultDb: DB,
+      authMech: 'scram256',
+      authUsername: 'nobody',
+    });
+    pool = new MongoPool({ repo: makeReader([authed]), vault });
+    // The pool pre-flight would fail authentication first, so stand in for it.
+    vi.spyOn(pool, 'readClient').mockResolvedValue({} as never);
+    svc = new ScriptService({ pool, spawner });
+    await expect(svc.run({ connectionId: 'authed', source: '1', maxTimeMs: 5000 })).rejects.toBeInstanceOf(
+      AppError,
+    );
+
+    expect(spawner.spawns).toHaveLength(1);
+    const spawn = spawner.spawns[0]!;
+    expect(JSON.stringify(spawn.args)).not.toContain(sentinel);
+    expect(JSON.stringify(spawn.env)).not.toContain(sentinel);
+    const request = spawn.sent[0] as { type: string; uri: string };
+    expect(request.type).toBe('run');
+    expect(request.uri).toContain(sentinel);
+  });
+});
+
+describe('ScriptService — cancel', () => {
+  it('cancel(token) stops an in-flight script', async () => {
+    const s = setup();
+    const token = 'tok-inflight';
+    const promise = s.run({
+      connectionId: 'c1',
+      source: 'await db.cancel_marker.insertOne({ t: 1 }); await new Promise(() => {})',
+      cancelToken: token,
+      maxTimeMs: 30_000,
+    });
+    const settled = promise.then(
+      () => 'resolved',
+      (e: AppError) => e,
+    );
+    await markerSeen('cancel_marker');
+    s.cancel(token);
+    expect(await settled).toMatchObject({ code: 'TIMEOUT', message: 'script cancelled' });
+  });
+
+  it('cancel(token) aborts a script even while the pool connect is hung', async () => {
+    // The token is registered before awaiting the pool; otherwise a hung
+    // connect would leave the run uncancelable.
+    let rejectConnect: (e: Error) => void = () => {};
+    tmp = undefined;
+    spawner = createTestSpawner();
+    svc = new ScriptService({
+      pool: fakePool(
+        () =>
+          new Promise((_, reject) => {
+            rejectConnect = reject;
+          }),
+      ),
+      spawner,
+    });
+    const token = 'tok-hang';
+    const promise = svc.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token });
+    setTimeout(() => {
+      svc!.cancel(token);
+      rejectConnect(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    }, 20);
+    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT', message: 'script cancelled' });
+    expect(spawner.spawns).toHaveLength(0);
+  });
+
+  it('a cancel that lands before the connect finishes never spawns a runner', async () => {
+    const s = setup();
+    const token = 'tok-early';
+    const promise = s.run({ connectionId: 'c1', source: '1', cancelToken: token });
+    s.cancel(token);
+    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT', message: 'script cancelled' });
+    expect(spawner.spawns).toHaveLength(0);
+  });
+
+  it('cancel() stops an in-progress encode of a large result', async () => {
+    const s = setup();
+    const token = 'tok-encode-cancel';
+    const t0 = Date.now();
+    const promise = s.run({
+      connectionId: 'c1',
+      source: 'Array.from({ length: 600000 }, (_, i) => ({ n: i, s: "x" }))',
+      cancelToken: token,
+      maxTimeMs: 20_000,
+    });
+    // Wait for the runner to have its request, then cancel mid-build/encode.
+    await until(async () => spawner.spawns.length > 0, 'spawn');
+    setTimeout(() => s.cancel(token), 100);
+    await expect(promise).rejects.toMatchObject({ code: 'TIMEOUT', message: 'script cancelled' });
+    expect(Date.now() - t0).toBeLessThan(5000);
+  }, 15_000);
+
+  it('rejects run() with a cancelToken that is already in flight, instead of orphaning the earlier run', async () => {
+    const s = setup();
+    const token = 'dup-token';
+    const runA = s.run({ connectionId: 'c1', source: 'await new Promise(() => {})', cancelToken: token, maxTimeMs: 30_000 });
+    const settledA = runA.then(() => 'resolved', (e: AppError) => e);
+    await new Promise((r) => setImmediate(r));
+
+    await expect(
+      s.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    // The token was never orphaned: cancel() still reaches run A.
+    s.cancel(token);
+    expect(await settledA).toMatchObject({ code: 'TIMEOUT' });
+  });
+
+  it('frees a cancelToken for reuse once the run holding it finishes', async () => {
+    const s = setup();
+    const token = 'reuse-token';
+    await s.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token });
+    const r = await s.run({ connectionId: 'c1', source: '2 + 2', cancelToken: token });
+    expect(r.valueJson).toBe('4');
+  });
+
+  it('two different cancelTokens cancel independently', async () => {
+    const s = setup();
+    const pA = s.run({ connectionId: 'c1', source: 'await new Promise(() => {})', cancelToken: 'tok-indep-a', maxTimeMs: 30_000 });
+    const pB = s.run({ connectionId: 'c1', source: '"b done"', cancelToken: 'tok-indep-b' });
+    const settledA = pA.then(() => 'resolved', (e: AppError) => e);
+    await new Promise((r) => setImmediate(r));
+    s.cancel('tok-indep-a');
+    expect(await settledA).toMatchObject({ code: 'TIMEOUT' });
+    // B was never cancelled: it completes normally.
+    expect((await pB).valueJson).toBe('"b done"');
+  });
+
+  it('rejects a same-token run() fired immediately after cancel(), until the cancelled run finishes', async () => {
+    const s = setup();
+    const token = 'cancel-then-reuse-token';
+    const runA = s.run({ connectionId: 'c1', source: 'await new Promise(() => {})', cancelToken: token, maxTimeMs: 30_000 });
+    const settledA = runA.then(() => 'resolved', (e: AppError) => e);
+    await new Promise((r) => setImmediate(r));
+
+    s.cancel(token);
+
+    // Run A's own cleanup has not run yet: the token is still legitimately
+    // held, so a reuse must be rejected rather than silently destroyed later.
+    await expect(
+      s.run({ connectionId: 'c1', source: '1 + 1', cancelToken: token }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(await settledA).toMatchObject({ code: 'TIMEOUT' });
+    const r = await s.run({ connectionId: 'c1', source: '3 + 3', cancelToken: token });
+    expect(r.valueJson).toBe('6');
+  });
+});
+
 describe('ScriptService — real cursor results', () => {
-  let server: MongoMemoryServer;
-  let hp: { host: string; port: number };
-  let tmp: TempDb;
-  let pool: MongoPool;
-
-  beforeAll(async () => {
-    server = await getSharedServer();
-    hp = uriToHostPort(server.getUri());
-  }, 60_000);
-
-  afterAll(async () => {
-    await stopSharedServer();
-  });
-
-  afterEach(async () => {
-    if (pool) await pool.disconnectAll();
-    tmp?.cleanup();
-  });
-
-  function setup(): MongoPool {
-    tmp = createTempDb();
-    const vault = new SecretsVault(tmp.db, createSafeStorageMock());
-    const conn = makeConnection('c1', hp, { defaultDb: 'cursors_test' });
-    pool = new MongoPool({ repo: makeReader([conn]), vault });
-    return pool;
-  }
-
   it('auto-iterates a bare find() into an array of documents', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    // Seed three docs first, then run a script whose final expression
-    // is a bare `find()` cursor — the prior behaviour returned `null`.
-    await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source:
-        'await db.bare_find.insertMany([{n:1},{n:2},{n:3}]); 1',
-    });
-    const r = await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source: 'db.bare_find.find()',
-    });
+    const s = setup();
+    await s.run({ connectionId: 'c1', source: 'await db.bare_find.deleteMany({}); await db.bare_find.insertMany([{n:1},{n:2},{n:3}]); 1' });
+    const r = await s.run({ connectionId: 'c1', source: 'db.bare_find.find()' });
     const docs = JSON.parse(r.valueJson!);
     expect(Array.isArray(docs)).toBe(true);
     expect(docs).toHaveLength(3);
-    // No truncation note for a small result.
     expect(r.printBuffer).not.toMatch(/cursor truncated/);
   });
 
   it('auto-iterates an aggregation cursor', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    await svc.run({
+    const s = setup();
+    await s.run({ connectionId: 'c1', source: 'await db.agg_find.deleteMany({}); await db.agg_find.insertMany([{g:"x"},{g:"x"},{g:"y"}]); 1' });
+    const r = await s.run({
       connectionId: 'c1',
-      dbName: 'cursors_test',
-      source:
-        'await db.agg_find.insertMany([{g:"x"},{g:"x"},{g:"y"}]); 1',
-    });
-    const r = await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source:
-        'db.agg_find.aggregate([{ $group: { _id: "$g", c: { $sum: 1 } } }])',
+      source: 'db.agg_find.aggregate([{ $group: { _id: "$g", c: { $sum: 1 } } }])',
       ejsonRelaxed: true,
     });
     const groups = JSON.parse(r.valueJson!) as Array<{ _id: string; c: number }>;
-    expect(groups).toHaveLength(2);
-    const sorted = groups.slice().sort((a, b) => a._id.localeCompare(b._id));
-    expect(sorted[0]).toEqual({ _id: 'x', c: 2 });
-    expect(sorted[1]).toEqual({ _id: 'y', c: 1 });
+    expect(groups.slice().sort((a, b) => a._id.localeCompare(b._id))).toEqual([
+      { _id: 'x', c: 2 },
+      { _id: 'y', c: 1 },
+    ]);
   });
 
   it('caps a large find() at 50 docs and notes the truncation', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    // Seed 60 docs so the 50-doc cap kicks in.
+    const s = setup();
     const seed = Array.from({ length: 60 }, (_, i) => `{ n: ${i} }`).join(',');
-    await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source: `await db.big_find.insertMany([${seed}]); 1`,
-    });
-    const r = await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source: 'db.big_find.find()',
-    });
-    const docs = JSON.parse(r.valueJson!);
-    expect(Array.isArray(docs)).toBe(true);
-    expect(docs).toHaveLength(50);
+    await s.run({ connectionId: 'c1', source: `await db.big_find.deleteMany({}); await db.big_find.insertMany([${seed}]); 1` });
+    const r = await s.run({ connectionId: 'c1', source: 'db.big_find.find()' });
+    expect(JSON.parse(r.valueJson!)).toHaveLength(50);
     expect(r.printBuffer).toMatch(/cursor truncated to first 50 documents/);
   });
 
   it('explicit .toArray() still returns the full result with no truncation note', async () => {
-    const svc = new ScriptService({ pool: setup() });
+    const s = setup();
     const seed = Array.from({ length: 60 }, (_, i) => `{ n: ${i} }`).join(',');
-    await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source: `await db.full_find.insertMany([${seed}]); 1`,
-    });
-    const r = await svc.run({
-      connectionId: 'c1',
-      dbName: 'cursors_test',
-      source: 'await db.full_find.find().toArray()',
-    });
-    const docs = JSON.parse(r.valueJson!);
-    expect(docs).toHaveLength(60);
+    await s.run({ connectionId: 'c1', source: `await db.full_find.deleteMany({}); await db.full_find.insertMany([${seed}]); 1` });
+    const r = await s.run({ connectionId: 'c1', source: 'await db.full_find.find().toArray()' });
+    expect(JSON.parse(r.valueJson!)).toHaveLength(60);
     expect(r.printBuffer).not.toMatch(/cursor truncated/);
   });
 });
 
-// ── Read-only connection guard (ADR 0005 Bucket C) ────────────────────────
+// Read-only is still the in-runner proxy guard in this design (the runner owns
+// its own client), so these pin the guard's behaviour across the process split.
 describe('ScriptService — read-only connection', () => {
-  let server: MongoMemoryServer;
-  let hp: { host: string; port: number };
-  let tmp: TempDb;
-  let pool: MongoPool;
-
-  beforeAll(async () => {
-    server = await getSharedServer();
-    hp = uriToHostPort(server.getUri());
-  }, 60_000);
-
-  afterAll(async () => {
-    await stopSharedServer();
-  });
-
-  afterEach(async () => {
-    if (pool) await pool.disconnectAll();
-    tmp?.cleanup();
-  });
-
-  function setup(): MongoPool {
-    tmp = createTempDb();
-    const vault = new SecretsVault(tmp.db, createSafeStorageMock());
-    const ro = makeConnection('ro', hp, { defaultDb: 'script_ro_test', readOnly: true });
-    const rw = makeConnection('rw', hp, { defaultDb: 'script_ro_test' });
-    pool = new MongoPool({ repo: makeReader([ro, rw]), vault });
-    return pool;
-  }
-
   it('reads still work on a read-only connection', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    await svc.run({
-      connectionId: 'rw',
-      dbName: 'script_ro_test',
-      source: 'await db.ro_reads.insertMany([{n:1},{n:2}]); 1',
-    });
-    const r = await svc.run({
-      connectionId: 'ro',
-      dbName: 'script_ro_test',
-      source: 'await db.ro_reads.find().toArray()',
-    });
+    const s = setup();
+    await s.run({ connectionId: 'rw', source: 'await db.ro_reads.deleteMany({}); await db.ro_reads.insertMany([{n:1},{n:2}]); 1' });
+    const r = await s.run({ connectionId: 'ro', source: 'await db.ro_reads.find().toArray()' });
     expect(JSON.parse(r.valueJson!)).toHaveLength(2);
   });
 
   it('a write throws ReadOnlyConnectionError and does not mutate data', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    await svc.run({
-      connectionId: 'rw',
-      dbName: 'script_ro_test',
-      source: 'await db.ro_writes.insertMany([{n:1}]); 1',
-    });
+    const s = setup();
+    await s.run({ connectionId: 'rw', source: 'await db.ro_writes.deleteMany({}); await db.ro_writes.insertMany([{n:1}]); 1' });
     await expect(
-      svc.run({
-        connectionId: 'ro',
-        dbName: 'script_ro_test',
-        source: 'await db.ro_writes.deleteMany({})',
-      }),
+      s.run({ connectionId: 'ro', source: 'await db.ro_writes.deleteMany({})' }),
     ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
-    const r = await svc.run({
-      connectionId: 'rw',
-      dbName: 'script_ro_test',
-      source: 'await db.ro_writes.find().toArray()',
-    });
+    const r = await s.run({ connectionId: 'rw', source: 'await db.ro_writes.find().toArray()' });
     expect(JSON.parse(r.valueJson!)).toHaveLength(1);
   });
 
   it('an aggregate with $merge/$out throws ReadOnlyConnectionError', async () => {
-    const svc = new ScriptService({ pool: setup() });
     await expect(
-      svc.run({
-        connectionId: 'ro',
-        dbName: 'script_ro_test',
-        source: "db.ro_writes.aggregate([{ $merge: { into: 'ro_merge_target' } }])",
-      }),
+      setup().run({ connectionId: 'ro', source: "db.ro_writes.aggregate([{ $merge: { into: 'ro_merge_target' } }])" }),
     ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
   });
 
   it('db.dropDatabase() throws ReadOnlyConnectionError', async () => {
-    const svc = new ScriptService({ pool: setup() });
     await expect(
-      svc.run({ connectionId: 'ro', dbName: 'script_ro_test', source: 'await db.dropDatabase()' }),
+      setup().run({ connectionId: 'ro', source: 'await db.dropDatabase()' }),
+    ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
+  });
+
+  it('a sibling database handle is guarded too', async () => {
+    await expect(
+      setup().run({ connectionId: 'ro', source: "await db.getSiblingDB('script_ro_sibling').x.insertOne({ n: 1 })" }),
     ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
   });
 
   it('the identical write succeeds on the non-read-only connection (regression)', async () => {
-    const svc = new ScriptService({ pool: setup() });
-    const r = await svc.run({
-      connectionId: 'rw',
-      dbName: 'script_ro_test',
-      source: 'await db.ro_regress.insertOne({ n: 1 }); 1',
-    });
+    const r = await setup().run({ connectionId: 'rw', source: 'await db.ro_regress.insertOne({ n: 1 }); 1' });
     expect(r.valueJson).toBe('1');
   });
+});
 
-  /**
-   * A connectionId whose repo lookup returns writable for its first two
-   * calls (the connect handshake, then the script's first write check) and
-   * read-only from the third call on — simulating the Connection flipping to
-   * read-only partway through an in-flight script, deterministically rather
-   * than via a wall-clock race.
-   */
-  function flippingPool(connId: string): MongoPool {
+describe('ScriptService — connection flipped to read-only mid-run', () => {
+  /** Real repo, vault, pool and ConnectionService: the flip goes through `update`. */
+  function setupWithConnectionService(): { svc: ScriptService; conns: ConnectionService; id: Promise<string> } {
     tmp = createTempDb();
+    const repo = new ConnectionRepo(tmp.db);
     const vault = new SecretsVault(tmp.db, createSafeStorageMock());
-    const conn = makeConnection(connId, hp, { defaultDb: 'script_flip_test' });
-    let calls = 0;
-    pool = new MongoPool({
-      repo: {
-        findById: (id) => (id === connId ? { ...conn, readOnly: ++calls > 2 } : null),
-      },
-      vault,
-    });
-    return pool;
+    pool = new MongoPool({ repo: connectionReader(repo, vault), vault });
+    const conns = new ConnectionService({ repo, vault, pool });
+    spawner = createTestSpawner();
+    const scriptSvc = new ScriptService({ pool, spawner });
+    svc = scriptSvc;
+    const id = conns
+      .create({
+        name: `flip-${Date.now()}`,
+        color: '#1A6835',
+        connectionType: 'standard',
+        readOnly: false,
+        host: hp.host,
+        port: hp.port,
+        defaultDb: DB,
+        authMech: 'none',
+        tls: { enabled: false, verify: true },
+        advanced: {
+          connectTimeoutMs: 5000,
+          socketTimeoutMs: 5000,
+          serverSelectionTimeoutMs: 5000,
+          readPreference: 'primary',
+          maxPoolSize: 5,
+          directConnection: true,
+        },
+      })
+      .then((c) => c.id);
+    return { svc: scriptSvc, conns, id };
   }
 
-  it('a write refused once the connection flips to read-only mid-script, not just at construction', async () => {
-    const svc = new ScriptService({ pool: flippingPool('flip') });
-    await expect(
-      svc.run({
-        connectionId: 'flip',
-        dbName: 'script_flip_test',
-        source: `
-          await db.flip_target.insertOne({ n: 1 });
-          await db.flip_target.deleteMany({});
-        `,
-      }),
-    ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
-    const r = await svc.run({
-      connectionId: 'flip',
-      dbName: 'script_flip_test',
-      source: 'await db.flip_target.find().toArray()',
+  it('stops the running script with a read-only refusal, and later runs are refused writes', async () => {
+    const { svc: s, conns, id } = setupWithConnectionService();
+    const connectionId = await id;
+    const promise = s.run({
+      connectionId,
+      source: 'await db.flip_target.insertOne({ n: 1 }); await new Promise(() => {})',
+      maxTimeMs: 30_000,
     });
-    // The first write landed; the second (post-flip) one was refused and
-    // did not mutate data.
-    expect(JSON.parse(r.valueJson!)).toHaveLength(1);
+    const settled = promise.then(() => 'resolved', (e: AppError) => e);
+    await markerSeen('flip_target');
+
+    await conns.update(connectionId, { readOnly: true });
+
+    expect(await settled).toBeInstanceOf(ReadOnlyConnectionError);
+    // A run started after the flip gets the new flag from its first call.
+    await expect(
+      s.run({ connectionId, source: 'await db.flip_target.deleteMany({})' }),
+    ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
+    expect(await countDocs('flip_target')).toBe(1);
   });
 
-  it('a sibling proxy obtained via getSiblingDB before the flip also refuses a write after it', async () => {
-    const svc = new ScriptService({ pool: flippingPool('flip-sibling') });
-    await expect(
-      svc.run({
-        connectionId: 'flip-sibling',
-        dbName: 'script_flip_test',
-        source: `
-          const other = db.getSiblingDB('script_flip_sibling');
-          await db.flip_sibling_main.insertOne({ n: 1 });
-          await other.flip_sibling_target.deleteMany({});
-        `,
-      }),
-    ).rejects.toBeInstanceOf(ReadOnlyConnectionError);
+  it('leaves a script on a different connection alone', async () => {
+    const { svc: s, conns, id } = setupWithConnectionService();
+    const flipId = await id;
+    const other = (
+      await conns.create({
+        name: `other-${Date.now()}`,
+        color: '#1A6835',
+        connectionType: 'standard',
+        readOnly: false,
+        host: hp.host,
+        port: hp.port,
+        defaultDb: DB,
+        authMech: 'none',
+        tls: { enabled: false, verify: true },
+        advanced: {
+          connectTimeoutMs: 5000,
+          socketTimeoutMs: 5000,
+          serverSelectionTimeoutMs: 5000,
+          readPreference: 'primary',
+          maxPoolSize: 5,
+          directConnection: true,
+        },
+      })
+    ).id;
+    const running = s.run({
+      connectionId: other,
+      source: 'await db.flip_other.insertOne({ n: 1 }); "finished"',
+      maxTimeMs: 30_000,
+    });
+    await conns.update(flipId, { readOnly: true });
+    expect((await running).valueJson).toBe('"finished"');
   });
 });

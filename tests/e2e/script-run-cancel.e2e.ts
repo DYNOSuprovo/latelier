@@ -119,3 +119,121 @@ test('script.run returns valueJson; script.cancel aborts an in-flight run', asyn
     }
   });
 });
+
+/**
+ * A script that only ever awaits resolved promises never lets the event loop
+ * turn. Run in the main process it froze every IPC call; the runner is a
+ * separate process that main kills on the wall clock, so the app must keep
+ * answering and the same connection must run the next script.
+ */
+test('a microtask-loop script times out, the app keeps answering IPC, and the next run works', async () => {
+  const { host, port } = await startMemoryServer();
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    const result = await win.evaluate(
+      async ({ host, port, conn }) => {
+        const api = (window as unknown as {
+          atelier: {
+            conn: {
+              create: (input: unknown) => Promise<{ id: string }>;
+              list: () => Promise<Array<{ id: string }>>;
+            };
+            mongo: { connect: (id: string) => Promise<{ status: string }> };
+            script: {
+              run: (input: {
+                connectionId: string;
+                source: string;
+                maxTimeMs?: number;
+              }) => Promise<{ valueJson: string | null }>;
+            };
+          };
+        }).atelier;
+
+        const created = await api.conn.create({ ...conn, host, port });
+        await api.mongo.connect(created.id);
+
+        const t0 = performance.now();
+        const loop = api.script
+          .run({
+            connectionId: created.id,
+            source: 'while (true) await Promise.resolve()',
+            maxTimeMs: 500,
+          })
+          .then(() => ({ rejected: false as const }))
+          .catch((e: { code?: string }) => ({ rejected: true as const, code: e.code }));
+
+        // While the loop spins in its own process, main must keep answering.
+        const listed = await api.conn.list();
+        const listedWhileSpinning = listed.some((c) => c.id === created.id);
+
+        const outcome = await loop;
+        const elapsedMs = performance.now() - t0;
+        const next = await api.script.run({ connectionId: created.id, source: '1 + 1' });
+        return { outcome, elapsedMs, listedWhileSpinning, next: next.valueJson };
+      },
+      { host, port, conn: baseConnInput(host, port) },
+    );
+
+    expect(result.listedWhileSpinning).toBe(true);
+    expect(result.outcome).toEqual({ rejected: true, code: 'TIMEOUT' });
+    expect(result.elapsedMs).toBeLessThan(3000);
+    expect(result.next).toBe('2');
+  });
+});
+
+test('script.cancel kills a script that is awaiting forever, with the cancelled error', async () => {
+  const { host, port } = await startMemoryServer();
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    const result = await win.evaluate(
+      async ({ host, port, conn }) => {
+        const api = (window as unknown as {
+          atelier: {
+            conn: { create: (input: unknown) => Promise<{ id: string }> };
+            mongo: { connect: (id: string) => Promise<{ status: string }> };
+            script: {
+              run: (input: {
+                connectionId: string;
+                source: string;
+                cancelToken: string;
+                maxTimeMs: number;
+              }) => Promise<unknown>;
+              cancel: (input: { token: string }) => Promise<void>;
+            };
+          };
+        }).atelier;
+
+        const created = await api.conn.create({ ...conn, host, port });
+        await api.mongo.connect(created.id);
+
+        const token = crypto.randomUUID();
+        const run = api.script
+          .run({
+            connectionId: created.id,
+            // The sandbox has no setTimeout, so a never-settling promise is the
+            // way to hold a script open.
+            source: 'await new Promise(() => {})',
+            cancelToken: token,
+            maxTimeMs: 60_000,
+          })
+          .then(() => ({ rejected: false as const }))
+          .catch((e: { code?: string; message?: string }) => ({
+            rejected: true as const,
+            code: e.code,
+            message: e.message,
+          }));
+        // Well past the runner's cold start, so the cancel kills a live child.
+        await new Promise((r) => setTimeout(r, 1500));
+        await api.script.cancel({ token });
+        return await run;
+      },
+      { host, port, conn: baseConnInput(host, port) },
+    );
+
+    expect(result).toEqual({ rejected: true, code: 'TIMEOUT', message: 'script cancelled' });
+  });
+});

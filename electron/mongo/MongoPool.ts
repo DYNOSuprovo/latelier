@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import {
   MongoClient,
   type Db,
@@ -21,6 +22,7 @@ import type { SecretsVault } from '../secrets/SecretsVault.ts';
 import { classifyMongoError, classifyMongoOpError, isMaxTimeMSExpired } from './errors.ts';
 import { QUERY_TIMEOUT_MS } from './timeouts.ts';
 import { buildOptions, buildUri, redactUriUserInfo } from './uri.ts';
+import { inlineTlsFiles, type ConnectionSpec } from './connectionSpec.ts';
 
 export interface ConnectionReader {
   findById(id: string): Connection | null;
@@ -413,6 +415,32 @@ export class MongoPool extends EventEmitter {
   }
 
   /**
+   * What a separate process needs to open its own client for `id`: the URI
+   * (vault password included), the driver options with TLS files inlined, and
+   * the read-only flag as it stands now. Read-only is a value the caller
+   * receives, not a check it can make later, so a caller that keeps running
+   * after a flip has to be told (see ScriptService).
+   *
+   * Holds plaintext credentials: send it over a message port only.
+   */
+  connectionSpec(id: string): ConnectionSpec {
+    const conn = this.repo.findById(id);
+    if (!conn) throw new NotFoundError(`connection ${id} not found`);
+    if (conn.ssh?.enabled) throw new ValidationError('SSH tunnels are not supported yet');
+    const { uri, opts } = this.connectArgs(id, conn);
+    return {
+      uri,
+      options: inlineTlsFiles(opts, (p) => readFileSync(p, 'utf8')),
+      readOnly: conn.readOnly,
+    };
+  }
+
+  private connectArgs(id: string, conn: Connection): { uri: string; opts: MongoClientOptions } {
+    const password = conn.authMech === 'none' ? undefined : this.vault.get(id, 'password') ?? undefined;
+    return { uri: buildUri(conn, password), opts: buildOptions(conn) };
+  }
+
+  /**
    * Refuses a read-only connection **now**, synchronously, and hands back the
    * only route to a writable handle. Nothing is connected until the caller
    * asks the grant for one.
@@ -467,9 +495,7 @@ export class MongoPool extends EventEmitter {
     const isCurrent = () => this.entries.get(id) === entry && entry.connectGen === gen;
 
     const run = async (): Promise<MongoClient> => {
-      const password = conn.authMech === 'none' ? undefined : this.vault.get(id, 'password') ?? undefined;
-      const uri = buildUri(conn, password);
-      const opts = buildOptions(conn);
+      const { uri, opts } = this.connectArgs(id, conn);
       const client = this.clientFactory(uri, opts);
       this.attachDriverEventListeners(client, id);
       // Reconnecting on an id that already holds a client (edit-reconnect,

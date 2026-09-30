@@ -77,6 +77,11 @@
     "src/state/tabResultCarry.ts",
     "electron/security/permissions.ts",
     "electron/security/appMenu.ts",
-    "electron/ipc/prefKeys.ts"
+    "electron/ipc/prefKeys.ts",
+    "electron/script-runner/protocol.ts",
+    "electron/script-runner/encodeResult.ts",
+    "electron/script-runner/scriptSource.ts",
+    "electron/mongo/connectionSpec.ts",
+    "electron/services/runner/spawner.ts"
   ]
 }
