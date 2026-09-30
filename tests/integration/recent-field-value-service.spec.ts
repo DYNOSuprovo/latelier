@@ -74,6 +74,18 @@ describe('RecentFieldValueService', () => {
     expect(svc.listForField('c1', 'shop', 'orders', 'status')).toHaveLength(1);
   });
 
+  it.each(['token', 'secret', 'apiKey', 'authorization', 'passphrase', 'ssh_password', 'ssh_passphrase', 'session.Token'])(
+    'refuses the secret-named field %s',
+    (field) => {
+      const { svc } = setup();
+      const result = svc.recordMany('c1', 'shop', 'orders', [
+        { field, value: 'abc', valType: 'string', op: '$eq' },
+      ]);
+      expect(result.recorded).toBe(0);
+      expect(svc.listForField('c1', 'shop', 'orders', field)).toHaveLength(0);
+    },
+  );
+
   it('refuses an op outside the recordable set', () => {
     const { svc } = setup();
     const result = svc.recordMany('c1', 'shop', 'orders', [

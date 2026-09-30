@@ -415,7 +415,7 @@ export const IPC_CHANNELS = {
   connUpdate:    'conn:update',    // SECRET_INPUT
   connDelete:    'conn:delete',
   connTouchUsed: 'conn:touchUsed',
-  connParseUri:  'conn:parseUri',
+  connParseUri:  'conn:parseUri',  // SECRET_INPUT
   connTest:      'conn:test',      // SECRET_INPUT
 
   // App-level utilities -----------------------------------------
