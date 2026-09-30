@@ -234,7 +234,7 @@ describe('AuditLogModal', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Revert' }));
 
-      expect((await screen.findByRole('alert')).textContent).toMatch(/can't be undone any more/);
+      expect((await screen.findByRole('alert')).textContent).toMatch(/can't be undone any more — earlier versions are kept only for recent changes, and only until L'Atelier restarts\./);
     });
   });
 });

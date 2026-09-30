@@ -37,8 +37,9 @@ function toEntry(row: AuditRow, undoable: boolean): AuditEntry {
 
 /**
  * Pre-images are held in `store` (memory) and never written to SQLite, so
- * Undo works for the running session only: after a restart an entry is still
- * listed but no longer Reversible, and `undo` refuses it as expired.
+ * Undo works for the running session only, and only for recent entries: after a
+ * restart, or once the store evicts one, an entry is still listed but no longer
+ * Reversible, and `undo` refuses it as expired.
  */
 export class AuditService {
   private repo: AuditRepo;

@@ -123,6 +123,6 @@ export function assertUndoable(row: {
     throw new SystemError('AUDIT_ALREADY_UNDONE', 'This change has already been undone.');
   }
   if (row.undo_json === null) {
-    throw new SystemError('AUDIT_UNDO_EXPIRED', "This change can't be undone after L'Atelier restarts.");
+    throw new SystemError('AUDIT_UNDO_EXPIRED', "This change can't be undone any more — earlier versions are kept only for recent changes, and only until L'Atelier restarts.");
   }
 }

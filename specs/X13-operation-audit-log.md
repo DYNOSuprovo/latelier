@@ -118,7 +118,7 @@ CREATE INDEX idx_audit_by_conn_time ON audit_log(connection_id, ran_at DESC);
 
 Neither carries a secret; neither goes on the secret allowlist. Both follow the standard envelope and are registered through `registerAuditChannels(router, svc)` from `electron/main.ts`.
 
-`audit:list` returns newest-first, `limit` defaulting to 100, `before` being a `ran_at` cursor. It never returns the Pre-image — the renderer only needs to know `reversible`, which is true only while the Pre-image is still in memory. After a restart an entry lists as not reversible; that is the normal "no longer undoable" state, not an error.
+`audit:list` returns newest-first, `limit` defaulting to 100, `before` being a `ran_at` cursor. It never returns the Pre-image — the renderer only needs to know `reversible`, which is true only while the Pre-image is still in memory. After a restart, or once its Pre-image has been evicted, an entry lists as not reversible; that is the normal "no longer undoable" state, not an error.
 
 ## 4. Recording
 
@@ -221,7 +221,7 @@ Not a workspace tab: `workspace_tabs.kind` is a SQL `CHECK` constraint, so a new
 - [ ] A successful Undo sets `undone_at` and writes no second entry.
 - [ ] `audit_log.undo_json` is NULL after every audited Operation, and `audit:list` never returns a Pre-image.
 - [ ] Deleting a Connection deletes its `audit_log` rows.
-- [ ] The maintenance sweep deletes rows past 90 days, leaving newer rows untouched; Pre-images are session-only and a restart lists their entries as not reversible.
+- [ ] The maintenance sweep deletes rows past 90 days, leaving newer rows untouched; Pre-images are session-only and bounded, and a restart or an eviction lists their entries as not reversible.
 - [ ] No audited channel accepts a plaintext secret; `npm run audit:ipc` stays green with no allowlist change.
 - [ ] The delete confirm dialog states whether the pending delete is within the undo limit; the two drop dialogs state that they cannot be undone.
 - [ ] The success toast for an audited write offers Undo, and restores the documents when used.
