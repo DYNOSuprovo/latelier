@@ -181,14 +181,11 @@ describe('ConnectionInputSchema', () => {
     expect(() => ConnectionInputSchema.parse(input)).not.toThrow();
   });
 
-  it('requires SSH host and username when ssh.enabled', () => {
-    const input = mk({ ssh: { enabled: true } });
-    try {
-      ConnectionInputSchema.parse(input);
-      throw new Error('expected throw');
-    } catch (err) {
-      expect(issueAt(err, 'host') || issueAt(err, 'username')).toBe(true);
-    }
+  it('rejects ssh.enabled because SSH tunnels are not supported yet', () => {
+    const issues = parseIssues(() => ConnectionInputSchema.parse(mk({ ssh: { enabled: true } })));
+    const issue = findIssue(issues, ['ssh', 'enabled']);
+    expect(issue?.code).toBe('custom');
+    expect(issue?.message).toBe('SSH tunnels are not supported yet');
   });
 });
 
@@ -388,7 +385,7 @@ describe('enums', () => {
   it('rejects an unknown ssh authMethod', () => {
     expect(() =>
       ConnectionInputSchema.parse(
-        mk({ ssh: { enabled: true, host: 'h', username: 'u', authMethod: 'bogus' as never } }),
+        mk({ ssh: { enabled: false, host: 'h', username: 'u', authMethod: 'bogus' as never } }),
       ),
     ).toThrow();
   });
@@ -396,12 +393,12 @@ describe('enums', () => {
   it('accepts both ssh authMethod values', () => {
     expect(() =>
       ConnectionInputSchema.parse(
-        mk({ ssh: { enabled: true, host: 'h', username: 'u', authMethod: 'key' } }),
+        mk({ ssh: { enabled: false, host: 'h', username: 'u', authMethod: 'key' } }),
       ),
     ).not.toThrow();
     expect(() =>
       ConnectionInputSchema.parse(
-        mk({ ssh: { enabled: true, host: 'h', username: 'u', authMethod: 'password' } }),
+        mk({ ssh: { enabled: false, host: 'h', username: 'u', authMethod: 'password' } }),
       ),
     ).not.toThrow();
   });
@@ -683,38 +680,31 @@ describe('applyCrossFieldRules — exact issue shape and branch coverage', () =>
     });
   });
 
-  // Rule 6: SSH — host and username required only when ssh.enabled.
-  describe('rule 6: SSH enabled requires host and username', () => {
-    it('flags a missing host', () => {
-      const issues = parseIssues(() =>
-        ConnectionInputSchema.parse(mk({ ssh: { enabled: true, username: 'u' } })),
-      );
-      const issue = findIssue(issues, ['ssh', 'host']);
-      expect(issue?.code).toBe('custom');
-      expect(issue?.message).toBe('SSH host is required when SSH is enabled');
-    });
-
-    it('flags a missing username', () => {
-      const issues = parseIssues(() =>
-        ConnectionInputSchema.parse(mk({ ssh: { enabled: true, host: 'h' } })),
-      );
-      const issue = findIssue(issues, ['ssh', 'username']);
-      expect(issue?.code).toBe('custom');
-      expect(issue?.message).toBe('SSH username is required when SSH is enabled');
-    });
-
-    it('raises no rule-6 issues when host and username are both present', () => {
+  // Rule 6: SSH tunnels are unsupported, so ssh.enabled is rejected outright.
+  describe('rule 6: SSH enabled is rejected', () => {
+    it('flags ssh.enabled even when host and username are present', () => {
       const issues = parseIssues(() =>
         ConnectionInputSchema.parse(mk({ ssh: { enabled: true, host: 'h', username: 'u' } })),
       );
-      expect(findIssue(issues, ['ssh', 'host'])).toBeUndefined();
-      expect(findIssue(issues, ['ssh', 'username'])).toBeUndefined();
+      const issue = findIssue(issues, ['ssh', 'enabled']);
+      expect(issue?.code).toBe('custom');
+      expect(issue?.message).toBe('SSH tunnels are not supported yet');
+      expect(issues).toHaveLength(1);
     });
 
-    it('does not require host/username when ssh.enabled is false', () => {
+    it('raises no ssh issue when ssh.enabled is false', () => {
       const issues = parseIssues(() => ConnectionInputSchema.parse(mk({ ssh: { enabled: false } })));
-      expect(findIssue(issues, ['ssh', 'host'])).toBeUndefined();
-      expect(findIssue(issues, ['ssh', 'username'])).toBeUndefined();
+      expect(findIssue(issues, ['ssh', 'enabled'])).toBeUndefined();
+    });
+
+    it('flags ssh.enabled on update', () => {
+      const issues = parseIssues(() => ConnectionUpdateSchema.parse({ ssh: { enabled: true } }));
+      const issue = findIssue(issues, ['ssh', 'enabled']);
+      expect(issue?.message).toBe('SSH tunnels are not supported yet');
+    });
+
+    it('accepts an update that sets ssh.enabled to false', () => {
+      expect(() => ConnectionUpdateSchema.parse({ ssh: { enabled: false } })).not.toThrow();
     });
   });
 });
@@ -743,27 +733,19 @@ describe('ConnectionTestInputSchema — exact issue shape', () => {
     expect(findIssue(issues, ['tls', 'enabled'])).toBeUndefined();
   });
 
-  it('flags a missing SSH host when ssh.enabled', () => {
+  it('flags ssh.enabled because SSH tunnels are not supported yet', () => {
     const issues = parseIssues(() =>
-      ConnectionTestInputSchema.parse(mk({ ssh: { enabled: true, username: 'u' } })),
+      ConnectionTestInputSchema.parse(mk({ ssh: { enabled: true, host: 'h', username: 'u' } })),
     );
-    const issue = findIssue(issues, ['ssh', 'host']);
+    const issue = findIssue(issues, ['ssh', 'enabled']);
     expect(issue?.code).toBe('custom');
-    expect(issue?.message).toBe('SSH host is required when SSH is enabled');
+    expect(issue?.message).toBe('SSH tunnels are not supported yet');
+    expect(issues).toHaveLength(1);
   });
 
-  it('does not require SSH username (unlike ConnectionInputSchema)', () => {
-    const issues = parseIssues(() =>
-      ConnectionTestInputSchema.parse(mk({ ssh: { enabled: true, host: 'h' } })),
-    );
-    expect(findIssue(issues, ['ssh', 'username'])).toBeUndefined();
-  });
-
-  it('does not flag SSH host when it is already present', () => {
-    const issues = parseIssues(() =>
-      ConnectionTestInputSchema.parse(mk({ ssh: { enabled: true, host: 'h' } })),
-    );
-    expect(findIssue(issues, ['ssh', 'host'])).toBeUndefined();
+  it('raises no ssh issue when ssh.enabled is false', () => {
+    const issues = parseIssues(() => ConnectionTestInputSchema.parse(mk({ ssh: { enabled: false } })));
+    expect(findIssue(issues, ['ssh', 'enabled'])).toBeUndefined();
   });
 
   it('does not require a password for SCRAM even with no username', () => {

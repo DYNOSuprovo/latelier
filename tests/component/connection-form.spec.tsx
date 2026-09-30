@@ -79,6 +79,35 @@ describe('ConnectionForm (host-agnostic, no router)', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith('c1'));
   });
 
+  it('edit mode: a legacy row stored with ssh.enabled loads as off and saves an explicit ssh.enabled=false', async () => {
+    const updateSpy = vi.fn(async () => ({ ...CANNED_CONNECTION, id: 'c1' }) as never);
+    installAtelierMock({
+      conn: {
+        get: async () => ({
+          ...CANNED_CONNECTION,
+          ssh: { enabled: true, host: 'bastion', port: 22, username: 'u' },
+        }),
+        update: updateSpy as never,
+      },
+    });
+    const onSaved = vi.fn();
+    render(<ConnectionForm mode="edit" connectionId="c1" onSaved={onSaved} onCancel={() => {}} />);
+
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(/My MongoDB Server/i) as HTMLInputElement).value).toBe('Stored');
+    });
+
+    fireEvent.click(screen.getByText(/Save changes/i));
+
+    await waitFor(() =>
+      expect(updateSpy).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ ssh: { enabled: false } }),
+      ),
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith('c1'));
+  });
+
   it('Cancel calls onCancel', async () => {
     installAtelierMock({});
     const onSaved = vi.fn();
