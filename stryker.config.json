@@ -53,6 +53,7 @@
     "src/utils/auditUndo.ts",
     "electron/ipc/senderGuard.ts",
     "electron/security/appLocation.ts",
+    "electron/security/externalUrl.ts",
     "electron/mongo/uri.ts",
     "electron/mongo/errors.ts",
     "electron/mongo/normalize.ts",

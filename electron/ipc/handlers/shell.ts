@@ -4,11 +4,13 @@ import { IPC_CHANNELS } from '@shared/ipc';
 import type { Router } from '../router.ts';
 import { zodValidator } from '../validators.ts';
 import { ValidationError } from '../../errors.ts';
+import { parseAllowedExternalUrl } from '../../security/externalUrl.ts';
 
 // Only MongoDB docs are allowed — this channel is deliberately narrower than
 // `app:openExternal` so the X04 doc panel cannot be turned into an arbitrary-
 // URL opener.
-const DOCS_PREFIX = 'https://www.mongodb.com/docs/';
+const DOCS_HOSTS: ReadonlySet<string> = new Set(['www.mongodb.com']);
+const DOCS_PATH = '/docs/';
 
 const OpenExternalInput = z.object({ url: z.string() });
 
@@ -17,13 +19,11 @@ export function registerShellChannels(router: Router): void {
     IPC_CHANNELS.shellOpenExternal,
     zodValidator(OpenExternalInput),
     async ({ url }) => {
-      if (!url.startsWith(DOCS_PREFIX)) {
-        throw new ValidationError(
-          `URL must start with ${DOCS_PREFIX}`,
-          { url },
-        );
+      const parsed = parseAllowedExternalUrl(url, DOCS_HOSTS);
+      if (!parsed.pathname.startsWith(DOCS_PATH)) {
+        throw new ValidationError(`URL path must start with ${DOCS_PATH}`, { url });
       }
-      await shell.openExternal(url);
+      await shell.openExternal(parsed.href);
       return { opened: true as const };
     },
   );
