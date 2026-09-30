@@ -51,9 +51,28 @@ export class ScriptService {
   constructor(opts: ScriptServiceOpts) {
     this.pool = opts.pool;
     this.spawner = opts.spawner;
-    // A runner holds a snapshot of the read-only flag, so a connection turned
-    // read-only mid-run stops its scripts instead of letting them keep writing.
-    this.pool.on('read-only-enabled', (id: string) => this.stopForConnection(id));
+    // A runner owns its own client, so nothing the pool does to its client
+    // reaches a running script. Two things have to be relayed by hand: the
+    // read-only flag (the runner only holds the value from spawn), and the
+    // connection going away (Disconnect, Cancel, delete, a host edit).
+    this.pool.on('read-only-enabled', (id: string) =>
+      this.stopForConnection(
+        id,
+        new ReadOnlyConnectionError(
+          'Connection was set to read-only while the script was running; the script was stopped.',
+        ),
+      ),
+    );
+    this.pool.on('status', (runtime: { id: string; status: string }) => {
+      if (runtime.status !== 'disconnected') return;
+      this.stopForConnection(
+        runtime.id,
+        new SystemError(
+          'DB_ERROR',
+          'Connection was disconnected while the script was running; the script was stopped.',
+        ),
+      );
+    });
   }
 
   async run(input: ScriptRunInput): Promise<ScriptRunResultWire> {
@@ -203,17 +222,11 @@ export class ScriptService {
     this.active.get(token)?.abort();
   }
 
-  /**
-   * Stop every in-flight script on `connectionId` with a read-only refusal.
-   * Called when the connection is flipped to read-only: a runner only holds the
-   * flag as it was when it started.
-   */
-  private stopForConnection(connectionId: string): void {
+  /** Stop every in-flight script on `connectionId`, reporting `reason` as why. */
+  private stopForConnection(connectionId: string, reason: AppError): void {
     for (const run of this.runs) {
       if (run.connectionId !== connectionId) continue;
-      run.stopReason = new ReadOnlyConnectionError(
-        'Connection was set to read-only while the script was running; the script was stopped.',
-      );
+      run.stopReason = reason;
       run.ctrl.abort();
     }
   }

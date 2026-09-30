@@ -17,7 +17,7 @@ describe('encodeResultJson', () => {
     expect(encodeResultJson({ n: 1 }, true)).toBe('{"n":1}');
   });
 
-  it('encodes arrays element by element, preserving order and commas', () => {
+  it('encodes arrays, preserving order and commas', () => {
     expect(encodeResultJson([], false)).toBe('[]');
     expect(encodeResultJson([{ a: 1 }, { a: 2 }, 'x'], true)).toBe('[{"a":1},{"a":2},"x"]');
   });

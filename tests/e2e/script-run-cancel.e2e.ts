@@ -165,6 +165,9 @@ test('a microtask-loop script times out, the app keeps answering IPC, and the ne
           .catch((e: { code?: string }) => ({ rejected: true as const, code: e.code }));
 
         // While the loop spins in its own process, main must keep answering.
+        // Wait past the runner's cold start first, so the loop is really
+        // spinning (still well inside the 500 ms budget).
+        await new Promise((r) => setTimeout(r, 300));
         const listed = await api.conn.list();
         const listedWhileSpinning = listed.some((c) => c.id === created.id);
 

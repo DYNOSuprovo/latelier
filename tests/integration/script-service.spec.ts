@@ -669,7 +669,7 @@ describe('ScriptService — read-only connection', () => {
   });
 });
 
-describe('ScriptService — connection flipped to read-only mid-run', () => {
+describe('ScriptService — connection changed mid-run', () => {
   /** Real repo, vault, pool and ConnectionService: the flip goes through `update`. */
   function setupWithConnectionService(): { svc: ScriptService; conns: ConnectionService; id: Promise<string> } {
     tmp = createTempDb();
@@ -756,5 +756,54 @@ describe('ScriptService — connection flipped to read-only mid-run', () => {
     });
     await conns.update(flipId, { readOnly: true });
     expect((await running).valueJson).toBe('"finished"');
+  });
+  it('stops the running script when the connection is disconnected, instead of letting it keep writing', async () => {
+    const { svc: s, id } = setupWithConnectionService();
+    const connectionId = await id;
+    const promise = s.run({
+      connectionId,
+      source: 'await db.gone_disconnect.insertOne({ n: 1 }); await new Promise(() => {})',
+      maxTimeMs: 30_000,
+    });
+    const settled = promise.then(() => 'resolved', (e: AppError) => e);
+    await markerSeen('gone_disconnect');
+    const t0 = Date.now();
+
+    await pool!.disconnect(connectionId);
+
+    expect(await settled).toMatchObject({ code: 'DB_ERROR' });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    await until(async () => spawner.alive().length === 0, 'runner to die', 3000);
+  });
+
+  it('stops the running script when the connection is deleted', async () => {
+    const { svc: s, conns, id } = setupWithConnectionService();
+    const connectionId = await id;
+    const promise = s.run({
+      connectionId,
+      source: 'await db.gone_delete.insertOne({ n: 1 }); await new Promise(() => {})',
+      maxTimeMs: 30_000,
+    });
+    const settled = promise.then(() => 'resolved', (e: AppError) => e);
+    await markerSeen('gone_delete');
+
+    await conns.delete(connectionId);
+
+    expect(await settled).toMatchObject({ code: 'DB_ERROR' });
+    await until(async () => spawner.alive().length === 0, 'runner to die', 3000);
+  });
+
+  it('a read-only flip is reported as READ_ONLY, not as a disconnect', async () => {
+    const { svc: s, conns, id } = setupWithConnectionService();
+    const connectionId = await id;
+    const promise = s.run({
+      connectionId,
+      source: 'await db.flip_code.insertOne({ n: 1 }); await new Promise(() => {})',
+      maxTimeMs: 30_000,
+    });
+    const settled = promise.then(() => 'resolved', (e: AppError) => e);
+    await markerSeen('flip_code');
+    await conns.update(connectionId, { readOnly: true });
+    expect(await settled).toMatchObject({ code: 'READ_ONLY' });
   });
 });

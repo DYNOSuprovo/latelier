@@ -163,6 +163,12 @@ has answered.
   `ConnectionService.update` announces a false-to-true flip on the pool
   and `ScriptService` kills that connection's runners with a
   `READ_ONLY` refusal. Runs that start afterwards get the new flag.
+- **A connection that goes away mid-run stops its scripts.** The runner's
+  client is its own, so Disconnect, Cancel-connect, deleting the
+  connection, or an edit that reconnects would otherwise leave a script
+  running (and writing) against it. `ScriptService` listens for the pool's
+  `disconnected` status and kills that connection's runners with a
+  `DB_ERROR`.
 - **Results are encoded in the runner** (50 MB cap, print buffer cap
   64 KB) and cross the port as a string.
 
@@ -321,8 +327,9 @@ tracked as a follow-up in GitHub Issues.
 - [x] A runner that dies mid-run surfaces a `SystemError`, and live
       runners are killed on quit.
 - [x] The runner entry is built to `dist-electron/script-runner.cjs`
-      and ships inside `app.asar`; a packaged build with the release
-      fuses runs a script.
+      and ships inside `app.asar`; a packaged macOS arm64 build (unsigned,
+      `--dir`) with the release fuses runs a script. Windows, Linux and a
+      signed macOS build are not yet verified.
 - [x] Cancelling a long `find` (large collection, no index) via the
       Cancel button aborts within ~1 s.
 - [x] Closing and reopening the app restores the buffer text, but not

@@ -1,5 +1,5 @@
 import { SystemError } from '../errors.ts';
-import { ByteCapExceededError, ejsonEncode, ejsonEncodeArrayJson } from '../mongo/ejson.ts';
+import { ejsonEncode } from '../mongo/ejson.ts';
 
 /**
  * Soft cap on the EJSON encode of a script result. An explicit `.toArray()`
@@ -23,18 +23,15 @@ function overCap(): SystemError {
  * the parent's wall-clock kill is the bound, so there is no deadline or yield
  * logic here. A value that cannot be encoded (a function, a cycle, the `db`
  * proxy) collapses to 'null'; the cap is the one failure that is reported.
+ *
+ * ponytail: the whole value is stringified before the cap is checked, so a
+ * result past V8's maximum string length (about 512 MB) fails inside the
+ * stringify and collapses to 'null' instead of the cap error. Encode arrays
+ * element by element with an early bail (`ejsonEncodeArrayJson`) if a result
+ * that large ever shows up; the runner's kill bounds the time and its crash
+ * is reported cleanly if memory runs out first.
  */
 export function encodeResultJson(value: unknown, relaxed: boolean): string {
-  // Stryker disable all: sending arrays through `ejsonEncodeArrayJson` only lets the byte cap stop the encode early instead of after the whole string is built; the whole-value path below returns the identical JSON and the identical cap error (probed: a 600k-document array encodes to the same string either way), so the two differ in peak memory alone. Removing or emptying any part of this block falls through to that path.
-  if (Array.isArray(value)) {
-    try {
-      return ejsonEncodeArrayJson(value, { relaxed, maxBytes: MAX_SCRIPT_RESULT_BYTES });
-    } catch (err) {
-      if (err instanceof ByteCapExceededError) throw overCap();
-      return 'null';
-    }
-  }
-  // Stryker restore all
   let json: string;
   if (typeof value === 'number') {
     // A bare number stays a plain JSON number: EJSON would wrap it as
