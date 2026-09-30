@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensurePrivateDir, ensurePrivateFile } from './utils/privateFs.ts';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -78,11 +79,13 @@ function todayStamp(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+const isLogFile = (name: string): boolean => name.startsWith('mongolab.') && name.endsWith('.log');
+
 function pruneOldLogs(dir: string, retentionDays: number): void {
   try {
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     for (const name of fs.readdirSync(dir)) {
-      if (!name.startsWith('mongolab.') || !name.endsWith('.log')) continue;
+      if (!isLogFile(name)) continue;
       const full = path.join(dir, name);
       const stat = fs.statSync(full);
       if (stat.mtimeMs < cutoff) fs.unlinkSync(full);
@@ -90,6 +93,24 @@ function pruneOldLogs(dir: string, retentionDays: number): void {
   } catch {
     // best-effort; never block startup
   }
+}
+
+/**
+ * Logs written by an older install carry the process umask (often 0644).
+ * Returns the files that could not be tightened so the caller can report them
+ * once it has a logger.
+ */
+function tightenLogFiles(dir: string): Array<{ file: string; message: string }> {
+  const failures: Array<{ file: string; message: string }> = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!isLogFile(name)) continue;
+    try {
+      ensurePrivateFile(path.join(dir, name));
+    } catch (err) {
+      failures.push({ file: name, message: String(err) });
+    }
+  }
+  return failures;
 }
 
 export function createLogger(userDataDir: string, opts: {
@@ -106,8 +127,9 @@ export function createLogger(userDataDir: string, opts: {
   const toStderr = opts.toStderr ?? true;
 
   const logsDir = path.join(userDataDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  ensurePrivateDir(logsDir);
   pruneOldLogs(logsDir, retention);
+  const untightened = tightenLogFiles(logsDir);
 
   const filePath = () => path.join(logsDir, `mongolab.${todayStamp()}.log`);
 
@@ -123,12 +145,14 @@ export function createLogger(userDataDir: string, opts: {
     };
     const serialized = JSON.stringify(line) + '\n';
     try {
-      fs.appendFileSync(filePath(), serialized);
+      fs.appendFileSync(filePath(), serialized, { mode: 0o600 });
     } catch {
       // ignore disk errors; logging must never crash the app
     }
     if (toStderr) process.stderr.write(serialized);
   }
+
+  for (const failure of untightened) write('warn', 'log', 'could not restrict log file permissions', failure);
 
   return {
     debug: (tag, msg, data) => write('debug', tag, msg, data),

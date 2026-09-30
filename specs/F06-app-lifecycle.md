@@ -126,6 +126,7 @@ app.on('before-quit', async (e) => {
 ## 8. Logs
 
 - Rotating file at `userData/logs/mongolab.<date>.log`. Daily rotation, 7-day retention.
+- On POSIX the `logs/` dir is `0700` and log files are `0600`; existing files are tightened at startup, and one that cannot be is reported as a `warn` line. No-op on Windows.
 - Log levels: `debug` (dev only), `info`, `warn`, `error`.
 - `log.info(tag, msg, data?)` — `tag` is a short namespace (`'boot'`, `'mongo'`, `'db'`, `'ipc'`).
 - Renderer never writes to this log directly; it calls `app:log` IPC which the main side filters and forwards.
