@@ -94,7 +94,7 @@ Effort: ~0.5 day.
 ### Changes
 
 1. `electron/db/sqlite.ts`:
-   - `openDatabase(userDataDir)` — creates file, applies pragmas (WAL, synchronous NORMAL, foreign_keys ON, busy_timeout 5000), runs migrations.
+   - `openDatabase(userDataDir)` — creates file, applies pragmas (WAL, synchronous NORMAL, foreign_keys ON, busy_timeout 5000, secure_delete ON), runs migrations.
    - `withTransaction<T>(db, fn)` helper.
    - `closeDatabase(db)`.
 2. `electron/db/migrations/001-init.sql` — the full schema from F02 §3.

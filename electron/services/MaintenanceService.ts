@@ -14,9 +14,16 @@ const PRE_IMAGES_KEPT_PER_CONNECTION = 200;
 export class MaintenanceService {
   private recentRepo: RecentQueryRepo;
   private auditRepo: AuditRepo;
-  constructor(recentRepo: RecentQueryRepo, auditRepo: AuditRepo) {
-    this.recentRepo = recentRepo;
-    this.auditRepo = auditRepo;
+  private checkpoint: () => void;
+  constructor(deps: {
+    recentRepo: RecentQueryRepo;
+    auditRepo: AuditRepo;
+    /** Flushes purged pages out of the WAL; owns reporting a blocked checkpoint. */
+    checkpoint: () => void;
+  }) {
+    this.recentRepo = deps.recentRepo;
+    this.auditRepo = deps.auditRepo;
+    this.checkpoint = deps.checkpoint;
   }
 
   runIfNeeded(appState: Pick<AppStateService, 'get' | 'set'>): void {
@@ -28,11 +35,12 @@ export class MaintenanceService {
       if (now - lastRunMs < INTERVAL_MS) return;
     }
 
-    this.vacuum();
+    this.purgeExpired();
+    this.checkpoint();
     appState.set(MAINTENANCE_KEY, new Date(now).toISOString());
   }
 
-  private vacuum(): void {
+  private purgeExpired(): void {
     this.recentRepo.deleteOlderThan(RECENT_RETENTION_DAYS);
     this.auditRepo.expirePreImages(PRE_IMAGE_RETENTION_DAYS, PRE_IMAGES_KEPT_PER_CONNECTION);
     this.auditRepo.deleteOlderThan(AUDIT_RETENTION_DAYS);

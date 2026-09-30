@@ -24,6 +24,7 @@ Provide a single, well-typed, versioned SQLite store for every piece of persiste
   PRAGMA synchronous = NORMAL;
   PRAGMA foreign_keys = ON;
   PRAGMA busy_timeout = 5000;
+  PRAGMA secure_delete = ON;
   ```
 - On first run the file is created and migrations run to the latest version.
 - On subsequent runs migrations with version > `schema_version.version` run in a transaction.
@@ -36,6 +37,7 @@ export function openDatabase(userDataDir: string): Database {
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
+  db.pragma('secure_delete = ON');
   runMigrations(db);
   return db;
 }
@@ -246,6 +248,7 @@ Repositories MAY nest transactions safely (`better-sqlite3` uses savepoints).
   - Creates DB at a temp path, closes, reopens: tables exist.
   - WAL mode active (`PRAGMA journal_mode` returns `wal`).
   - Foreign keys active.
+  - `PRAGMA secure_delete` returns `1`.
   - `withTransaction` commits on success, rolls back on throw.
 - **cascade.spec.ts**
   - Insert a connection + secret + saved query + recent + tab + preview_fields.

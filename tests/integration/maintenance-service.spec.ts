@@ -37,11 +37,11 @@ function seedConnection(db: TempDb['db']): void {
 }
 
 /**
- * Regression test for P1-2: previously MaintenanceService.vacuum reached into
+ * Regression test for P1-2: previously MaintenanceService.purgeExpired reached into
  * `recentRepo.db` to run an ad-hoc DELETE. The repo is now responsible for the
  * SQL via `deleteOlderThan(days)`, and the public `db` field is removed.
  */
-describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.vacuum', () => {
+describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.purgeExpired', () => {
   let tmp: TempDb;
 
   beforeEach(() => {
@@ -88,7 +88,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.vacuum', () => {
       },
     };
 
-    const svc = new MaintenanceService(repo, new AuditRepo(tmp.db));
+    const svc = new MaintenanceService({ recentRepo: repo, auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} });
 
     // First run — old row gone, lastRunAt set.
     svc.runIfNeeded(appState);
@@ -102,7 +102,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.vacuum', () => {
 
     svc.runIfNeeded(appState);
     expect(calls).toHaveLength(0);
-    // still-old should remain because vacuum did not re-run.
+    // still-old should remain because the purge did not re-run.
     expect(repo.findById('still-old')).not.toBeNull();
   });
 
@@ -122,7 +122,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.vacuum', () => {
       set: <T>(key: string, value: T) => void store.set(key, value),
     };
 
-    new MaintenanceService(new RecentQueryRepo(tmp.db), new AuditRepo(tmp.db)).runIfNeeded(appState);
+    new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded(appState);
 
     const ids = (tmp.db.prepare('SELECT id FROM audit_log ORDER BY id').all() as { id: string }[]).map((r) => r.id);
     expect(ids).toEqual(['audit-89d', 'audit-now']);
@@ -142,7 +142,7 @@ describe('RecentQueryRepo.deleteOlderThan + MaintenanceService.vacuum', () => {
         .map((r) => r.id);
     const sweep = () => {
       const store = new Map<string, unknown>();
-      new MaintenanceService(new RecentQueryRepo(tmp.db), new AuditRepo(tmp.db)).runIfNeeded({
+      new MaintenanceService({ recentRepo: new RecentQueryRepo(tmp.db), auditRepo: new AuditRepo(tmp.db), checkpoint: () => {} }).runIfNeeded({
         get: <T>(key: string) => (store.get(key) ?? null) as T | null,
         set: <T>(key: string, value: T) => void store.set(key, value),
       });
