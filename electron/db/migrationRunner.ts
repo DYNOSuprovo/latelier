@@ -39,8 +39,9 @@ export function loadMigrations(): Migration[] {
 /**
  * Apply any migrations newer than the DB's current schema_version.
  * Each migration runs in its own transaction — failures roll back.
+ * Returns how many migrations ran.
  */
-export function runMigrations(db: Database, migrations: Migration[]): void {
+export function runMigrations(db: Database, migrations: Migration[]): number {
   // Ensure schema_version exists. The first migration may create it; to handle
   // fresh DBs safely we read conditionally.
   const hasTable = db
@@ -56,7 +57,7 @@ export function runMigrations(db: Database, migrations: Migration[]): void {
   }
 
   const pending = migrations.filter((m) => m.version > current);
-  if (pending.length === 0) return;
+  if (pending.length === 0) return 0;
 
   // Disable foreign-key enforcement for the duration of the migration loop.
   // Some migrations rebuild tables (DROP + CREATE + RENAME) to work around
@@ -83,4 +84,5 @@ export function runMigrations(db: Database, migrations: Migration[]): void {
   } finally {
     if (fkWasOn) db.pragma('foreign_keys = ON');
   }
+  return pending.length;
 }

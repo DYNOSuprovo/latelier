@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { openDatabase, closeDatabase } from './db/sqlite.ts';
+import { openDatabase, closeDatabase, truncateWal } from './db/sqlite.ts';
 import { AppStateRepo } from './db/repositories/AppStateRepo.ts';
 import { AppStateService } from './services/AppStateService.ts';
 import { SecretsVault } from './secrets/SecretsVault.ts';
@@ -437,7 +437,7 @@ function registerDevResetShortcut(): void {
     fs.rmSync(path.join(userDataDir, 'mongolab.db'), { force: true });
     fs.rmSync(path.join(userDataDir, 'mongolab.db-wal'), { force: true });
     fs.rmSync(path.join(userDataDir, 'mongolab.db-shm'), { force: true });
-    db = openDatabase({ userDataDir });
+    db = openDatabase({ userDataDir, log: log ?? undefined });
     appState = new AppStateService(new AppStateRepo(db));
     if (pool) {
       void pool.disconnectAll();
@@ -482,7 +482,7 @@ app.whenReady().then(() => {
 
   // 1. DB + migrations
   try {
-    db = openDatabase({ userDataDir });
+    db = openDatabase({ userDataDir, log });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('boot', 'db open failed', { message });
@@ -563,7 +563,15 @@ app.whenReady().then(() => {
   const indexSvc = new IndexService(pool);
   const collectionAdminSvc = new CollectionAdminService(pool);
   const userSvc = new UserService(pool);
-  const maintenance = new MaintenanceService(recentRepo, auditRepo);
+  const checkpointDb = db;
+  const checkpointLog = log;
+  const maintenance = new MaintenanceService({
+    recentRepo,
+    auditRepo,
+    checkpoint: () => {
+      if (!truncateWal(checkpointDb)) checkpointLog.warn('maintenance', 'wal checkpoint was blocked');
+    },
+  });
   maintenance.runIfNeeded(appState);
 
   const diagnostic = new DiagnosticService({ userDataDir, connRepo });
