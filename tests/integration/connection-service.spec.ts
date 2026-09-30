@@ -127,6 +127,20 @@ describe('ConnectionService', () => {
     expect(off.readOnly).toBe(false);
   });
 
+  it('announces a connection turning read-only, so running scripts can be stopped', async () => {
+    const c = await svc.create(validInput());
+    const heard: string[] = [];
+    pool.on('read-only-enabled', (id: string) => heard.push(id));
+    await svc.update(c.id, { color: '#1A5068' });
+    expect(heard).toEqual([]);
+    await svc.update(c.id, { readOnly: true });
+    expect(heard).toEqual([c.id]);
+    // Already read-only, and turning it off, are not news to a running script.
+    await svc.update(c.id, { readOnly: true });
+    await svc.update(c.id, { readOnly: false });
+    expect(heard).toEqual([c.id]);
+  });
+
   it('update with readOnly-only change does NOT disconnect the pool', async () => {
     const c = await svc.create(validInput());
     disconnectSpy.mockClear();

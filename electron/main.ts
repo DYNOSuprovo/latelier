@@ -47,6 +47,7 @@ import { registerMshellChannels, makeMshellEmitter } from './ipc/handlers/mshell
 import { ShellService } from './services/ShellService.ts';
 import { registerScriptChannels } from './ipc/handlers/script.ts';
 import { ScriptService } from './services/ScriptService.ts';
+import { createUtilityProcessSpawner } from './services/runner/utilityProcessSpawner.ts';
 import { DiagnosticService } from './services/DiagnosticService.ts';
 import { vaultSafeStorage, selectedBackend } from './secrets/keychainAvailability.ts';
 import { registerRefsChannels } from './ipc/handlers/refs.ts';
@@ -689,7 +690,10 @@ app.whenReady().then(() => {
   });
   registerMshellChannels(router, mshellSvc);
 
-  scriptSvc = new ScriptService({ pool });
+  scriptSvc = new ScriptService({
+    pool,
+    spawner: createUtilityProcessSpawner(path.join(MAIN_DIST, 'script-runner.cjs')),
+  });
   registerScriptChannels(router, scriptSvc);
 
   const refsRepo = new ReferenceRulesRepo(db);

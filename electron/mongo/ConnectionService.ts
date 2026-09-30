@@ -129,6 +129,12 @@ export class ConnectionService {
       this.applySecretPatch(id, 'ssh_password', patch.sshPassword, patch.clearSshPassword);
       this.applySecretPatch(id, 'ssh_passphrase', patch.sshPassphrase, patch.clearSshPassphrase);
 
+      // Anything running off a snapshot of this connection's read-only flag (a
+      // script's child process owns its own client) must hear it turned on.
+      if (existing.read_only !== 1 && merged.readOnly === true) {
+        this.pool.emit('read-only-enabled', id);
+      }
+
       if (mongoRelevantFieldsChanged(existing, merged)) {
         await this.pool.disconnect(id);
       }
