@@ -37,6 +37,12 @@ describe('isLocalHost', () => {
   });
 });
 
+describe('isLocalHost unclosed bracket', () => {
+  it('does not trim an unclosed bracket into a local name', () => {
+    expect(isLocalHost('[localhostx')).toBe(false);
+  });
+});
+
 describe('tlsWarning', () => {
   const base = { enabled: true, verify: true, host: 'db.example.com', viaSshTunnel: false };
 
