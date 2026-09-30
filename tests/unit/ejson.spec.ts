@@ -183,8 +183,8 @@ describe('ejson', () => {
   });
 
   it('honours maxBytes at the exact boundary (> not >=)', () => {
-    // After fixing #379, the closing ']' is counted, so the boundary is the
-    // full output length (in UTF-8 bytes, not JavaScript string length).
+    // The cap covers the whole output, closing ']' included, measured in
+    // UTF-8 bytes rather than JavaScript string length.
     const exact = ejsonEncodeArrayJson([{ a: 1 }]);
     const boundary = Buffer.byteLength(exact, 'utf8');
     expect(() => ejsonEncodeArrayJson([{ a: 1 }], { maxBytes: boundary })).not.toThrow();
@@ -300,11 +300,7 @@ describe('ejson', () => {
     expect(ejsonEncodeArrayJson([5], { relaxed: true })).toBe('[5]');
   });
 
-  // ─── Byte cap fixes for #379: closing bracket count + UTF-8 bytes ────────
-  //
-  // The previous implementation had two bugs:
-  // 1. Did not count the closing ']', so arrays at maxBytes+1 would pass
-  // 2. Used piece.length (UTF-16 code units) instead of UTF-8 byte length
+  // ─── Byte cap: the whole output, closing ']' included, in UTF-8 bytes (#379)
 
   it('byte cap: empty array [] is exactly 2 bytes, succeeds at maxBytes 2, throws at 1', () => {
     const out = ejsonEncodeArrayJson([], { relaxed: true });
@@ -324,19 +320,11 @@ describe('ejson', () => {
     );
   });
 
-  it('off-by-one regression: old code did not count closing bracket', () => {
-    // Build an array that would pass the old check but should throw now.
-    // The old code: bytes = 1 + piece1 + piece2 + ... (no closing ']')
-    // We want output length to be exactly maxBytes + 1 if closing bracket was skipped.
-    const M = 100;
-    const docs = ['a'.repeat(M - 6), 'b']; // -6 for: '[' + '"a...a"' + ',' + '"b"' + ']'
+  it('an output one byte over the cap throws, closing bracket included', () => {
+    const docs = ['a'.repeat(93), 'b'];
     const out = ejsonEncodeArrayJson(docs, { relaxed: true });
-    const outBytes = Buffer.byteLength(out, 'utf8');
-    // If old code didn't count ']', it would pass at maxBytes = outBytes - 1.
-    // Our fix should throw at that threshold.
-    if (outBytes > M) {
-      expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: outBytes - 1 })).toThrow();
-    }
+    expect(Buffer.byteLength(out, 'utf8')).toBe(101);
+    expect(() => ejsonEncodeArrayJson(docs, { relaxed: true, maxBytes: 100 })).toThrow(/100 byte cap/);
   });
 
   it('multi-byte UTF-8: accented characters exceed cap if using UTF-16 length', () => {
