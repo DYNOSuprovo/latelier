@@ -41,6 +41,7 @@
     "src/utils/shellSyntax.ts",
     "src/utils/indexSuggestion.ts",
     "electron/log.ts",
+    "electron/secrets/keychainAvailability.ts",
     "electron/ipc/envelope.ts",
     "electron/ipc/auditChannels.ts",
     "electron/mongo/undo.ts",

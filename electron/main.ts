@@ -42,6 +42,7 @@ import { ShellService } from './services/ShellService.ts';
 import { registerScriptChannels } from './ipc/handlers/script.ts';
 import { ScriptService } from './services/ScriptService.ts';
 import { DiagnosticService } from './services/DiagnosticService.ts';
+import { vaultSafeStorage, selectedBackend } from './secrets/keychainAvailability.ts';
 import { registerRefsChannels } from './ipc/handlers/refs.ts';
 import { ReferenceRulesRepo } from './db/repositories/ReferenceRulesRepo.ts';
 import { ReferenceRulesService } from './services/ReferenceRulesService.ts';
@@ -510,13 +511,10 @@ app.whenReady().then(() => {
 
   // 3. Secrets
   const appStateRef = appState;
+  const vaultCrypto = vaultSafeStorage(safeStorage, process.platform);
   vault = new SecretsVault(
     db,
-    {
-      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-      encryptString: (s) => safeStorage.encryptString(s),
-      decryptString: (b) => safeStorage.decryptString(b),
-    },
+    vaultCrypto,
     {
       getAllowPlaintext: () =>
         appStateRef.get<boolean>('secrets.allowPlaintextFallback') === true,
@@ -574,7 +572,14 @@ app.whenReady().then(() => {
   });
   maintenance.runIfNeeded(appState);
 
-  const diagnostic = new DiagnosticService({ userDataDir, connRepo });
+  const diagnostic = new DiagnosticService({
+    userDataDir,
+    connRepo,
+    secretsStatus: () => ({
+      encryptionAvailable: vaultCrypto.isEncryptionAvailable(),
+      backend: selectedBackend(safeStorage, process.platform),
+    }),
+  });
 
   registerConnChannels(router, connSvc);
   // Filled by the open dialog, read by the data channels: the only files an

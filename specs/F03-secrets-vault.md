@@ -99,6 +99,10 @@ If `safeStorage.isEncryptionAvailable()` returns `false` and the user has not op
 - Once the pref is on, the form shows a persistent banner with a **Disable** button so the user can flip it back. The pref is per-installation (stored in `app_state`).
 - Saving a connection with `auth_mech = 'none'` or `'x509'` and no SSH password bypasses the check entirely.
 
+### Linux keyring backends
+
+On Linux, Electron falls back to a `basic_text` backend when no keyring (libsecret, KWallet) is reachable. That backend encrypts with a hardcoded key yet still reports encryption as available, so the vault's injected `isEncryptionAvailable` (`electron/secrets/keychainAvailability.ts`) treats `basic_text` and `unknown` as unavailable. Linux without a keyring therefore takes the same `SECRETS_UNAVAILABLE` / plaintext opt-in flow as above. `kwallet` counts as a real keychain. Only the availability check is wrapped: `encryptString` / `decryptString` are untouched, so rows already encrypted under `basic_text` stay readable. macOS and Windows never consult the backend. The diagnostic bundle carries `secrets: { encryptionAvailable, backend }` (`backend` is `null` off Linux).
+
 ### Plaintext fallback semantics
 
 - Migration `009-secret-plaintext-flag.sql` adds `is_plaintext INTEGER NOT NULL DEFAULT 0` to `connection_secrets`. Existing rows are encrypted (default `0`).

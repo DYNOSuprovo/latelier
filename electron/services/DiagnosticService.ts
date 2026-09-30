@@ -26,12 +26,16 @@ export interface DiagnosticBundle {
     updatedAt: string;
     lastUsedAt: string | null;
   }>;
+  /** Present only when the service was given a `secretsStatus` probe. */
+  secrets?: { encryptionAvailable: boolean; backend: string | null };
   logs: Record<string, string>;
 }
 
 export interface DiagnosticServiceOpts {
   userDataDir: string;
   connRepo: ConnectionReader;
+  /** Reports whether secrets get real encryption and which keychain backend serves them. */
+  secretsStatus?: () => { encryptionAvailable: boolean; backend: string | null };
   /** Number of most recent log files to include. Defaults to 7. */
   maxLogFiles?: number;
   /** Cap each log file at this many bytes (most recent slice). Defaults to 1 MiB. */
@@ -60,12 +64,14 @@ const DEFAULT_MAX_BYTES = 1024 * 1024;
 export class DiagnosticService {
   private userDataDir: string;
   private connRepo: ConnectionReader;
+  private secretsStatus: DiagnosticServiceOpts['secretsStatus'];
   private maxLogFiles: number;
   private maxLogFileBytes: number;
 
   constructor(opts: DiagnosticServiceOpts) {
     this.userDataDir = opts.userDataDir;
     this.connRepo = opts.connRepo;
+    this.secretsStatus = opts.secretsStatus;
     this.maxLogFiles = opts.maxLogFiles ?? DEFAULT_MAX_FILES;
     this.maxLogFileBytes = opts.maxLogFileBytes ?? DEFAULT_MAX_BYTES;
   }
@@ -75,6 +81,7 @@ export class DiagnosticService {
       generatedAt: new Date().toISOString(),
       app: this.appMetadata(),
       connections: this.redactedConnections(),
+      ...(this.secretsStatus ? { secrets: this.secretsStatus() } : {}),
       logs: await this.recentLogs(),
     };
   }
