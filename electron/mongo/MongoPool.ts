@@ -15,7 +15,7 @@ import type {
   ProbeErrorCode,
   ProbeResult,
 } from '@shared/types';
-import { NotFoundError, ReadOnlyConnectionError, SystemError } from '../errors.ts';
+import { NotFoundError, ReadOnlyConnectionError, SystemError, ValidationError } from '../errors.ts';
 import type { Logger } from '../log.ts';
 import type { SecretsVault } from '../secrets/SecretsVault.ts';
 import { classifyMongoError, classifyMongoOpError, isMaxTimeMSExpired } from './errors.ts';
@@ -428,6 +428,10 @@ export class MongoPool extends EventEmitter {
   async connect(id: string): Promise<ConnectionRuntime> {
     const conn = this.repo.findById(id);
     if (!conn) throw new NotFoundError(`connection ${id} not found`);
+    // Fail closed before any entry or status exists: a stored ssh_enabled row
+    // (legacy data, or a patch that kept the flag) must never fall through to a
+    // direct connection that bypasses the tunnel the user expected.
+    if (conn.ssh?.enabled) throw new ValidationError('SSH tunnels are not supported yet');
 
     // X16 §4.1 — several Connections stay connected at once. The pool is
     // keyed by id and holds one entry per Connection, so connecting to B
