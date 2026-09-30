@@ -159,9 +159,9 @@ function Field({ label, required, error, children }: {
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: sx }: {
+function Input({ value, onChange, placeholder, type = 'text', style: sx, readOnly, ariaLabel }: {
   value: string; onChange: (v: string) => void; placeholder?: string;
-  type?: string; style?: React.CSSProperties;
+  type?: string; style?: React.CSSProperties; readOnly?: boolean; ariaLabel?: string;
 }) {
   const T = themeVars;
   return (
@@ -170,6 +170,8 @@ function Input({ value, onChange, placeholder, type = 'text', style: sx }: {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      readOnly={readOnly}
+      aria-label={ariaLabel}
       style={{
         width: '100%', boxSizing: 'border-box',
         padding: '6px 10px', border: `1px solid ${T.border}`,
@@ -300,8 +302,12 @@ function PasswordInput({ value, onChange, placeholder }: {
   );
 }
 
-function FilePathRow({ purpose, value, onChange, placeholder }: {
+// The path is read-only: main accepts a credential path only if its own file
+// dialog returned it (or it is already stored), so a typed path would be
+// rejected on save. Browse sets it, Clear empties it.
+function FilePathRow({ purpose, label, value, onChange, placeholder }: {
   purpose: PickFilePurpose;
+  label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -318,11 +324,12 @@ function FilePathRow({ purpose, value, onChange, placeholder }: {
   };
   return (
     <div style={{ display: 'flex', gap: 6 }}>
-      <Input value={value} onChange={onChange} placeholder={placeholder} />
+      <Input value={value} onChange={onChange} placeholder={placeholder} readOnly ariaLabel={label} />
       <button
         type="button"
         onClick={() => void pick()}
         title="Browse"
+        aria-label={`Browse for ${label}`}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: T.rs,
@@ -332,6 +339,21 @@ function FilePathRow({ purpose, value, onChange, placeholder }: {
       >
         ⋯
       </button>
+      {value !== '' && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label={`Clear ${label}`}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: T.rs,
+            background: T.surfaceRaised, color: T.textMuted, cursor: 'pointer',
+            fontSize: 11,
+          }}
+        >
+          Clear
+        </button>
+      )}
     </div>
   );
 }
@@ -630,6 +652,7 @@ function TLSTab({ form, set, fieldErrors }: {
             <Field label="CA Certificate" error={fieldErrors['tls.caPath']}>
               <FilePathRow
                 purpose="tls-ca"
+                label="CA Certificate"
                 value={form.tlsCaPath}
                 onChange={(v) => set('tlsCaPath', v)}
                 placeholder="/path/to/ca.pem"
@@ -638,6 +661,7 @@ function TLSTab({ form, set, fieldErrors }: {
             <Field label="Client Certificate" error={fieldErrors['tls.clientCertPath']}>
               <FilePathRow
                 purpose="tls-client-cert"
+                label="Client Certificate"
                 value={form.tlsClientCertPath}
                 onChange={(v) => set('tlsClientCertPath', v)}
                 placeholder="/path/to/client.pem"

@@ -443,3 +443,99 @@ describe('ConnectionForm: TLS tab warns when transport security is weakened', ()
     expect(screen.queryByTestId('tls-warning')).toBeNull();
   });
 });
+
+describe('ConnectionForm TLS file paths are chosen with Browse, not typed', () => {
+  const storedWithCa = {
+    ...CANNED_CONNECTION,
+    tls: { enabled: true, verify: true, caPath: '/stored/ca.pem' },
+  };
+
+  async function openTlsTab() {
+    await userEvent.click(await screen.findByText('TLS'));
+  }
+
+  it('renders the path inputs read-only, each named after its label', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    for (const name of ['CA Certificate', 'Client Certificate']) {
+      const input = screen.getByRole('textbox', { name }) as HTMLInputElement;
+      expect(input.readOnly).toBe(true);
+    }
+  });
+
+  it('typing into a path input changes nothing', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    const input = screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement;
+    await userEvent.type(input, '/typed/ca.pem');
+    expect(input.value).toBe('');
+  });
+
+  it('Browse fills the path from the dialog result for that purpose', async () => {
+    const pickFile = vi.fn(async () => ({ path: '/picked/ca.pem' }));
+    installAtelierMock({ app: { pickFile } });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await userEvent.click(screen.getByRole('button', { name: 'Browse for CA Certificate' }));
+    await waitFor(() =>
+      expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('/picked/ca.pem'),
+    );
+    expect(pickFile).toHaveBeenCalledWith('tls-ca');
+  });
+
+  it('has no Clear button while a path is empty', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    expect(screen.queryByRole('button', { name: /^Clear / })).toBeNull();
+  });
+
+  it('Clear, named for its path, empties only that path and is reachable by keyboard', async () => {
+    installAtelierMock({ conn: { get: async () => ({ ...storedWithCa, tls: { ...storedWithCa.tls, clientCertPath: '/stored/client.pem' } }) } });
+    render(<ConnectionForm mode="edit" connectionId="c1" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await waitFor(() =>
+      expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('/stored/ca.pem'),
+    );
+    const clear = screen.getByRole('button', { name: 'Clear CA Certificate' });
+    clear.focus();
+    expect(document.activeElement).toBe(clear);
+    await userEvent.keyboard('{Enter}');
+    expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Client Certificate' }) as HTMLInputElement).value).toBe('/stored/client.pem');
+    expect(screen.queryByRole('button', { name: 'Clear CA Certificate' })).toBeNull();
+  });
+
+  it('saving after Clear sends no CA path', async () => {
+    const updateSpy = vi.fn(async () => ({ ...storedWithCa, id: 'c1' }) as never);
+    installAtelierMock({ conn: { get: async () => storedWithCa, update: updateSpy as never } });
+    render(<ConnectionForm mode="edit" connectionId="c1" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await userEvent.click(await screen.findByRole('button', { name: 'Clear CA Certificate' }));
+    fireEvent.click(screen.getByText(/Save changes/i));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalled());
+    const patch = (updateSpy.mock.calls[0] as unknown as [string, { tls: { caPath?: string } }])[1];
+    expect(patch.tls.caPath).toBeUndefined();
+  });
+
+  it('shows the main-process rejection against the path field', async () => {
+    const createSpy = vi.fn(async () => {
+      throw Object.assign(new Error('rejected'), {
+        code: 'VALIDATION',
+        details: { issues: [{ path: ['tls', 'caPath'], message: 'Choose this file with Browse; typed paths are not accepted' }] },
+      });
+    });
+    installAtelierMock({ conn: { create: createSpy as never } });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    await userEvent.click(screen.getByText('Auth'));
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'none');
+    fireEvent.click(screen.getByText(/^Save$/));
+    await waitFor(() => expect(createSpy).toHaveBeenCalled());
+    await openTlsTab();
+    expect(await screen.findByText(/typed paths are not accepted/)).toBeTruthy();
+  });
+});

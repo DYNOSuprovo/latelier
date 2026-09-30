@@ -26,6 +26,7 @@ import {
   connectionReader,
 } from './mongo/ConnectionService.ts';
 import { registerConnChannels } from './ipc/handlers/conn.ts';
+import { createPickedCredentialPaths } from './security/credentialPaths.ts';
 import { registerAppChannels, saveFilters } from './ipc/handlers/app.ts';
 import { registerMongoChannels } from './ipc/handlers/mongo.ts';
 import { registerMetaChannels } from './ipc/handlers/meta.ts';
@@ -622,11 +623,12 @@ app.whenReady().then(() => {
     }),
   });
 
-  registerConnChannels(router, connSvc);
+  const pickedCredentialPaths = createPickedCredentialPaths();
+  registerConnChannels(router, connSvc, pickedCredentialPaths);
   // Filled by the open dialog, read by the data channels: the only files an
   // import may read are ones the user picked in main's own dialog.
   const pickedImports = new Set<string>();
-  registerAppChannels(router, () => win, pickedImports, diagnostic);
+  registerAppChannels(router, () => win, pickedImports, pickedCredentialPaths, diagnostic);
   registerMongoChannels(router, pool, () => win?.webContents ?? null);
   registerMetaChannels(router, metaSvc);
   registerIndexChannels(router, indexSvc);
