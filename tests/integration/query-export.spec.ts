@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import type { MongoMemoryServer } from 'mongodb-memory-server';
 import type { IpcMainInvokeEvent } from 'electron';
 import { MongoPool } from '../../electron/mongo/MongoPool';
@@ -327,6 +328,64 @@ describe('QueryService.exportToFile', () => {
     } finally {
       await fs.chmod(file, 0o644); // restore so afterEach's rm can clean up
     }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('query:export file mode', () => {
+  let server: MongoMemoryServer;
+  let pool: MongoPool;
+  let svc: QueryService;
+  let tmp: TempDb;
+  let outDir: string;
+  const connId = 'test-conn';
+  const dbName = 'testdb';
+  const collName = 'items';
+  const mode = (p: string) => fsSync.statSync(p).mode & 0o777;
+
+  beforeAll(async () => {
+    server = await getSharedServer();
+    const uri = server.getUri();
+    const hp = { host: new URL(uri).hostname, port: Number(new URL(uri).port) };
+    const conn = makeConnection(connId, hp, { defaultDb: dbName });
+    pool = new MongoPool({
+      repo: makeReader([conn]),
+      vault: { get: () => null } as unknown as import('../../electron/secrets/SecretsVault').SecretsVault,
+    });
+
+    tmp = createTempDb();
+    const recentRepo = new RecentQueryRepo(tmp.db);
+    const recentSvc = new RecentQueryService(recentRepo);
+    svc = new QueryService(pool, recentSvc, 5);
+  });
+
+  afterAll(async () => {
+    await pool.disconnectAll();
+    tmp.cleanup();
+  });
+
+  beforeEach(async () => {
+    const client = await pool.write(connId).client();
+    const coll = client.db(dbName).collection(collName);
+    await coll.deleteMany({});
+    outDir = await fs.mkdtemp(path.join(os.tmpdir(), 'latelier-export-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('creates a newly exported file with mode 0600', async () => {
+    const client = await pool.write(connId).client();
+    const coll = client.db(dbName).collection(collName);
+    await coll.insertMany([{ n: 1 }, { n: 2 }]);
+
+    const file = path.join(outDir, 'export.jsonl');
+    await svc.exportToFile(
+      { connectionId: connId, dbName, collection: collName, filter: '{}', format: 'jsonl' },
+      file,
+    );
+
+    expect(mode(file)).toBe(0o600);
   });
 });
 
