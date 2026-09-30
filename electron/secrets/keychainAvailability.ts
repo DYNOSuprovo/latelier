@@ -12,10 +12,10 @@ export interface KeychainProbe {
  * treated as no keychain. Every other backend, `kwallet` (KDE 4) included, is
  * a real one.
  */
-const WEAK_LINUX_BACKENDS: ReadonlySet<string> = new Set(['basic_text', 'unknown']);
+const WEAK_LINUX_BACKENDS: ReadonlySet<string | null> = new Set(['basic_text', 'unknown']);
 
 export function isWeakBackend(backend: string | null): boolean {
-  return backend !== null && WEAK_LINUX_BACKENDS.has(backend);
+  return WEAK_LINUX_BACKENDS.has(backend);
 }
 
 /** The backend name on Linux, `null` on platforms where the concept does not exist. */
