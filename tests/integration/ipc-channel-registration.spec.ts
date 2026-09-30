@@ -41,6 +41,7 @@ const { registerMshellChannels } = await import('../../electron/ipc/handlers/msh
 const { registerScriptChannels } = await import('../../electron/ipc/handlers/script');
 const { registerRefsChannels } = await import('../../electron/ipc/handlers/refs');
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
+import { createPickedCredentialPaths } from '../../electron/security/credentialPaths';
 
 type Handler = (evt: IpcMainInvokeEvent, payload: unknown) => unknown;
 
@@ -104,12 +105,12 @@ describe('IPC channel registration — full router coverage', () => {
     shim = createShim();
     const router = createRouter(shim.ipcMain, testSenderCheck);
 
-    registerConnChannels(router, stubSvc<Parameters<typeof registerConnChannels>[1]>());
+    registerConnChannels(router, stubSvc<Parameters<typeof registerConnChannels>[1]>(), createPickedCredentialPaths());
     // appDiagnosticBundle's `diagnostic` param is left undefined on purpose:
     // it's optional, and the handler already treats "no diagnostic service"
     // as a controlled INTERNAL error — that still exercises registration +
     // the envelope path without needing a stub.
-    registerAppChannels(router, () => null, new Set());
+    registerAppChannels(router, () => null, new Set(), createPickedCredentialPaths());
     registerMongoChannels(
       router,
       stubSvc<Parameters<typeof registerMongoChannels>[1]>(),

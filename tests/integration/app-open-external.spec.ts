@@ -16,6 +16,7 @@ const { createRouter } = await import('../../electron/ipc/router');
 const { registerAppChannels } = await import('../../electron/ipc/handlers/app');
 const { IPC_CHANNELS } = await import('../../shared/ipc');
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
+import { createPickedCredentialPaths } from '../../electron/security/credentialPaths';
 
 type Handler = (evt: IpcMainInvokeEvent, payload: unknown) => unknown;
 type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
@@ -29,7 +30,7 @@ describe('app:openExternal', () => {
     openExternalSpy.mockClear();
     handlers.clear();
     const router = createRouter({ handle: (c: string, fn: Handler) => void handlers.set(c, fn) }, testSenderCheck);
-    registerAppChannels(router, () => null, new Set());
+    registerAppChannels(router, () => null, new Set(), createPickedCredentialPaths());
   });
 
   it.each([
