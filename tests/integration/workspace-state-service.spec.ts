@@ -303,6 +303,114 @@ describe('WorkspaceStateService', () => {
     expect(reopened.state.pageSize).toBe(500);
   });
 
+  // ─── Result documents are never written to SQLite ───────────────────────
+
+  function rawState(id: string): Record<string, unknown> {
+    const row = tmp.db.prepare('SELECT state_json FROM workspace_tabs WHERE id = ?').get(id) as {
+      state_json: string;
+    };
+    expect(row.state_json).not.toContain('pii-document');
+    return JSON.parse(row.state_json) as Record<string, unknown>;
+  }
+
+  const PII = { secret: 'pii-document' };
+
+  it('update strips find, aggregation and script results from the stored row but keeps the rest', () => {
+    const coll = svc.openCollection({ connectionId: 'conn', dbName: 'd', collection: 'c' });
+    svc.update(coll.id, {
+      state: {
+        page: 4,
+        lastRunHasMore: true,
+        columns: { a: { width: 120 } },
+        expandedRows: { x: true },
+        lastRun: { documents: [PII], durationMs: 1, ranAt: 'now' },
+        aggregation: {
+          stages: [],
+          activeStageId: null,
+          outputHeight: 200,
+          outputView: 'Tree',
+          lastRun: {
+            rows: [PII],
+            durationMs: 1,
+            ranAt: 'now',
+            stageCounts: {},
+            stageSamples: { 0: [PII] },
+          },
+        },
+      },
+    });
+    const stored = rawState(coll.id);
+    expect(stored).not.toHaveProperty('lastRun');
+    expect(stored.aggregation).not.toHaveProperty('lastRun');
+    expect(stored).toMatchObject({
+      page: 4,
+      lastRunHasMore: true,
+      columns: { a: { width: 120 } },
+      expandedRows: { x: true },
+      aggregation: { outputHeight: 200 },
+    });
+
+    const script = svc.openScript({ connectionId: 'conn' });
+    svc.update(script.id, {
+      state: {
+        source: 'db.c.find()',
+        lastResult: { valueJson: JSON.stringify([PII]), printBuffer: '', durationMs: 1 },
+        lastError: { code: 'X', message: 'pii-document' },
+      },
+    });
+    const storedScript = rawState(script.id);
+    expect(storedScript).not.toHaveProperty('lastResult');
+    expect(storedScript).not.toHaveProperty('lastError');
+    expect(storedScript.source).toBe('db.c.find()');
+  });
+
+  it('a later update does not resurrect or re-store results, and legacy stored results are cleaned on the next write', () => {
+    const coll = svc.openCollection({ connectionId: 'conn', dbName: 'd', collection: 'c' });
+    tmp.db
+      .prepare('UPDATE workspace_tabs SET state_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({ queryRaw: '{}', lastRun: { documents: [PII] }, aggregation: { lastRun: { rows: [PII] } } }),
+        coll.id,
+      );
+    svc.update(coll.id, { state: { page: 1 } });
+    const stored = rawState(coll.id);
+    expect(stored).not.toHaveProperty('lastRun');
+    expect(stored.aggregation).not.toHaveProperty('lastRun');
+    expect(stored.page).toBe(1);
+  });
+
+  it('create paths strip results from initialState', () => {
+    const coll = svc.openCollection({
+      connectionId: 'conn',
+      dbName: 'd',
+      collection: 'c',
+      initialState: { lastRun: { documents: [PII], durationMs: 1, ranAt: 'now' }, pageSize: 10 },
+    });
+    expect(rawState(coll.id)).toMatchObject({ pageSize: 10 });
+    expect(rawState(coll.id)).not.toHaveProperty('lastRun');
+
+    const script = svc.openScript({
+      connectionId: 'conn',
+      initialState: { lastError: { code: 'X', message: 'pii-document' }, title: 'keep' },
+    });
+    expect(rawState(script.id)).toMatchObject({ title: 'keep' });
+    expect(rawState(script.id)).not.toHaveProperty('lastError');
+  });
+
+  it('openAggregation with a seeded aggregation strips its nested lastRun', () => {
+    const tab = svc.openAggregation({
+      connectionId: 'conn',
+      dbName: 'd',
+      collection: 'c',
+      initialState: {
+        lastRun: { rows: [PII], durationMs: 1, ranAt: 'now', stageCounts: {}, stageSamples: {} },
+        outputHeight: 333,
+      },
+    });
+    expect(rawState(tab.id).aggregation).toMatchObject({ outputHeight: 333 });
+    expect(rawState(tab.id).aggregation).not.toHaveProperty('lastRun');
+  });
+
   // ─── Performance regression guard ───────────────────────────────────────
   //
   // Every keystroke in a builder cell, query bar, or script editor lands

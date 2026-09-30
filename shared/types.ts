@@ -596,7 +596,10 @@ export interface TableColumnConfig {
 }
 
 /**
- * Per-tab state for a collection tab. Persisted as JSON via `workspace_tabs`.
+ * Per-tab state for a collection tab. Persisted as JSON via `workspace_tabs`,
+ * except the result-bearing fields (`lastRun`, `aggregation.lastRun`), which
+ * are renderer-memory only: main strips them before every write because they
+ * hold documents from the user's databases.
  *
  * The tab now hosts three sub-views (Documents / Aggregation / Schema). Fields
  * scoped to the Documents view stay at the top level for backwards-compat with
@@ -613,6 +616,7 @@ export interface CollectionTabState {
   pageSize: number;
   totalCount?: number;
   lastRunHasMore?: boolean;
+  /** Never persisted — see the interface doc. Absent on a restored tab. */
   lastRun?: LastRun;
   columns?: Record<string, { width: number }>;
   expandedRows?: Record<string, boolean>;
@@ -647,6 +651,7 @@ export interface AggregationTabState {
   activeStageId: number | null;
   outputHeight: number;
   outputView: ResultViewMode;
+  /** Never persisted (rows and stage samples are user documents). */
   lastRun?: AggregationLastRun;
   dirty?: boolean;
 }
@@ -677,8 +682,8 @@ export interface SchemaTabState {
 
 /**
  * Per-tab state for a script tab (W12). `source` is the editor buffer;
- * `lastResult` / `lastError` round-trip through `state_json` so reopening
- * the app restores the most recent run output.
+ * `lastResult` / `lastError` are renderer-memory only: main strips them before
+ * every `state_json` write, so the run output does not survive a relaunch.
  */
 export interface ScriptTabState {
   /** Tab title shown in the strip. Defaulted on creation, user-renamable. */
@@ -691,9 +696,9 @@ export interface ScriptTabState {
   /** Hard ceiling, ms. Toolbar knob: 15_000 / 60_000 / 300_000 /
    *  86_400_000 ("no limit"). Defaults to 60_000. */
   maxTimeMs?: number;
-  /** Most recent successful run. Mutually exclusive with lastError. */
+  /** Most recent successful run. Mutually exclusive with lastError. Never persisted. */
   lastResult?: ScriptRunResultWire;
-  /** Most recent failed run. Mutually exclusive with lastResult. */
+  /** Most recent failed run. Mutually exclusive with lastResult. Never persisted. */
   lastError?: { code: string; message: string };
   /** Editor / result split height, px. */
   resultPanelHeight?: number;

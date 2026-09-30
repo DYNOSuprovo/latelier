@@ -15,6 +15,7 @@ import {
 } from '@shared/defaults';
 import type { WorkspaceTabRepo, WorkspaceTabRow } from '../db/repositories/WorkspaceTabRepo.ts';
 import { NotFoundError, ValidationError } from '../errors.ts';
+import { serializeTabState } from './tabStateResults.ts';
 
 export interface OpenCollectionInput {
   connectionId: string;
@@ -100,7 +101,7 @@ export class WorkspaceStateService {
       kind: 'collection',
       db_name: input.dbName,
       collection: input.collection,
-      state_json: JSON.stringify(state),
+      state_json: serializeTabState({ ...state }),
       position: this.repo.nextPosition(),
       is_active: 1,
       opened_at: new Date().toISOString(),
@@ -180,7 +181,7 @@ export class WorkspaceStateService {
       kind: 'script',
       db_name: '',
       collection: '',
-      state_json: JSON.stringify(state),
+      state_json: serializeTabState({ ...state }),
       position: this.repo.nextPosition(),
       is_active: 1,
       opened_at: new Date().toISOString(),
@@ -335,7 +336,7 @@ function mergeState(
   patch: Partial<CollectionTabState> | Partial<ScriptTabState>,
 ): string {
   const current = parseState<Record<string, unknown>>(currentJson);
-  return JSON.stringify({ ...current, ...patch });
+  return serializeTabState({ ...current, ...patch });
 }
 
 function rowToTab(row: WorkspaceTabRow): WorkspaceTab {

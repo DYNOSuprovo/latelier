@@ -145,6 +145,20 @@ describe('ResultViewer compound', () => {
     expect(screen.queryByRole('button', { name: /import documents/i })).toBeNull();
   });
 
+  it('Body says to run the query when the tab has never run, with no Clear-filter button', () => {
+    const { container } = renderViewer(
+      makeState({ queryRaw: '{"a":1}', page: 0 }),
+      {},
+      <ResultViewer>
+        <ResultViewer.Body onClearFilter={noop} onColumnResize={noop} onRowExpand={noop} />
+      </ResultViewer>,
+    );
+    expect(container.textContent).toContain('Run the query to see results');
+    expect(container.textContent).not.toContain('No matching documents');
+    expect(container.textContent).not.toContain('This collection is empty');
+    expect(screen.queryByRole('button', { name: /clear filter/i })).toBeNull();
+  });
+
   it('Body renders "No matching documents" for an empty result behind a non-default filter', () => {
     const state = makeState({
       view: 'Tree',
