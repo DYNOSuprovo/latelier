@@ -53,9 +53,11 @@ written.
 - **Migrations are append-only.** Never edit a merged file in
   `electron/db/migrations/`; add `NNN-name.sql`.
 - **Never `console.log`.** Use `electron/log.ts`.
-- **Don't write ticket references into code comments.** No "PR number", no
-  "reviewer finding", no date stamps. Comments explain *why the code is this
-  way*; the tracker holds the history.
+- **Issue numbers in comments point to the history; they don't replace it.**
+  `(#87)` in a comment or test title is welcome, but the comment still
+  explains *why the code is this way* without opening the issue. A bare `#<n>`
+  means an issue in this repository; cite anything else as `owner/repo#<n>`
+  or a full URL. No "reviewer finding" tags or date stamps.
 
 [CLAUDE.md](./CLAUDE.md) carries the full set, including the IPC envelope
 contract, the main-process layering, and how Extended JSON travels on the wire.

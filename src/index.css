@@ -122,7 +122,7 @@ textarea { resize: none; }
 .tree-view-no-scroll-anchor,
 .tree-view-no-scroll-anchor * { overflow-anchor: none; }
 
-/* W15 §5 (#324) — keyboard focus ring for elements that are interactive
+/* W15 §5 — keyboard focus ring for elements that are interactive
    without being a native control. The query bar's advanced-row disclosure is
    a styled `<div role="button">`; a div gets no UA focus ring, so tabbing to
    it landed nowhere visible (the item W14 §2 left open).
@@ -139,7 +139,7 @@ textarea { resize: none; }
   border-radius: var(--atelier-radius-xs);
 }
 
-/* #482 — panel splitters highlight on hover and while dragging, the way the
+/* Panel splitters highlight on hover and while dragging, the way the
    navigator's bespoke `ResizeHandle` already does. X12 phase 7 moved the
    builder and shell splits onto react-resizable-panels and left every
    `Separator` painted `transparent` with no interactive state, so both were
