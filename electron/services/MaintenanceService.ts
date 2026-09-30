@@ -1,4 +1,5 @@
 import type { RecentQueryRepo } from '../db/repositories/RecentQueryRepo.ts';
+import type { RecentFieldValueRepo } from '../db/repositories/RecentFieldValueRepo.ts';
 import type { AuditRepo } from '../db/repositories/AuditRepo.ts';
 import type { AppStateService } from './AppStateService.ts';
 
@@ -13,15 +14,18 @@ const PRE_IMAGES_KEPT_PER_CONNECTION = 200;
 
 export class MaintenanceService {
   private recentRepo: RecentQueryRepo;
+  private recentFieldValueRepo: RecentFieldValueRepo;
   private auditRepo: AuditRepo;
   private checkpoint: () => void;
   constructor(deps: {
     recentRepo: RecentQueryRepo;
+    recentFieldValueRepo: RecentFieldValueRepo;
     auditRepo: AuditRepo;
     /** Flushes purged pages out of the WAL; owns reporting a blocked checkpoint. */
     checkpoint: () => void;
   }) {
     this.recentRepo = deps.recentRepo;
+    this.recentFieldValueRepo = deps.recentFieldValueRepo;
     this.auditRepo = deps.auditRepo;
     this.checkpoint = deps.checkpoint;
   }
@@ -42,6 +46,7 @@ export class MaintenanceService {
 
   private purgeExpired(): void {
     this.recentRepo.deleteOlderThan(RECENT_RETENTION_DAYS);
+    this.recentFieldValueRepo.deleteOlderThan(RECENT_RETENTION_DAYS);
     this.auditRepo.expirePreImages(PRE_IMAGE_RETENTION_DAYS, PRE_IMAGES_KEPT_PER_CONNECTION);
     this.auditRepo.deleteOlderThan(AUDIT_RETENTION_DAYS);
   }
