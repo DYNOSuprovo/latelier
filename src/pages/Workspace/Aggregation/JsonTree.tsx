@@ -2,30 +2,7 @@ import React from 'react';
 import { I } from '../../../icons';
 import { isRecord, toDisplayValue, type DisplayType, type DisplayValue } from '../../../utils/displayValue';
 import { childKey, escapeKeySegment } from '../views/fieldPathKey';
-
-// Replicated from `Workspace/views/TreeView.tsx` (kept in sync manually) so
-// both JSON-tree surfaces share the same visual vocabulary. Not imported
-// directly: TreeView.tsx only exports components (react-refresh's
-// "one component per file" rule), so the palette can't be re-exported from
-// there without a broader TreeView refactor, which is out of scope here.
-const TYPE_HUES: Partial<Record<DisplayType, { bg: string; fg: string }>> = {
-  objectid: { bg: 'rgba(138,107,64,0.12)', fg: '#8A6B40' },
-  date: { bg: 'rgba(26,80,104,0.10)', fg: '#1A5068' },
-  long: { bg: 'rgba(107,58,138,0.10)', fg: '#6B3A8A' },
-  decimal: { bg: 'rgba(107,58,138,0.10)', fg: '#6B3A8A' },
-  regex: { bg: 'rgba(184,76,20,0.12)', fg: '#B84C14' },
-  binary: { bg: 'rgba(80,80,80,0.10)', fg: '#666' },
-  array: { bg: 'rgba(107,58,138,0.10)', fg: '#6B3A8A' },
-  object: { bg: 'rgba(80,80,138,0.10)', fg: '#5050A8' },
-};
-
-const TYPE_THEMED: Partial<Record<DisplayType, { bg: string; fg: string }>> = {
-  string: { bg: 'transparent', fg: 'var(--atelier-text-ghost)' },
-  number: { bg: 'var(--atelier-accent-soft)', fg: 'var(--atelier-accent)' },
-  boolean: { bg: 'var(--atelier-green-soft)', fg: 'var(--atelier-green-text)' },
-  null: { bg: 'var(--atelier-surface-raised)', fg: 'var(--atelier-text-ghost)' },
-  undefined: { bg: 'var(--atelier-surface-raised)', fg: 'var(--atelier-text-ghost)' },
-};
+import { TYPE_HUES, TYPE_THEMED } from '../typeColors';
 
 /**
  * Generic, self-contained collapsible JSON tree — renders an arbitrary
