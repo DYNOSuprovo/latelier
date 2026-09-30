@@ -392,7 +392,7 @@ function stringifyForPrint(value: unknown): string {
 // Soft cap on the synchronous EJSON encode of a script result. An explicit
 // `.toArray()` on a large collection materializes everything and is encoded on
 // the main event loop; without a cap, 200k docs → 95MB / 778ms block plus an
-// unbounded blob persisted into state_json. Matches the find cap (50 MB).
+// unbounded blob sent over IPC and held in renderer memory. Matches the find cap (50 MB).
 const MAX_SCRIPT_RESULT_BYTES = 50 * 1024 * 1024;
 
 /**

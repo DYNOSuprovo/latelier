@@ -12,6 +12,7 @@ import { DEFAULT_AGGREGATION_TAB_STATE } from '@shared/defaults';
 import type { IpcError } from '@shared/ipc';
 import { confirmDestructive } from '../utils/confirm';
 import { api, isIpcError } from '../api/atelier';
+import { carryResultFields, stripResultPatch } from './tabResultCarry';
 
 /**
  * Global sticky-default prefs key (T0.5 / W07 §1). Stores the last page size
@@ -170,7 +171,9 @@ export function useWorkspaceTabs(): WorkspaceTabsState {
   const refresh = useCallback(async () => {
     try {
       const list = await api.tabs.list();
-      setTabs(list);
+      // Listed tabs carry no result documents (never persisted); keep the
+      // in-memory ones of tabs that were already open.
+      setTabs((prev) => carryResultFields(prev, list));
       setError(null);
     } catch (e) {
       setError(isIpcError(e) ? e : { code: 'INTERNAL', message: String(e) });
@@ -383,13 +386,17 @@ export function useWorkspaceTabs(): WorkspaceTabsState {
       const entries = [...pendingPatches.current.entries()];
       pendingPatches.current.clear();
       void Promise.all(
-        entries.map(([id, patch]) =>
-          api.tabs
-            .update(id, { state: patch })
+        entries.map(([id, patch]) => {
+          // Result documents stay in renderer memory; main strips them too,
+          // this only avoids shipping them over IPC on every run.
+          const state = stripResultPatch(patch);
+          if (Object.keys(state).length === 0) return undefined;
+          return api.tabs
+            .update(id, { state })
             .catch(() => {
               // best-effort; next refresh will reconcile
-            }),
-        ),
+            });
+        }),
       );
     }, DEBOUNCE_MS);
   }, []);

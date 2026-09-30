@@ -64,11 +64,11 @@ export interface ScriptTabState {
   /** Selected database for the `db` proxy at run time. Optional —
    *  scripts can also explicitly call `use("...")`. */
   dbName?: string;
-  /** Last successful run's result, kept so the tab restores with its
-   *  most recent output after relaunch. */
+  /** Last successful run's result. Renderer memory only: main strips it
+   *  before every `state_json` write, so it does not survive relaunch. */
   lastResult?: ScriptRunResultWire;
   /** Last error, if the last run failed. Mutually exclusive with
-   *  lastResult. */
+   *  lastResult. Renderer memory only, like lastResult. */
   lastError?: { code: string; message: string };
 }
 
@@ -260,8 +260,12 @@ tracked as a follow-up in GitHub Issues.
       clear "script exceeded N ms" message.
 - [x] Cancelling a long `find` (large collection, no index) via the
       Cancel button aborts within ~1 s.
-- [x] Closing and reopening the app restores the buffer text and the
-      most recent result/error from `state_json`.
+- [x] Closing and reopening the app restores the buffer text, but not
+      the most recent result/error: results can hold production
+      documents, so they are never written to `state_json` (main strips
+      `lastResult` / `lastError` on every write and a migration scrubs
+      older rows). A reopened script tab shows its empty output state
+      until Run.
 - [x] EJSON round-trips (an `ObjectId` written in the buffer comes
       back as `$oid` in the result, and renders as `ObjectId(...)` in
       the table).
