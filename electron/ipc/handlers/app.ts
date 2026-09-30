@@ -5,11 +5,17 @@ import { z } from 'zod';
 import { IPC_CHANNELS, type PickFilePurpose } from '@shared/ipc';
 import type { Router } from '../router.ts';
 import { zodValidator } from '../validators.ts';
-import { SystemError, ValidationError } from '../../errors.ts';
+import { SystemError } from '../../errors.ts';
 import type { DiagnosticService } from '../../services/DiagnosticService.ts';
+import { parseAllowedExternalUrl } from '../../security/externalUrl.ts';
 
 const PickFileInput = z.enum(['tls-ca', 'tls-client-cert', 'ssh-key', 'data-import']);
 const OpenExternalInput = z.string().url();
+// Hosts the renderer may open in the system browser: the project repo (the
+// troubleshooting drawer's doc link) and MongoDB's site. A new link to another
+// host must be added here. GitHub is not path-pinned, so a repo rename cannot
+// silently break the drawer link.
+const EXTERNAL_HOSTS: ReadonlySet<string> = new Set(['github.com', 'www.mongodb.com']);
 const SaveFileInput = z.object({
   defaultName: z.string().optional(),
   content: z.string(),
@@ -81,16 +87,8 @@ export function registerAppChannels(
     IPC_CHANNELS.appOpenExternal,
     zodValidator(OpenExternalInput),
     async (url) => {
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new ValidationError('invalid URL');
-      }
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        throw new ValidationError(`unsupported protocol: ${parsed.protocol}`);
-      }
-      await shell.openExternal(url);
+      const parsed = parseAllowedExternalUrl(url, EXTERNAL_HOSTS);
+      await shell.openExternal(parsed.href);
       return { opened: true };
     },
   );
