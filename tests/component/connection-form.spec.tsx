@@ -472,3 +472,202 @@ describe('ConnectionForm: TLS tab warns when transport security is weakened', ()
     expect(screen.queryByTestId('tls-warning')).toBeNull();
   });
 });
+
+describe('ConnectionForm TLS file paths are chosen with Browse, not typed', () => {
+  const storedWithCa = {
+    ...CANNED_CONNECTION,
+    tls: { enabled: true, verify: true, caPath: '/stored/ca.pem' },
+  };
+
+  async function openTlsTab() {
+    await userEvent.click(await screen.findByText('TLS'));
+  }
+
+  it('renders the path inputs read-only, each named after its label', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    for (const name of ['CA Certificate', 'Client Certificate']) {
+      const input = screen.getByRole('textbox', { name }) as HTMLInputElement;
+      expect(input.readOnly).toBe(true);
+    }
+  });
+
+  it('typing into a path input changes nothing', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    const input = screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement;
+    await userEvent.type(input, '/typed/ca.pem');
+    expect(input.value).toBe('');
+  });
+
+  it('Browse fills the path from the dialog result for that purpose', async () => {
+    const pickFile = vi.fn(async () => ({ path: '/picked/ca.pem' }));
+    installAtelierMock({ app: { pickFile } });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await userEvent.click(screen.getByRole('button', { name: 'Browse for CA Certificate' }));
+    await waitFor(() =>
+      expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('/picked/ca.pem'),
+    );
+    expect(pickFile).toHaveBeenCalledWith('tls-ca');
+  });
+
+  it('has no Clear button while a path is empty', async () => {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    expect(screen.queryByRole('button', { name: /^Clear / })).toBeNull();
+  });
+
+  it('Clear, named for its path, empties only that path and is reachable by keyboard', async () => {
+    installAtelierMock({ conn: { get: async () => ({ ...storedWithCa, tls: { ...storedWithCa.tls, clientCertPath: '/stored/client.pem' } }) } });
+    render(<ConnectionForm mode="edit" connectionId="c1" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await waitFor(() =>
+      expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('/stored/ca.pem'),
+    );
+    const clear = screen.getByRole('button', { name: 'Clear CA Certificate' });
+    clear.focus();
+    expect(document.activeElement).toBe(clear);
+    await userEvent.keyboard('{Enter}');
+    expect((screen.getByRole('textbox', { name: 'CA Certificate' }) as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Client Certificate' }) as HTMLInputElement).value).toBe('/stored/client.pem');
+    expect(screen.queryByRole('button', { name: 'Clear CA Certificate' })).toBeNull();
+  });
+
+  it('saving after Clear sends no CA path', async () => {
+    const updateSpy = vi.fn(async () => ({ ...storedWithCa, id: 'c1' }) as never);
+    installAtelierMock({ conn: { get: async () => storedWithCa, update: updateSpy as never } });
+    render(<ConnectionForm mode="edit" connectionId="c1" onSaved={() => {}} onCancel={() => {}} />);
+    await openTlsTab();
+    await userEvent.click(await screen.findByRole('button', { name: 'Clear CA Certificate' }));
+    fireEvent.click(screen.getByText(/Save changes/i));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalled());
+    const patch = (updateSpy.mock.calls[0] as unknown as [string, { tls: { caPath?: string } }])[1];
+    expect(patch.tls.caPath).toBeUndefined();
+  });
+
+  it('shows the main-process rejection against the path field', async () => {
+    const createSpy = vi.fn(async () => {
+      throw Object.assign(new Error('rejected'), {
+        code: 'VALIDATION',
+        details: { issues: [{ path: ['tls', 'caPath'], message: 'Choose this file with Browse; typed paths are not accepted' }] },
+      });
+    });
+    installAtelierMock({ conn: { create: createSpy as never } });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    await userEvent.click(screen.getByText('Auth'));
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'none');
+    fireEvent.click(screen.getByText(/^Save$/));
+    await waitFor(() => expect(createSpy).toHaveBeenCalled());
+    await openTlsTab();
+    expect(await screen.findByText(/typed paths are not accepted/)).toBeTruthy();
+  });
+});
+
+describe('ConnectionForm fields are named by their visible label', () => {
+  // The required asterisk is decoration (aria-hidden) but still part of the
+  // label's textContent, which getByLabelText matches against.
+  const byLabel = (label: string) => screen.getByLabelText(new RegExp(`^${label}\\*?$`));
+  const describedBy = (el: HTMLElement) =>
+    (el.getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .trim();
+
+  async function mount() {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await screen.findByPlaceholderText(/My MongoDB Server/i);
+  }
+
+  it('General tab: every field label finds its control', async () => {
+    await mount();
+    expect(byLabel('Name')).toBe(screen.getByPlaceholderText(/My MongoDB Server/i));
+    expect(byLabel('Hostname')).toBe(screen.getByPlaceholderText(/cluster\.mongodb\.net/i));
+    expect(byLabel('Default database').tagName).toBe('INPUT');
+    expect(byLabel('Connection type').tagName).toBe('SELECT');
+    // Port only renders for a standard (non-SRV) connection.
+    await userEvent.selectOptions(byLabel('Connection type'), 'standard');
+    expect(byLabel('Port').tagName).toBe('INPUT');
+    await userEvent.click(screen.getByText(/Paste URI/i));
+    expect(byLabel('Connection URI')).toBe(screen.getByPlaceholderText(/mongodb\+srv:\/\//i));
+  });
+
+  it('General tab: the colour swatches are a group named by their label', async () => {
+    await mount();
+    const group = screen.getByRole('group', { name: 'Color' });
+    expect(within(group).getAllByRole('button').length).toBeGreaterThan(1);
+  });
+
+  it('Auth tab: every field label finds its control', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    expect(byLabel('Authentication mechanism').tagName).toBe('SELECT');
+    expect(byLabel('Username').tagName).toBe('INPUT');
+    expect(byLabel('Auth database').tagName).toBe('INPUT');
+    expect((byLabel('Password') as HTMLInputElement).type).toBe('password');
+  });
+
+  it('TLS tab: the read-only path rows are named by their label, not an aria-label', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'TLS' }));
+    for (const label of ['CA Certificate', 'Client Certificate']) {
+      const input = byLabel(label) as HTMLInputElement;
+      expect(input.readOnly).toBe(true);
+      expect(input.hasAttribute('aria-label')).toBe(false);
+    }
+  });
+
+  it('a field with an error is aria-invalid and described by its error text; a valid one is neither', async () => {
+    installAtelierMock({
+      conn: {
+        create: (async () => {
+          throw {
+            code: 'VALIDATION',
+            message: 'password: required',
+            details: { issues: [{ path: ['password'], message: 'Password is required for SCRAM authentication' }] },
+          };
+        }) as never,
+      },
+    });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    fireEvent.click(screen.getByText(/^Save$/));
+
+    const password = await waitFor(() => byLabel('Password'));
+    expect(password.getAttribute('aria-invalid')).toBe('true');
+    expect(describedBy(password)).toBe('Password is required for SCRAM authentication');
+    const username = byLabel('Username');
+    expect(username.hasAttribute('aria-invalid')).toBe(false);
+    expect(username.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  it('required fields are aria-required; optional ones are not', async () => {
+    await mount();
+    expect(byLabel('Name').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Hostname').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Default database').hasAttribute('aria-required')).toBe(false);
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    expect(byLabel('Username').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Password').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Auth database').hasAttribute('aria-required')).toBe(false);
+  });
+
+  it('the password show/hide toggle is named for its action and flips the input type', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    const password = byLabel('Password') as HTMLInputElement;
+    expect(password.type).toBe('password');
+    await userEvent.click(screen.getByRole('button', { name: 'Show password' }));
+    expect(password.type).toBe('text');
+    const hide = screen.getByRole('button', { name: 'Hide password' });
+    expect(hide.getAttribute('aria-pressed')).toBe('true');
+  });
+});

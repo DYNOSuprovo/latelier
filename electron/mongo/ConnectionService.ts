@@ -20,6 +20,7 @@ import { ConflictError, NotFoundError } from '../errors.ts';
 import { normalizeConnectionInput } from './normalize.ts';
 import { parseConnectionUri } from './uri-parse.ts';
 import { withTimeout } from '../utils/withTimeout.ts';
+import type { CredentialPaths } from '../security/credentialPaths.ts';
 
 /**
  * Connection domain service. Owns orchestration between the SQLite repo, the
@@ -61,6 +62,15 @@ export class ConnectionService {
     const row = this.repo.findById(id);
     if (!row) throw new NotFoundError(`connection ${id} not found`);
     return this.rowToConnectionWithFlags(row);
+  }
+
+  /** Credential file paths currently stored on every connection. */
+  storedCredentialPaths(): CredentialPaths[] {
+    return this.repo.list().map((row) => ({
+      caPath: row.tls_ca_path ?? undefined,
+      clientCertPath: row.tls_client_cert_path ?? undefined,
+      privateKeyPath: row.ssh_private_key_path ?? undefined,
+    }));
   }
 
   async create(raw: ConnectionInput): Promise<Connection> {

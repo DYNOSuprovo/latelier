@@ -8,6 +8,7 @@ import { zodValidator } from '../validators.ts';
 import { SystemError } from '../../errors.ts';
 import type { DiagnosticService } from '../../services/DiagnosticService.ts';
 import { parseAllowedExternalUrl } from '../../security/externalUrl.ts';
+import type { PickedCredentialPaths } from '../../security/credentialPaths.ts';
 
 const PickFileInput = z.enum(['tls-ca', 'tls-client-cert', 'ssh-key', 'data-import']);
 const OpenExternalInput = z.string().url();
@@ -59,12 +60,16 @@ export function saveFilters(defaultName: string): FileFilter[] {
  * `pickedImports` collects every path the open dialog returned for
  * `data-import`: the data channels read a file only when it is in here, so
  * the renderer can hand back a file the user picked but never name another.
- * Required, not optional, for the same reason the router's sender check is.
+ * `pickedCredentialPaths` does the same for the TLS CA, TLS client-cert and SSH
+ * key dialogs; the connection channels accept such a path only if it is in
+ * there. Both are required, not optional, for the same reason the router's
+ * sender check is.
  */
 export function registerAppChannels(
   router: Router,
   getWindow: () => BrowserWindow | null,
   pickedImports: Set<string>,
+  pickedCredentialPaths: PickedCredentialPaths,
   diagnostic?: DiagnosticService,
 ): void {
   router.register(
@@ -79,6 +84,7 @@ export function registerAppChannels(
       if (result.canceled || result.filePaths.length === 0) return { path: null };
       const picked = result.filePaths[0]!;
       if (purpose === 'data-import') pickedImports.add(picked);
+      else pickedCredentialPaths.record(purpose, picked);
       return { path: picked };
     },
   );

@@ -9,13 +9,28 @@ import {
   ConnectionUpdateSchema,
   ParseUriInputSchema,
 } from '../schemas/connection.ts';
+import {
+  assertCredentialPathsAllowed,
+  credentialPathsOf,
+  type PickedCredentialPaths,
+} from '../../security/credentialPaths.ts';
 
 const UpdateInput = z.object({
   id: NonEmpty,
   patch: ConnectionUpdateSchema,
 });
 
-export function registerConnChannels(router: Router, svc: ConnectionService): void {
+/**
+ * `pickedCredentialPaths` is the set `registerAppChannels` fills from the open
+ * dialog. A TLS / SSH-key path is accepted only if it was picked there this
+ * session, or (update, test) it is a value a stored connection already holds,
+ * so editing an unrelated field never forces a re-pick. Required, not optional.
+ */
+export function registerConnChannels(
+  router: Router,
+  svc: ConnectionService,
+  pickedCredentialPaths: PickedCredentialPaths,
+): void {
   router.register(
     IPC_CHANNELS.connList,
     zodValidator(z.undefined().or(z.null()).optional()),
@@ -32,14 +47,22 @@ export function registerConnChannels(router: Router, svc: ConnectionService): vo
   router.register(
     IPC_CHANNELS.connCreate,
     zodValidator(ConnectionInputSchema),
-    (input) => svc.create(input),
+    (input) => {
+      assertCredentialPathsAllowed(credentialPathsOf(input), pickedCredentialPaths, []);
+      return svc.create(input);
+    },
   );
 
   // SECRET_INPUT: 'conn:update' patch may carry plaintext secrets.
   router.register(
     IPC_CHANNELS.connUpdate,
     zodValidator(UpdateInput),
-    ({ id, patch }) => svc.update(id, patch),
+    ({ id, patch }) => {
+      assertCredentialPathsAllowed(credentialPathsOf(patch), pickedCredentialPaths, [
+        credentialPathsOf(svc.get(id)),
+      ]);
+      return svc.update(id, patch);
+    },
   );
 
   router.register(
@@ -71,6 +94,15 @@ export function registerConnChannels(router: Router, svc: ConnectionService): vo
   router.register(
     IPC_CHANNELS.connTest,
     zodValidator(ConnectionTestInputSchema),
-    (input) => svc.test(input),
+    // The probe payload has no connection id, so a path stored on any
+    // connection counts as unchanged.
+    (input) => {
+      assertCredentialPathsAllowed(
+        credentialPathsOf(input),
+        pickedCredentialPaths,
+        svc.storedCredentialPaths(),
+      );
+      return svc.test(input);
+    },
   );
 }

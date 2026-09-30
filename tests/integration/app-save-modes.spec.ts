@@ -17,6 +17,7 @@ const { createRouter } = await import('../../electron/ipc/router');
 const { registerAppChannels } = await import('../../electron/ipc/handlers/app');
 const { IPC_CHANNELS } = await import('../../shared/ipc');
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
+import { createPickedCredentialPaths } from '../../electron/security/credentialPaths';
 
 type Handler = (evt: IpcMainInvokeEvent, payload: unknown) => unknown;
 
@@ -33,7 +34,7 @@ describe.skipIf(process.platform === 'win32')('app save handlers file modes', ()
     showSaveDialog.mockReset();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-save-modes-'));
     const router = createRouter({ handle: (c: string, fn: Handler) => void handlers.set(c, fn) }, testSenderCheck);
-    registerAppChannels(router, () => null, new Set());
+    registerAppChannels(router, () => null, new Set(), createPickedCredentialPaths());
   });
 
   afterEach(() => {
@@ -90,7 +91,7 @@ describe.skipIf(process.platform === 'win32')('app diagnostic bundle file mode',
       serialize: () => Promise.resolve('{"diagnostic": "data"}'),
     } as unknown as import('../../electron/services/DiagnosticService').DiagnosticService;
     const router = createRouter({ handle: (c: string, fn: Handler) => void handlers.set(c, fn) }, testSenderCheck);
-    registerAppChannels(router, () => null, new Set(), mockDiagnostic);
+    registerAppChannels(router, () => null, new Set(), createPickedCredentialPaths(), mockDiagnostic);
   });
 
   afterEach(() => {
