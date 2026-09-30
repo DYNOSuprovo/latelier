@@ -127,10 +127,17 @@ if (APP_ICON_AVAILABLE && process.platform === 'darwin' && app.dock) {
 // in parallel, the test instance loses the lock and calls `app.quit()`,
 // which Playwright surfaces as "Target page, context or browser has been
 // closed" before any window appears. Skip the lock under the test harness
-// — each e2e instance has its own throwaway userData dir, so the data
-// isolation the lock normally protects is already guaranteed.
-const isTestInstance =
-  process.env.NODE_ENV === 'test' && !!process.env.ATELIER_USER_DATA_DIR;
+// — each e2e instance has its own throwaway userData dir, enforced by
+// app.setPath('userData', ...) below.
+const testUserDataDir =
+  process.env.NODE_ENV === 'test' ? process.env.ATELIER_USER_DATA_DIR : undefined;
+const isTestInstance = !!testUserDataDir;
+
+// A test run must touch nothing outside its throwaway dir. Redirecting only
+// the app's own database (resolveUserDataDir) left Chromium's profile (Local
+// Storage, caches) in the real ~/Library/Application Support/L'Atelier.
+if (testUserDataDir) app.setPath('userData', testUserDataDir);
+
 if (!isTestInstance) {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
