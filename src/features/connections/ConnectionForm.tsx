@@ -134,44 +134,83 @@ function toUpdate(f: FormState): ConnectionUpdate {
 }
 
 
-function Label({ children, required }: { children: React.ReactNode; required?: boolean }) {
-  const T = themeVars;
-  return (
-    <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 5, display: 'flex', gap: 3 }}>
-      {children}
-      {required && <span style={{ color: T.warn }}>*</span>}
-    </div>
-  );
+// What a `Field` hands its control so the visible label names it and the error
+// text describes it. Null outside a `Field`: the control then renders no id and
+// no aria wiring, exactly as before. Not exported — react-refresh only lets a
+// component file export components.
+const FieldControlContext = React.createContext<{ id: string; errorId: string; invalid: boolean; required: boolean } | null>(null);
+
+function useFieldControlProps() {
+  const ctx = React.useContext(FieldControlContext);
+  if (!ctx) return {};
+  return {
+    id: ctx.id,
+    'aria-invalid': ctx.invalid || undefined,
+    'aria-required': ctx.required || undefined,
+    'aria-describedby': ctx.invalid ? ctx.errorId : undefined,
+  };
 }
 
-function Field({ label, required, error, children }: {
-  label?: string; required?: boolean; error?: string; children: React.ReactNode;
+function Label({ children, required, htmlFor, id }: {
+  children: React.ReactNode; required?: boolean; htmlFor?: string; id?: string;
 }) {
   const T = themeVars;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {label && <Label required={required}>{label}</Label>}
+  const style: React.CSSProperties = {
+    fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 5, display: 'flex', gap: 3,
+  };
+  const content = (
+    <>
       {children}
-      {error && (
-        <div style={{ marginTop: 4, fontSize: 11, color: T.warn }}>{error}</div>
-      )}
-    </div>
+      {required && <span aria-hidden="true" style={{ color: T.warn }}>*</span>}
+    </>
+  );
+  // A label with no labelable control to point at (the colour swatches are a
+  // group of buttons) stays a plain element; `Field group` names it instead.
+  return htmlFor
+    ? <label htmlFor={htmlFor} style={style}>{content}</label>
+    : <div id={id} style={style}>{content}</div>;
+}
+
+function Field({ label, required, error, group, children }: {
+  label?: string; required?: boolean; error?: string; group?: boolean; children: React.ReactNode;
+}) {
+  const T = themeVars;
+  const id = React.useId();
+  const errorId = `${id}-error`;
+  const labelId = `${id}-label`;
+  return (
+    <FieldControlContext.Provider value={{ id, errorId, invalid: Boolean(error), required: Boolean(required) }}>
+      <div
+        style={{ display: 'flex', flexDirection: 'column' }}
+        role={group && label ? 'group' : undefined}
+        aria-labelledby={group && label ? labelId : undefined}
+      >
+        {label && (
+          <Label required={required} htmlFor={group ? undefined : id} id={labelId}>{label}</Label>
+        )}
+        {children}
+        {error && (
+          <div id={errorId} style={{ marginTop: 4, fontSize: 11, color: T.warn }}>{error}</div>
+        )}
+      </div>
+    </FieldControlContext.Provider>
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: sx, readOnly, ariaLabel }: {
+function Input({ value, onChange, placeholder, type = 'text', style: sx, readOnly }: {
   value: string; onChange: (v: string) => void; placeholder?: string;
-  type?: string; style?: React.CSSProperties; readOnly?: boolean; ariaLabel?: string;
+  type?: string; style?: React.CSSProperties; readOnly?: boolean;
 }) {
   const T = themeVars;
+  const fieldProps = useFieldControlProps();
   return (
     <input
+      {...fieldProps}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       readOnly={readOnly}
-      aria-label={ariaLabel}
       style={{
         width: '100%', boxSizing: 'border-box',
         padding: '6px 10px', border: `1px solid ${T.border}`,
@@ -187,8 +226,10 @@ function Select({ value, onChange, children }: {
   value: string; onChange: (v: string) => void; children: React.ReactNode;
 }) {
   const T = themeVars;
+  const fieldProps = useFieldControlProps();
   return (
     <select
+      {...fieldProps}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       style={{
@@ -273,9 +314,11 @@ function PasswordInput({ value, onChange, placeholder }: {
 }) {
   const T = themeVars;
   const [showPwd, setShowPwd] = React.useState(false);
+  const fieldProps = useFieldControlProps();
   return (
     <div style={{ position: 'relative' }}>
       <input
+        {...fieldProps}
         type={showPwd ? 'text' : 'password'}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -289,6 +332,8 @@ function PasswordInput({ value, onChange, placeholder }: {
       />
       <button
         type="button"
+        aria-label={showPwd ? 'Hide password' : 'Show password'}
+        aria-pressed={showPwd}
         onClick={() => setShowPwd((s) => !s)}
         style={{
           position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
@@ -324,7 +369,7 @@ function FilePathRow({ purpose, label, value, onChange, placeholder }: {
   };
   return (
     <div style={{ display: 'flex', gap: 6 }}>
-      <Input value={value} onChange={onChange} placeholder={placeholder} readOnly ariaLabel={label} />
+      <Input value={value} onChange={onChange} placeholder={placeholder} readOnly />
       <button
         type="button"
         onClick={() => void pick()}
@@ -385,7 +430,7 @@ function GeneralTab({
           <Field label="Name" required error={fieldErrors['name']}>
             <Input value={form.name} onChange={(v) => set('name', v)} placeholder="My MongoDB Server" />
           </Field>
-          <Field label="Color">
+          <Field label="Color" group>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {COLORS.map((c) => (
                 <button

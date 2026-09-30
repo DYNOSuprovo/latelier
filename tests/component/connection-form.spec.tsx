@@ -568,3 +568,106 @@ describe('ConnectionForm TLS file paths are chosen with Browse, not typed', () =
     expect(await screen.findByText(/typed paths are not accepted/)).toBeTruthy();
   });
 });
+
+describe('ConnectionForm fields are named by their visible label', () => {
+  // The required asterisk is decoration (aria-hidden) but still part of the
+  // label's textContent, which getByLabelText matches against.
+  const byLabel = (label: string) => screen.getByLabelText(new RegExp(`^${label}\\*?$`));
+  const describedBy = (el: HTMLElement) =>
+    (el.getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .trim();
+
+  async function mount() {
+    installAtelierMock({});
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await screen.findByPlaceholderText(/My MongoDB Server/i);
+  }
+
+  it('General tab: every field label finds its control', async () => {
+    await mount();
+    expect(byLabel('Name')).toBe(screen.getByPlaceholderText(/My MongoDB Server/i));
+    expect(byLabel('Hostname')).toBe(screen.getByPlaceholderText(/cluster\.mongodb\.net/i));
+    expect(byLabel('Default database').tagName).toBe('INPUT');
+    expect(byLabel('Connection type').tagName).toBe('SELECT');
+    // Port only renders for a standard (non-SRV) connection.
+    await userEvent.selectOptions(byLabel('Connection type'), 'standard');
+    expect(byLabel('Port').tagName).toBe('INPUT');
+    await userEvent.click(screen.getByText(/Paste URI/i));
+    expect(byLabel('Connection URI')).toBe(screen.getByPlaceholderText(/mongodb\+srv:\/\//i));
+  });
+
+  it('General tab: the colour swatches are a group named by their label', async () => {
+    await mount();
+    const group = screen.getByRole('group', { name: 'Color' });
+    expect(within(group).getAllByRole('button').length).toBeGreaterThan(1);
+  });
+
+  it('Auth tab: every field label finds its control', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    expect(byLabel('Authentication mechanism').tagName).toBe('SELECT');
+    expect(byLabel('Username').tagName).toBe('INPUT');
+    expect(byLabel('Auth database').tagName).toBe('INPUT');
+    expect((byLabel('Password') as HTMLInputElement).type).toBe('password');
+  });
+
+  it('TLS tab: the read-only path rows are named by their label, not an aria-label', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'TLS' }));
+    for (const label of ['CA Certificate', 'Client Certificate']) {
+      const input = byLabel(label) as HTMLInputElement;
+      expect(input.readOnly).toBe(true);
+      expect(input.hasAttribute('aria-label')).toBe(false);
+    }
+  });
+
+  it('a field with an error is aria-invalid and described by its error text; a valid one is neither', async () => {
+    installAtelierMock({
+      conn: {
+        create: (async () => {
+          throw {
+            code: 'VALIDATION',
+            message: 'password: required',
+            details: { issues: [{ path: ['password'], message: 'Password is required for SCRAM authentication' }] },
+          };
+        }) as never,
+      },
+    });
+    render(<ConnectionForm mode="create" onSaved={() => {}} onCancel={() => {}} />);
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    fireEvent.click(screen.getByText(/^Save$/));
+
+    const password = await waitFor(() => byLabel('Password'));
+    expect(password.getAttribute('aria-invalid')).toBe('true');
+    expect(describedBy(password)).toBe('Password is required for SCRAM authentication');
+    const username = byLabel('Username');
+    expect(username.hasAttribute('aria-invalid')).toBe(false);
+    expect(username.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  it('required fields are aria-required; optional ones are not', async () => {
+    await mount();
+    expect(byLabel('Name').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Hostname').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Default database').hasAttribute('aria-required')).toBe(false);
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    expect(byLabel('Username').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Password').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Auth database').hasAttribute('aria-required')).toBe(false);
+  });
+
+  it('the password show/hide toggle is named for its action and flips the input type', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    const password = byLabel('Password') as HTMLInputElement;
+    expect(password.type).toBe('password');
+    await userEvent.click(screen.getByRole('button', { name: 'Show password' }));
+    expect(password.type).toBe('text');
+    const hide = screen.getByRole('button', { name: 'Hide password' });
+    expect(hide.getAttribute('aria-pressed')).toBe('true');
+  });
+});
