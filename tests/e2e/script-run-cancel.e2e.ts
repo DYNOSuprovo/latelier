@@ -9,19 +9,17 @@ import {
 test.afterAll(stopAllMemoryServers);
 
 /**
- * GAP 10 — `script.run` and `script.cancel` over the real preload.
+ * GAP 10 — `script.run` over the real preload; `script.cancel` and timeouts
+ * are covered by the later scenarios in this file.
  *
  * The `ScriptService` is 393 LOC and handler-tested at integration level
  * with a fake pool — the preload contract (Zod `ScriptRunInput`, the cancel
  * token UUID round-trip, the `valueJson` EJSON safe-encode) has never
  * crossed the contextBridge in a test.
  *
- * Two scenarios:
- *   (a) Happy path — `1 + 2` returns `valueJson: "3"`.
- *   (b) Cancel — start a long-sleeping script, fire `script.cancel` with
- *       the same token, assert the call rejects with a recognisable error.
+ * This scenario: `1 + 2` returns `valueJson: "3"`, and `print()` round-trips.
  */
-test('script.run returns valueJson; script.cancel aborts an in-flight run', async () => {
+test('script.run returns valueJson and captures print() over the real preload', async () => {
   const { host, port } = await startMemoryServer();
   await withApp(async (app) => {
     const win = await app.firstWindow();
@@ -38,10 +36,7 @@ test('script.run returns valueJson; script.cancel aborts an in-flight run', asyn
                 connectionId: string;
                 dbName?: string;
                 source: string;
-                cancelToken?: string;
-                maxTimeMs?: number;
               }) => Promise<{ valueJson: string | null; printBuffer: string; durationMs: number }>;
-              cancel: (input: { token: string }) => Promise<void>;
             };
           };
         }).atelier;
@@ -61,38 +56,7 @@ test('script.run returns valueJson; script.cancel aborts an in-flight run', asyn
           source: 'print("hello"); 42',
         });
 
-        // (b) Cancel — fire repeated cancels until the run rejects. There's
-        // no observable signal that the script has registered in the main
-        // process's `active` Map, so we retry to handle the race where a
-        // single cancel arrives before registration. Each iteration is
-        // bounded; the in-flight script sleeps 10 s so it stays cancelable.
-        const cancelToken = (
-          window.crypto?.randomUUID?.() ?? `cancel-${Date.now()}-${Math.random()}`
-        );
-        const runPromise = api.script
-          .run({
-            connectionId: created.id,
-            source: 'await new Promise((r) => setTimeout(r, 10000)); 1',
-            cancelToken,
-            maxTimeMs: 30000,
-          })
-          .then((value) => ({ rejected: false as const, value }))
-          .catch((e: { code?: string; message?: string }) => ({
-            rejected: true as const,
-            error: e,
-          }));
-
-        let settled: Awaited<typeof runPromise> | null = null;
-        for (let i = 0; i < 20 && !settled; i++) {
-          await new Promise((r) => setTimeout(r, 50));
-          await api.script.cancel({ token: cancelToken }).catch(() => {});
-          settled = await Promise.race([
-            runPromise,
-            new Promise<null>((r) => setTimeout(() => r(null), 50)),
-          ]);
-        }
-
-        return { happy, printed, settled };
+        return { happy, printed };
       },
       { host, port, conn: baseConnInput(host, port) },
     );
@@ -105,18 +69,6 @@ test('script.run returns valueJson; script.cancel aborts an in-flight run', asyn
     // print() captured.
     expect(result.printed.printBuffer).toContain('hello');
     expect(result.printed.valueJson).toBe('42');
-
-    // Cancellation surfaced as a structured IpcError. Code is internal-
-    // policy — we don't pin it to a specific value because the service may
-    // map cancel→TIMEOUT or cancel→INTERNAL depending on how the abort
-    // signal beats the wallClock race. The test's value is "the cancel got
-    // through and the run rejected", not which exact code it produced.
-    expect(result.settled, 'in-flight script never settled after repeated cancels').not.toBeNull();
-    expect(result.settled?.rejected).toBe(true);
-    if (result.settled?.rejected) {
-      expect(typeof result.settled.error.code).toBe('string');
-      expect(typeof result.settled.error.message).toBe('string');
-    }
   });
 });
 

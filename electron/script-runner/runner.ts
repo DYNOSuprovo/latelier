@@ -164,7 +164,9 @@ async function execute(req: RunRequest, appendPrint: (chunk: string) => void): P
     return { type: 'result', valueJson, printBuffer: '', durationMs: Date.now() - t0 };
   } finally {
     await Promise.race([
-      client.close().catch(() => {}),
+      // A rejected close must not turn a good result into an error; main kills
+      // this process once it has the answer.
+      client.close().catch(() => undefined),
       new Promise<void>((resolve) => setTimeout(resolve, CLOSE_BUDGET_MS)),
     ]);
   }
@@ -220,7 +222,8 @@ async function materializeIfCursor(
   } finally {
     // Close on every path so a throwing next()/tryNext() doesn't leak the
     // server-side cursor.
-    await value.close().catch(() => {});
+    // Same reason: a failed close must not replace the documents already read.
+    await value.close().catch(() => undefined);
   }
 }
 

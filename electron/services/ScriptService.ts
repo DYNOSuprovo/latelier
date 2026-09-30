@@ -55,6 +55,12 @@ export class ScriptService {
     // reaches a running script. Two things have to be relayed by hand: the
     // read-only flag (the runner only holds the value from spawn), and the
     // connection going away (Disconnect, Cancel, delete, a host edit).
+    //
+    // The 'disconnected' status also comes from MongoPool.markConnectionLost:
+    // when main's own client sees no known servers for the loss grace window,
+    // running scripts are killed with DB_ERROR. That is deliberate and
+    // fail-closed (the deployment is unreachable, so a script on it is
+    // suspect); do not narrow this to user-initiated disconnects.
     this.pool.on('read-only-enabled', (id: string) =>
       this.stopForConnection(
         id,

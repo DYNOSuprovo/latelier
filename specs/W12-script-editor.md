@@ -168,7 +168,11 @@ has answered.
   connection, or an edit that reconnects would otherwise leave a script
   running (and writing) against it. `ScriptService` listens for the pool's
   `disconnected` status and kills that connection's runners with a
-  `DB_ERROR`.
+  `DB_ERROR`. That status also fires when the pool decides the
+  deployment is unreachable (its own client saw no known servers for the
+  loss grace window), so a script is stopped on a dropped connection too.
+  This is deliberate and fail-closed: do not narrow it to user-initiated
+  disconnects.
 - **Results are encoded in the runner** (50 MB cap, print buffer cap
   64 KB) and cross the port as a string.
 
