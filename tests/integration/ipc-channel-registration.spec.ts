@@ -27,6 +27,7 @@ const { registerCollectionAdminChannels } = await import(
 );
 const { registerUserChannels } = await import('../../electron/ipc/handlers/users');
 const { registerPrefsChannels } = await import('../../electron/ipc/handlers/prefs');
+const { registerSecretsChannels } = await import('../../electron/ipc/handlers/secrets');
 const { registerTabsChannels } = await import('../../electron/ipc/handlers/tabs');
 const { registerQueryChannels } = await import('../../electron/ipc/handlers/query');
 const { registerDocChannels } = await import('../../electron/ipc/handlers/doc');
@@ -125,6 +126,11 @@ describe('IPC channel registration — full router coverage', () => {
       router,
       stubSvc<Parameters<typeof registerPrefsChannels>[1]>(),
       () => null,
+    );
+    registerSecretsChannels(
+      router,
+      stubSvc<Parameters<typeof registerSecretsChannels>[1]>(),
+      async () => false,
     );
     registerTabsChannels(router, stubSvc<Parameters<typeof registerTabsChannels>[1]>());
     registerQueryChannels(
