@@ -138,7 +138,7 @@ function toUpdate(f: FormState): ConnectionUpdate {
 // text describes it. Null outside a `Field`: the control then renders no id and
 // no aria wiring, exactly as before. Not exported — react-refresh only lets a
 // component file export components.
-const FieldControlContext = React.createContext<{ id: string; errorId: string; invalid: boolean } | null>(null);
+const FieldControlContext = React.createContext<{ id: string; errorId: string; invalid: boolean; required: boolean } | null>(null);
 
 function useFieldControlProps() {
   const ctx = React.useContext(FieldControlContext);
@@ -146,6 +146,7 @@ function useFieldControlProps() {
   return {
     id: ctx.id,
     'aria-invalid': ctx.invalid || undefined,
+    'aria-required': ctx.required || undefined,
     'aria-describedby': ctx.invalid ? ctx.errorId : undefined,
   };
 }
@@ -178,7 +179,7 @@ function Field({ label, required, error, group, children }: {
   const errorId = `${id}-error`;
   const labelId = `${id}-label`;
   return (
-    <FieldControlContext.Provider value={{ id, errorId, invalid: Boolean(error) }}>
+    <FieldControlContext.Provider value={{ id, errorId, invalid: Boolean(error), required: Boolean(required) }}>
       <div
         style={{ display: 'flex', flexDirection: 'column' }}
         role={group && label ? 'group' : undefined}
@@ -331,6 +332,8 @@ function PasswordInput({ value, onChange, placeholder }: {
       />
       <button
         type="button"
+        aria-label={showPwd ? 'Hide password' : 'Show password'}
+        aria-pressed={showPwd}
         onClick={() => setShowPwd((s) => !s)}
         style={{
           position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',

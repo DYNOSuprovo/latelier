@@ -648,4 +648,26 @@ describe('ConnectionForm fields are named by their visible label', () => {
     expect(username.hasAttribute('aria-invalid')).toBe(false);
     expect(username.hasAttribute('aria-describedby')).toBe(false);
   });
+
+  it('required fields are aria-required; optional ones are not', async () => {
+    await mount();
+    expect(byLabel('Name').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Hostname').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Default database').hasAttribute('aria-required')).toBe(false);
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    expect(byLabel('Username').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Password').getAttribute('aria-required')).toBe('true');
+    expect(byLabel('Auth database').hasAttribute('aria-required')).toBe(false);
+  });
+
+  it('the password show/hide toggle is named for its action and flips the input type', async () => {
+    await mount();
+    await userEvent.click(screen.getByRole('tab', { name: 'Auth' }));
+    const password = byLabel('Password') as HTMLInputElement;
+    expect(password.type).toBe('password');
+    await userEvent.click(screen.getByRole('button', { name: 'Show password' }));
+    expect(password.type).toBe('text');
+    const hide = screen.getByRole('button', { name: 'Hide password' });
+    expect(hide.getAttribute('aria-pressed')).toBe('true');
+  });
 });
