@@ -60,6 +60,7 @@ export function registerConnChannels(router: Router, svc: ConnectionService): vo
     },
   );
 
+  // SECRET_INPUT: 'conn:parseUri' payload is a full URI that may embed credentials.
   router.register(
     IPC_CHANNELS.connParseUri,
     zodValidator(ParseUriInputSchema),
