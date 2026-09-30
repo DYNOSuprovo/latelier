@@ -66,10 +66,13 @@ recreating 171 issues to build a remap table buys very little. Removing them is
 the cheaper end state and the better one: a reference to a tracker that no
 longer exists does not become right by being renumbered.
 
-Note that the ~866 of these that sit in `src/`, `electron/` and `tests/`
-comments are already violations of this project's own rule — no
-ticket-referencing comments, technical WHY only. Removing them is that cleanup,
-not a migration tax.
+**Outcome for code comments.** The references in `src/` and `tests/` turned
+out not to be mongo-lab numbers. The tracker here restarted at #1 after the
+Sept 15 import, and each code-comment reference was checked against it: 34 of
+the 36 distinct numbers are this repository's own issues, each created before
+the comment that cites it, with titles that match. They stay, and CLAUDE.md
+now allows issue numbers in comments. The two that did come over in the
+import, `#324` and `#482` in `src/index.css`, were removed.
 
 `git grep -nE "github\.com/[^/]+/[^/]+/issues/[0-9]+"` finds the links, and
 `git grep -nE "(^|[^a-zA-Z0-9/_#-])#[0-9]{2,4}"` finds the bare references.
