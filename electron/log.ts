@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensurePrivateDir, ensurePrivateFile, PrivateModeError } from './utils/privateFs.ts';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -78,11 +79,13 @@ function todayStamp(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+const isLogFile = (name: string): boolean => name.startsWith('mongolab.') && name.endsWith('.log');
+
 function pruneOldLogs(dir: string, retentionDays: number): void {
   try {
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     for (const name of fs.readdirSync(dir)) {
-      if (!name.startsWith('mongolab.') || !name.endsWith('.log')) continue;
+      if (!isLogFile(name)) continue;
       const full = path.join(dir, name);
       const stat = fs.statSync(full);
       if (stat.mtimeMs < cutoff) fs.unlinkSync(full);
@@ -90,6 +93,26 @@ function pruneOldLogs(dir: string, retentionDays: number): void {
   } catch {
     // best-effort; never block startup
   }
+}
+
+interface StartupWarning { msg: string; data: { file?: string; message: string } }
+
+/**
+ * Logs written by an older install carry the process umask (often 0644).
+ * Returns the files that could not be tightened so the caller can report them
+ * once it has a logger.
+ */
+function tightenLogFiles(dir: string): StartupWarning[] {
+  const failures: StartupWarning[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!isLogFile(name)) continue;
+    try {
+      ensurePrivateFile(path.join(dir, name));
+    } catch (err) {
+      failures.push({ msg: 'could not restrict log file permissions', data: { file: name, message: String(err) } });
+    }
+  }
+  return failures;
 }
 
 export function createLogger(userDataDir: string, opts: {
@@ -106,8 +129,18 @@ export function createLogger(userDataDir: string, opts: {
   const toStderr = opts.toStderr ?? true;
 
   const logsDir = path.join(userDataDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  // The logger must not be what kills boot: a logs dir we created but cannot
+  // chmod (not owned by this user) is reported once the logger exists. A failed
+  // mkdir still throws, as it always did.
+  const startupWarnings: StartupWarning[] = [];
+  try {
+    ensurePrivateDir(logsDir);
+  } catch (err) {
+    if (!(err instanceof PrivateModeError)) throw err;
+    startupWarnings.push({ msg: 'could not restrict logs directory permissions', data: { message: err.message } });
+  }
   pruneOldLogs(logsDir, retention);
+  startupWarnings.push(...tightenLogFiles(logsDir));
 
   const filePath = () => path.join(logsDir, `mongolab.${todayStamp()}.log`);
 
@@ -123,12 +156,14 @@ export function createLogger(userDataDir: string, opts: {
     };
     const serialized = JSON.stringify(line) + '\n';
     try {
-      fs.appendFileSync(filePath(), serialized);
+      fs.appendFileSync(filePath(), serialized, { mode: 0o600 });
     } catch {
       // ignore disk errors; logging must never crash the app
     }
     if (toStderr) process.stderr.write(serialized);
   }
+
+  for (const w of startupWarnings) write('warn', 'log', w.msg, w.data);
 
   return {
     debug: (tag, msg, data) => write('debug', tag, msg, data),

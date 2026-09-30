@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { ensurePrivateDir, ensurePrivateFile } from '../utils/privateFs.ts';
 import BetterSqlite3 from 'better-sqlite3';
 import type { Database } from 'better-sqlite3';
 import { loadMigrations, runMigrations, type Migration } from './migrationRunner.ts';
@@ -28,8 +29,14 @@ export function truncateWal(db: Database): boolean {
 
 export function openDatabase(opts: OpenDatabaseOptions): Database {
   const filename = opts.filename ?? 'mongolab.db';
-  fs.mkdirSync(opts.userDataDir, { recursive: true });
+  ensurePrivateDir(opts.userDataDir);
   const dbPath = path.join(opts.userDataDir, filename);
+  // Before SQLite opens the file, so it creates `-wal`/`-shm` at the same
+  // owner-only mode; side files left by an older install are tightened below.
+  ensurePrivateFile(dbPath);
+  for (const suffix of ['-wal', '-shm']) {
+    if (fs.existsSync(dbPath + suffix)) ensurePrivateFile(dbPath + suffix);
+  }
 
   const db = new BetterSqlite3(dbPath);
   db.pragma('journal_mode = WAL');
