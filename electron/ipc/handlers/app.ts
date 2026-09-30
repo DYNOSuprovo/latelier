@@ -110,7 +110,8 @@ export function registerAppChannels(
       if (result.canceled || !result.filePath) return { path: null };
       try {
         await fs.mkdir(path.dirname(result.filePath), { recursive: true });
-        await fs.writeFile(result.filePath, content, 'utf8');
+        // Export file contents can include user data; write owner-only (0600).
+        await fs.writeFile(result.filePath, content, { encoding: 'utf8', mode: 0o600 });
       } catch (err) {
         throw new SystemError(
           'INTERNAL',
@@ -146,7 +147,8 @@ export function registerAppChannels(
       const content = await diagnostic.serialize();
       try {
         await fs.mkdir(path.dirname(result.filePath), { recursive: true });
-        await fs.writeFile(result.filePath, content, 'utf8');
+        // Diagnostic bundle contains connection metadata; write owner-only (0600).
+        await fs.writeFile(result.filePath, content, { encoding: 'utf8', mode: 0o600 });
       } catch (err) {
         throw new SystemError(
           'INTERNAL',

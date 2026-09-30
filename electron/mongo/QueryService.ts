@@ -255,7 +255,8 @@ export class QueryService {
     };
     try {
       try {
-        handle = await fs.open(filePath, 'w');
+        // Export file contents can include user data; open owner-only (0600).
+        handle = await fs.open(filePath, 'w', 0o600);
       } catch (err) {
         throw fsError('open', err);
       }
