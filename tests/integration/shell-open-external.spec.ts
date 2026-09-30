@@ -54,6 +54,30 @@ describe('shell:openExternal', () => {
     expect(openExternalSpy).toHaveBeenCalledWith(url);
   });
 
+  it('opens the normalised href, not the raw string', async () => {
+    const env = await shim.invoke<{ opened: true }>(IPC_CHANNELS.shellOpenExternal, {
+      url: 'https://WWW.MongoDB.com/docs/manual/',
+    });
+    expect(env.ok).toBe(true);
+    expect(openExternalSpy).toHaveBeenCalledWith('https://www.mongodb.com/docs/manual/');
+  });
+
+  it.each([
+    ['userinfo trick', 'https://www.mongodb.com@evil.example/docs/'],
+    ['userinfo on the real host', 'https://user@www.mongodb.com/docs/'],
+    ['explicit port', 'https://www.mongodb.com:8443/docs/'],
+    ['a path outside /docs/', 'https://www.mongodb.com/pricing'],
+    ['a path that only looks like /docs/', 'https://www.mongodb.com/docs-evil/'],
+    ['a dot-segment escape out of /docs/', 'https://www.mongodb.com/docs/../pricing'],
+    ['a different MongoDB host', 'https://mongodb.com/docs/'],
+    ['a subdomain lookalike', 'https://www.mongodb.com.evil.example/docs/'],
+  ])('rejects %s', async (_label, url) => {
+    const env = await shim.invoke<unknown>(IPC_CHANNELS.shellOpenExternal, { url });
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error.code).toBe('VALIDATION');
+    expect(openExternalSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects URLs outside the MongoDB docs prefix', async () => {
     const env = await shim.invoke<unknown>(IPC_CHANNELS.shellOpenExternal, {
       url: 'https://evil.example.com/phishing',
