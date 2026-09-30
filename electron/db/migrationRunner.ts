@@ -39,8 +39,8 @@ export function loadMigrations(): Migration[] {
 /**
  * Apply any migrations newer than the DB's current schema_version.
  * Each migration runs in its own transaction — failures roll back.
+ * Returns how many migrations ran.
  */
-/** Applies pending migrations in order; returns how many ran. */
 export function runMigrations(db: Database, migrations: Migration[]): number {
   // Ensure schema_version exists. The first migration may create it; to handle
   // fresh DBs safely we read conditionally.

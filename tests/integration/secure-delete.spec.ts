@@ -93,4 +93,57 @@ describe('secure_delete and WAL truncation', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('reopening an up-to-date database does not VACUUM', () => {
+    tmp.db.exec('CREATE TABLE filler (payload TEXT)');
+    const insert = tmp.db.prepare('INSERT INTO filler VALUES (?)');
+    for (let i = 0; i < 50; i++) insert.run('x'.repeat(4000));
+    tmp.db.exec('DELETE FROM filler');
+    expect(truncateWal(tmp.db)).toBe(true);
+    const freePages = tmp.db.pragma('freelist_count', { simple: true }) as number;
+    expect(freePages).toBeGreaterThan(0);
+    closeDatabase(tmp.db);
+
+    const reopened = openDatabase({ userDataDir: tmp.dir, migrations: loadMigrationsFromDisk() });
+    const freeAfterReopen = reopened.pragma('freelist_count', { simple: true });
+    closeDatabase(reopened);
+    expect(freeAfterReopen).toBe(freePages);
+  });
+
+  describe('when the post-upgrade VACUUM fails', () => {
+    // query_only left on by the last migration makes VACUUM fail with
+    // SQLITE_READONLY after every migration has committed.
+    const withReadOnlyTail = () => {
+      const all = loadMigrationsFromDisk();
+      const last = all[all.length - 1]!;
+      return [...all.slice(0, -1), { ...last, sql: `${last.sql}\nPRAGMA query_only = ON;` }];
+    };
+
+    it('reports it through the logger and still opens the migrated database', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-vacuum-fail-'));
+      const warnings: string[] = [];
+      try {
+        const db = openDatabase({
+          userDataDir: dir,
+          migrations: withReadOnlyTail(),
+          log: { warn: (_scope: string, msg: string) => void warnings.push(msg) },
+        });
+        const { version } = db.prepare('SELECT version FROM schema_version').get() as { version: number };
+        closeDatabase(db);
+        expect(version).toBe(loadMigrationsFromDisk().at(-1)!.version);
+        expect(warnings).toEqual(['vacuum after migrations failed']);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('throws when there is no logger to report it to', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-vacuum-fail-'));
+      try {
+        expect(() => openDatabase({ userDataDir: dir, migrations: withReadOnlyTail() })).toThrow(/readonly/);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

@@ -43,7 +43,16 @@ export function openDatabase(opts: OpenDatabaseOptions): Database {
   const migrations = opts.migrations ?? loadMigrations();
   // An upgrade's migrations may scrub data; VACUUM rebuilds the file so bytes
   // freed before secure_delete was on (older installs) don't linger in free pages.
-  if (runMigrations(db, migrations) > 0) db.exec('VACUUM');
+  // It needs free disk about the size of the database, and the migrations have
+  // already committed, so a failure is reported rather than failing the boot.
+  if (runMigrations(db, migrations) > 0) {
+    try {
+      db.exec('VACUUM');
+    } catch (err) {
+      if (!opts.log) throw err;
+      opts.log.warn('db', 'vacuum after migrations failed', { message: String(err) });
+    }
+  }
   if (!truncateWal(db)) opts.log?.warn('db', 'wal checkpoint after migrations was blocked');
 
   return db;
