@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { useUmask022 } from '../helpers/umask';
 
 const showSaveDialog = vi.fn();
 
@@ -24,8 +25,10 @@ const mode = (p: string): number => fs.statSync(p).mode & 0o777;
 describe.skipIf(process.platform === 'win32')('app save handlers file modes', () => {
   const handlers = new Map<string, Handler>();
   let tmpDir: string;
+  let restoreUmask: () => void;
 
   beforeEach(() => {
+    restoreUmask = useUmask022();
     handlers.clear();
     showSaveDialog.mockReset();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-save-modes-'));
@@ -34,6 +37,7 @@ describe.skipIf(process.platform === 'win32')('app save handlers file modes', ()
   });
 
   afterEach(() => {
+    restoreUmask();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -74,8 +78,10 @@ describe.skipIf(process.platform === 'win32')('app save handlers file modes', ()
 describe.skipIf(process.platform === 'win32')('app diagnostic bundle file mode', () => {
   const handlers = new Map<string, Handler>();
   let tmpDir: string;
+  let restoreUmask: () => void;
 
   beforeEach(() => {
+    restoreUmask = useUmask022();
     handlers.clear();
     showSaveDialog.mockReset();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-diag-modes-'));
@@ -88,6 +94,7 @@ describe.skipIf(process.platform === 'win32')('app diagnostic bundle file mode',
   });
 
   afterEach(() => {
+    restoreUmask();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

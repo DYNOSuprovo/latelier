@@ -17,6 +17,7 @@ import { createTempDb, type TempDb } from '../helpers/db';
 import { getSharedServer, makeConnection, makeReader } from '../helpers/mongo';
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
 import { serializeJsonArray, serializeJsonl, serializeCsv, type ExportColumn } from '../../src/pages/Workspace/exportFormat';
+import { useUmask022 } from '../helpers/umask';
 
 describe('QueryService.exportToFile', () => {
   let server: MongoMemoryServer;
@@ -337,6 +338,7 @@ describe.skipIf(process.platform === 'win32')('query:export file mode', () => {
   let svc: QueryService;
   let tmp: TempDb;
   let outDir: string;
+  let restoreUmask: () => void;
   const connId = 'test-conn';
   const dbName = 'testdb';
   const collName = 'items';
@@ -364,6 +366,7 @@ describe.skipIf(process.platform === 'win32')('query:export file mode', () => {
   });
 
   beforeEach(async () => {
+    restoreUmask = useUmask022();
     const client = await pool.write(connId).client();
     const coll = client.db(dbName).collection(collName);
     await coll.deleteMany({});
@@ -371,6 +374,7 @@ describe.skipIf(process.platform === 'win32')('query:export file mode', () => {
   });
 
   afterEach(async () => {
+    restoreUmask();
     await fs.rm(outDir, { recursive: true, force: true });
   });
 
