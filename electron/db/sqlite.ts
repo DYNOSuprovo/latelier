@@ -41,7 +41,9 @@ export function openDatabase(opts: OpenDatabaseOptions): Database {
   db.pragma('secure_delete = ON');
 
   const migrations = opts.migrations ?? loadMigrations();
-  runMigrations(db, migrations);
+  // An upgrade's migrations may scrub data; VACUUM rebuilds the file so bytes
+  // freed before secure_delete was on (older installs) don't linger in free pages.
+  if (runMigrations(db, migrations) > 0) db.exec('VACUUM');
   if (!truncateWal(db)) opts.log?.warn('db', 'wal checkpoint after migrations was blocked');
 
   return db;

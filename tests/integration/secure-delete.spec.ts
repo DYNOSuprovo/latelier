@@ -5,8 +5,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
 import { MaintenanceService } from '../../electron/services/MaintenanceService';
-import { truncateWal } from '../../electron/db/sqlite';
-import { createTempDb, type TempDb } from '../helpers/db';
+import os from 'node:os';
+import { openDatabase, closeDatabase, truncateWal } from '../../electron/db/sqlite';
+import { runMigrations } from '../../electron/db/migrationRunner';
+import { createTempDb, loadMigrationsFromDisk, type TempDb } from '../helpers/db';
 
 const MARKER = 'SECRET-MARKER-7f3a9c1e-do-not-keep';
 
@@ -64,6 +66,31 @@ describe('secure_delete and WAL truncation', () => {
       expect(truncateWal(tmp.db)).toBe(false);
     } finally {
       reader.close();
+    }
+  });
+
+  it('an upgrade that runs migrations also clears bytes freed before secure_delete existed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atelier-vacuum-'));
+    const dbPath = path.join(dir, 'mongolab.db');
+    const all = loadMigrationsFromDisk();
+    try {
+      // An older install: no secure_delete, a row deleted long ago.
+      const old = new BetterSqlite3(dbPath);
+      old.pragma('journal_mode = WAL');
+      runMigrations(old, all.slice(0, -1));
+      old.exec('CREATE TABLE legacy (payload TEXT)');
+      old.prepare('INSERT INTO legacy VALUES (?)').run(MARKER.repeat(200));
+      old.pragma('wal_checkpoint(TRUNCATE)');
+      old.exec('DELETE FROM legacy');
+      old.pragma('wal_checkpoint(TRUNCATE)');
+      old.close();
+      expect(fs.readFileSync(dbPath).includes(MARKER)).toBe(true);
+
+      const db = openDatabase({ userDataDir: dir, migrations: all });
+      closeDatabase(db);
+      expect(fs.readFileSync(dbPath).includes(MARKER)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

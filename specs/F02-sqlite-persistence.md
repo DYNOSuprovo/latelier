@@ -38,7 +38,10 @@ export function openDatabase(userDataDir: string): Database {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.pragma('secure_delete = ON');
-  runMigrations(db);
+  // VACUUM when an upgrade ran migrations: erases bytes freed before
+  // secure_delete was on. Then fold and truncate the WAL.
+  if (runMigrations(db) > 0) db.exec('VACUUM');
+  db.pragma('wal_checkpoint(TRUNCATE)');
   return db;
 }
 ```
