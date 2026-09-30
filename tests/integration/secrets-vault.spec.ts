@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
 import { SystemError } from '../../electron/errors';
-import { makeEncryptionAvailable } from '../../electron/secrets/keychainAvailability';
+import { vaultSafeStorage } from '../../electron/secrets/keychainAvailability';
 import { createSafeStorageMock } from '../helpers/safeStorageMock';
 import { createTempDb, type TempDb } from '../helpers/db';
 
@@ -156,17 +156,10 @@ describe('SecretsVault', () => {
 
   describe('Linux basic_text backend', () => {
     function linuxVault(backend: string): SecretsVault {
-      const probe = {
-        isEncryptionAvailable: ss.isEncryptionAvailable,
-        getSelectedStorageBackend: () => backend,
-      };
+      const electronSafeStorage = { ...ss, getSelectedStorageBackend: () => backend };
       return new SecretsVault(
         tmp.db,
-        {
-          isEncryptionAvailable: makeEncryptionAvailable(probe, 'linux'),
-          encryptString: ss.encryptString,
-          decryptString: ss.decryptString,
-        },
+        vaultSafeStorage(electronSafeStorage, 'linux'),
         { getAllowPlaintext: () => allowPlaintext },
       );
     }

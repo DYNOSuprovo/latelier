@@ -3,6 +3,7 @@ import {
   isWeakBackend,
   makeEncryptionAvailable,
   selectedBackend,
+  vaultSafeStorage,
   type KeychainProbe,
 } from '../../electron/secrets/keychainAvailability';
 
@@ -70,5 +71,30 @@ describe('isWeakBackend', () => {
     expect(isWeakBackend('kwallet')).toBe(false);
     expect(isWeakBackend('')).toBe(false);
     expect(isWeakBackend(null)).toBe(false);
+  });
+});
+
+describe('vaultSafeStorage', () => {
+  function electronLike(backend: string) {
+    return {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => backend,
+      encryptString: vi.fn((s: string) => Buffer.from(`enc:${s}`)),
+      decryptString: vi.fn((b: Buffer) => `dec:${b.toString()}`),
+    };
+  }
+
+  it('applies the weak-backend rule to availability', () => {
+    expect(vaultSafeStorage(electronLike('basic_text'), 'linux').isEncryptionAvailable()).toBe(false);
+    expect(vaultSafeStorage(electronLike('gnome_libsecret'), 'linux').isEncryptionAvailable()).toBe(true);
+  });
+
+  it('delegates encrypt and decrypt to safeStorage unchanged', () => {
+    const ss = electronLike('gnome_libsecret');
+    const vault = vaultSafeStorage(ss, 'linux');
+    expect(vault.encryptString('pw').toString()).toBe('enc:pw');
+    expect(ss.encryptString).toHaveBeenCalledWith('pw');
+    expect(vault.decryptString(Buffer.from('x'))).toBe('dec:x');
+    expect(ss.decryptString).toHaveBeenCalledWith(Buffer.from('x'));
   });
 });

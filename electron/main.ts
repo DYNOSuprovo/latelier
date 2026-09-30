@@ -42,7 +42,7 @@ import { ShellService } from './services/ShellService.ts';
 import { registerScriptChannels } from './ipc/handlers/script.ts';
 import { ScriptService } from './services/ScriptService.ts';
 import { DiagnosticService } from './services/DiagnosticService.ts';
-import { makeEncryptionAvailable, selectedBackend } from './secrets/keychainAvailability.ts';
+import { vaultSafeStorage, selectedBackend } from './secrets/keychainAvailability.ts';
 import { registerRefsChannels } from './ipc/handlers/refs.ts';
 import { ReferenceRulesRepo } from './db/repositories/ReferenceRulesRepo.ts';
 import { ReferenceRulesService } from './services/ReferenceRulesService.ts';
@@ -511,14 +511,10 @@ app.whenReady().then(() => {
 
   // 3. Secrets
   const appStateRef = appState;
-  const vaultEncryptionAvailable = makeEncryptionAvailable(safeStorage, process.platform);
+  const vaultCrypto = vaultSafeStorage(safeStorage, process.platform);
   vault = new SecretsVault(
     db,
-    {
-      isEncryptionAvailable: vaultEncryptionAvailable,
-      encryptString: (s) => safeStorage.encryptString(s),
-      decryptString: (b) => safeStorage.decryptString(b),
-    },
+    vaultCrypto,
     {
       getAllowPlaintext: () =>
         appStateRef.get<boolean>('secrets.allowPlaintextFallback') === true,
@@ -580,7 +576,7 @@ app.whenReady().then(() => {
     userDataDir,
     connRepo,
     secretsStatus: () => ({
-      encryptionAvailable: vaultEncryptionAvailable(),
+      encryptionAvailable: vaultCrypto.isEncryptionAvailable(),
       backend: selectedBackend(safeStorage, process.platform),
     }),
   });

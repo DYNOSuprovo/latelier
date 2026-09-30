@@ -1,3 +1,5 @@
+import type { SafeStorageLike } from './SecretsVault.ts';
+
 /** The slice of Electron's `safeStorage` this module needs. */
 export interface KeychainProbe {
   isEncryptionAvailable(): boolean;
@@ -33,5 +35,21 @@ export function makeEncryptionAvailable(
   return () => {
     if (isWeakBackend(selectedBackend(safeStorage, platform))) return false;
     return safeStorage.isEncryptionAvailable();
+  };
+}
+
+/**
+ * The vault's view of Electron's `safeStorage`, with availability decided by
+ * {@link makeEncryptionAvailable}. main.ts builds the vault from this, so the
+ * Linux weak-backend rule cannot be bypassed by wiring `safeStorage` directly.
+ */
+export function vaultSafeStorage(
+  safeStorage: KeychainProbe & Omit<SafeStorageLike, 'isEncryptionAvailable'>,
+  platform: NodeJS.Platform,
+): SafeStorageLike {
+  return {
+    isEncryptionAvailable: makeEncryptionAvailable(safeStorage, platform),
+    encryptString: (s) => safeStorage.encryptString(s),
+    decryptString: (b) => safeStorage.decryptString(b),
   };
 }
