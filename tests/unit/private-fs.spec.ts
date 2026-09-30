@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ensurePrivateDir, ensurePrivateFile } from '../../electron/utils/privateFs';
+import { ensurePrivateDir, ensurePrivateFile, PrivateModeError } from '../../electron/utils/privateFs';
 import { useUmask022 } from '../helpers/umask';
 
 const posix = process.platform !== 'win32';
@@ -53,14 +53,59 @@ describe('privateFs', () => {
       expect(fs.readFileSync(file, 'utf8')).toBe('keep\n');
     });
 
-    it('throws when the directory cannot be made private', () => {
+    it('lets a failed mkdir through as a plain error, not a PrivateModeError', () => {
       const file = path.join(root, 'plain');
       fs.writeFileSync(file, 'x');
-      expect(() => ensurePrivateDir(path.join(file, 'child'))).toThrow();
+      const attempt = () => ensurePrivateDir(path.join(file, 'child'));
+      expect(attempt).toThrow();
+      expect(attempt).not.toThrow(PrivateModeError);
     });
 
-    it('throws when the file cannot be created', () => {
-      expect(() => ensurePrivateFile(path.join(root, 'missing-dir', 'f'))).toThrow();
+    it('wraps a failed chmod of the directory in a PrivateModeError naming the path', () => {
+      const dir = path.join(root, 'not-ours');
+      const eperm = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      vi.spyOn(fs, 'chmodSync').mockImplementation(() => {
+        throw eperm;
+      });
+      let caught: unknown;
+      try {
+        ensurePrivateDir(dir);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PrivateModeError);
+      const e = caught as PrivateModeError;
+      expect(e.name).toBe('PrivateModeError');
+      expect(e.message).toContain(dir);
+      expect(e.message).toContain('EPERM: operation not permitted');
+      expect(e.message).toContain('must be owned by the current user');
+      expect(e.cause).toBe(eperm);
+    });
+
+    it('wraps a failed file create in a PrivateModeError that keeps the cause', () => {
+      const file = path.join(root, 'missing-dir', 'f');
+      let caught: unknown;
+      try {
+        ensurePrivateFile(file);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PrivateModeError);
+      expect((caught as PrivateModeError).message).toContain(file);
+      expect(((caught as PrivateModeError).cause as NodeJS.ErrnoException).code).toBe('ENOENT');
+    });
+
+    it('wraps a failed chmod of an existing file in a PrivateModeError', () => {
+      const file = path.join(root, 'f');
+      fs.writeFileSync(file, 'x');
+      vi.spyOn(fs, 'chmodSync').mockImplementation(() => {
+        throw new Error('EPERM');
+      });
+      expect(() => ensurePrivateFile(file)).toThrow(PrivateModeError);
+    });
+
+    it('describes a non-Error cause by its string form', () => {
+      expect(new PrivateModeError('/x', 'boom').message).toContain('(boom)');
     });
   });
 

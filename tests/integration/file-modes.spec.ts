@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { openDatabase, closeDatabase } from '../../electron/db/sqlite';
+import { PrivateModeError } from '../../electron/utils/privateFs';
 import { useUmask022 } from '../helpers/umask';
 
 const mode = (p: string): number => fs.statSync(p).mode & 0o777;
@@ -19,6 +20,7 @@ describe.skipIf(process.platform === 'win32')('user-data file modes', () => {
 
   afterEach(() => {
     restoreUmask();
+    vi.restoreAllMocks();
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -66,5 +68,22 @@ describe.skipIf(process.platform === 'win32')('user-data file modes', () => {
     } finally {
       closeDatabase(db);
     }
+  });
+
+  it('fails with an actionable error naming the folder when it cannot be restricted', () => {
+    const dir = path.join(root, 'shared');
+    vi.spyOn(fs, 'chmodSync').mockImplementation(() => {
+      throw new Error('EPERM: operation not permitted');
+    });
+    let caught: unknown;
+    try {
+      openDatabase({ userDataDir: dir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PrivateModeError);
+    expect((caught as Error).message).toContain(dir);
+    expect((caught as Error).message).toContain('must be owned by the current user');
+    expect(fs.existsSync(path.join(dir, 'mongolab.db'))).toBe(false);
   });
 });

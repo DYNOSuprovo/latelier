@@ -272,9 +272,38 @@ describe('createLogger', () => {
       expect(lines[1]).toMatchObject({ msg: 'after' });
     });
 
-    it('lets a failure to make the logs dir private surface at startup', () => {
-      fs.writeFileSync(path.join(dir, 'logs'), 'a file where the dir should be');
-      expect(() => createLogger(dir, { toStderr: false })).toThrow();
+    it('lets a failed mkdir of the logs dir surface at startup, unchanged', () => {
+      vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+        throw new Error('EACCES: cannot create logs');
+      });
+      expect(() => createLogger(dir, { toStderr: false })).toThrow('EACCES: cannot create logs');
+    });
+
+    it('degrades a failed chmod of the logs dir to a warn line instead of aborting', () => {
+      const logsDir = path.join(dir, 'logs');
+      fs.mkdirSync(logsDir, { mode: 0o755 });
+      const realChmod = fs.chmodSync;
+      vi.spyOn(fs, 'chmodSync').mockImplementation((p, m) => {
+        if (String(p) === logsDir) throw new Error('EPERM: not the owner');
+        realChmod(p, m);
+      });
+
+      const log = createLogger(dir, { toStderr: false });
+      log.info('t', 'after');
+
+      const lines = fs
+        .readFileSync(path.join(logsDir, fs.readdirSync(logsDir)[0]!), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      expect(lines[0]).toMatchObject({
+        level: 'warn',
+        tag: 'log',
+        msg: 'could not restrict logs directory permissions',
+      });
+      expect(lines[0].data.message).toContain(logsDir);
+      expect(lines[0].data.message).toContain('EPERM: not the owner');
+      expect(lines[1]).toMatchObject({ msg: 'after' });
     });
   });
 });
