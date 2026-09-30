@@ -75,6 +75,28 @@ describe('DiagnosticService', () => {
     expect(Object.keys(bundle.logs)).not.toContain('README.txt');
   });
 
+  it('includes the secrets status block only when a probe is supplied', async () => {
+    const without = await new DiagnosticService({
+      userDataDir,
+      connRepo: { list: () => [] },
+    }).build();
+    expect(without).not.toHaveProperty('secrets');
+
+    const svc = new DiagnosticService({
+      userDataDir,
+      connRepo: { list: () => [] },
+      secretsStatus: () => ({ encryptionAvailable: false, backend: 'basic_text' }),
+    });
+    expect((await svc.build()).secrets).toEqual({
+      encryptionAvailable: false,
+      backend: 'basic_text',
+    });
+    expect(JSON.parse(await svc.serialize()).secrets).toEqual({
+      encryptionAvailable: false,
+      backend: 'basic_text',
+    });
+  });
+
   it('strips unknown fields from connection rows so a leaked password cannot surface', async () => {
     const svc = new DiagnosticService({
       userDataDir,

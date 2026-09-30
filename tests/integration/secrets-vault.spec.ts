@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
 import { SystemError } from '../../electron/errors';
+import { makeEncryptionAvailable } from '../../electron/secrets/keychainAvailability';
 import { createSafeStorageMock } from '../helpers/safeStorageMock';
 import { createTempDb, type TempDb } from '../helpers/db';
 
@@ -151,5 +152,50 @@ describe('SecretsVault', () => {
     vault.set(connId, 'password', 'x');
     tmp.db.prepare('DELETE FROM connections WHERE id = ?').run(connId);
     expect(vault.has(connId, 'password')).toBe(false);
+  });
+
+  describe('Linux basic_text backend', () => {
+    function linuxVault(backend: string): SecretsVault {
+      const probe = {
+        isEncryptionAvailable: ss.isEncryptionAvailable,
+        getSelectedStorageBackend: () => backend,
+      };
+      return new SecretsVault(
+        tmp.db,
+        {
+          isEncryptionAvailable: makeEncryptionAvailable(probe, 'linux'),
+          encryptString: ss.encryptString,
+          decryptString: ss.decryptString,
+        },
+        { getAllowPlaintext: () => allowPlaintext },
+      );
+    }
+
+    it('refuses to save and still reads a row encrypted earlier', () => {
+      vault.set(connId, 'password', 'stored-earlier');
+      const basicText = linuxVault('basic_text');
+
+      expect(() => basicText.set(connId, 'ssh_password', 'new')).toThrow(
+        expect.objectContaining({ code: 'SECRETS_UNAVAILABLE' }),
+      );
+      expect(() => basicText.assertAvailable()).toThrow(SystemError);
+      expect(basicText.get(connId, 'password')).toBe('stored-earlier');
+    });
+
+    it('falls into the plaintext opt-in flow', () => {
+      const basicText = linuxVault('basic_text');
+      allowPlaintext = true;
+      basicText.set(connId, 'password', 'opted-in');
+      const row = tmp.db
+        .prepare('SELECT is_plaintext FROM connection_secrets WHERE connection_id = ?')
+        .get(connId) as { is_plaintext: number };
+      expect(row.is_plaintext).toBe(1);
+    });
+
+    it('encrypts normally on a real keyring backend', () => {
+      const keyring = linuxVault('gnome_libsecret');
+      keyring.set(connId, 'password', 'safe');
+      expect(keyring.get(connId, 'password')).toBe('safe');
+    });
   });
 });
