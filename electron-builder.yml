@@ -9,6 +9,24 @@ files:
   - dist/**
   - dist-electron/**
   - package.json
+# Fuses are flipped on the packaged copy of the Electron binary just before
+# signing; the dev Electron in node_modules (used by the e2e suite) keeps its
+# defaults. scripts/verify-fuses.mjs asserts this block against the real output.
+electronFuses:
+  # No ELECTRON_RUN_AS_NODE, NODE_OPTIONS or --inspect: the installed binary
+  # must not double as a general-purpose Node interpreter.
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableCookieEncryption: true
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
+  # Left on deliberately: the renderer is loaded over file://, and turning this
+  # off needs a custom app:// protocol first.
+  grantFileProtocolExtraPrivileges: true
+  # The mac build is unsigned; re-apply the ad-hoc signature after the binary
+  # is patched or the app fails to launch on Apple Silicon.
+  resetAdHocDarwinSignature: true
 mac:
   target: dmg
   category: public.app-category.developer-tools
