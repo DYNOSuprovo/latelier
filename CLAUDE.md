@@ -178,7 +178,7 @@ Not gates — obligations that travel with the change. Deliberately its own sect
 
 - Don't ship `--no-verify`, `--no-gpg-sign`, or `console.log`. Real bugs hide behind those.
 - Prefer editing existing files to creating new ones; spec-driven development means most new code has a spec slot it belongs in.
-- Don't write ticket references into code or test comments — no issue or PR numbers, no "reviewer finding", no date stamps. Comments explain why the code is this way; the tracker holds the history. Commit messages and PR bodies may reference issues.
+- Issue numbers in code and test comments are welcome as a pointer to the history — `(#87)` in a comment, or in a test title — but never as the explanation: the comment still says why the code is this way without the reader opening the issue. A bare `#<n>` means an issue in this repository; cite anything else as `owner/repo#<n>` or a full URL. No "reviewer finding" tags or date stamps — the issue number is the pointer. Commit messages and PR bodies reference issues as usual.
 - The `SECRET_INPUT` comment tag on an IPC channel is load-bearing — `npm run audit:ipc` enforces that only allow-listed channels carry the tag. Add to `scripts/ipc-secret-allowlist.txt` before tagging a new one. The check scans `electron/**` only and keys off the tag, so an untagged channel taking a plaintext secret passes silently — tagging is on you, not the script.
 - Sort strings with an explicit `.localeCompare()` compare function; a bare `.sort()` on strings is locale-unsafe.
 - Never give a plain object a `then` key/method — it becomes an accidental thenable and breaks under `await`/`Promise.resolve()`.
