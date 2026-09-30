@@ -18,6 +18,7 @@
     "electron/services/UndoStore.ts",
     "src/utils/ejson.ts",
     "electron/mongo/uri-parse.ts",
+    "src/utils/hostLocality.ts",
     "src/hooks/useRovingHighlight.ts",
     "src/hooks/useRovingFocus.ts",
     "src/hooks/useMenuFocus.ts",

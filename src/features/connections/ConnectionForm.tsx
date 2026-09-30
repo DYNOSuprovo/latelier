@@ -1,5 +1,6 @@
 import React from 'react';
 import { themeVars } from '../../theme/themeVars';
+import { tlsWarning } from '../../utils/hostLocality';
 import { I } from '../../icons';
 import { Button, Modal, Tabs } from '@mantine/core';
 import { useForm } from '@mantine/form';
@@ -597,12 +598,31 @@ function TLSTab({ form, set, fieldErrors }: {
   fieldErrors: Record<string, string>;
 }) {
   const T = themeVars;
+  const warning = tlsWarning({
+    enabled: form.tlsEnabled,
+    verify: form.tlsVerify,
+    host: form.host,
+    viaSshTunnel: form.sshEnabled,
+  });
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Toggle checked={form.tlsEnabled} onChange={(v) => set('tlsEnabled', v)} label="Enable TLS / SSL" />
       <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>
         {TLS_INLINE_EXPLAINER}
       </div>
+      {warning && (
+        <div
+          role="status"
+          data-testid="tls-warning"
+          style={{
+            padding: '8px 10px', background: T.redSoft, color: T.redText,
+            border: `1px solid ${T.redBorder}`, borderRadius: T.rs,
+            fontSize: 12, lineHeight: 1.5,
+          }}
+        >
+          <strong>Warning:</strong> {warning}
+        </div>
+      )}
       {form.tlsEnabled && (
         <>
           <div style={{ height: 1, background: T.border }} />
@@ -1215,7 +1235,7 @@ function ConnectionFormImpl({
           </Tabs>
 
           {toast && (
-            <div style={{
+            <div role="status" style={{
               padding: '8px 24px', fontSize: 11, color: T.textMuted,
               borderTop: `1px solid ${T.border}`, background: T.surfaceRaised,
             }}>

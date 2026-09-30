@@ -124,6 +124,36 @@ describe('parseConnectionUri', () => {
     expect(dropped).toContain('w');
   });
 
+  it.each(['tlsInsecure', 'tlsAllowInvalidHostnames'])(
+    '%s is reported as dropped and leaves verification on',
+    (key) => {
+      const { input, warnings } = parseConnectionUri(`mongodb://db.example.com/?tls=true&${key}=true`);
+      expect(warnings).toContainEqual({ code: 'OPTION_DROPPED', detail: key.toLowerCase() });
+      expect(input.tls?.verify).toBe(true);
+      expect(warnings.some((w) => w.code === 'TLS_VERIFY_DISABLED')).toBe(false);
+    },
+  );
+
+  it.each([
+    'mongodb://db.example.com/?tls=true&tlsAllowInvalidCertificates=true',
+    'mongodb://db.example.com/?ssl=true&tlsAllowInvalidCertificates=true',
+    'mongodb+srv://cluster.example.com/?tlsAllowInvalidCertificates=true',
+  ])('tlsAllowInvalidCertificates=true warns that verification is off: %s', (uri) => {
+    const { input, warnings } = parseConnectionUri(uri);
+    expect(input.tls?.verify).toBe(false);
+    const w = warnings.filter((x) => x.code === 'TLS_VERIFY_DISABLED');
+    expect(w).toHaveLength(1);
+    expect(w[0]?.detail).toMatch(/verification is turned off/i);
+  });
+
+  it.each(['false', 'nope'])('tlsAllowInvalidCertificates=%s adds no TLS warning', (v) => {
+    const { input, warnings } = parseConnectionUri(
+      `mongodb://db.example.com/?tls=true&tlsAllowInvalidCertificates=${v}`,
+    );
+    expect(input.tls?.verify).toBe(true);
+    expect(warnings.some((w) => w.code === 'TLS_VERIFY_DISABLED')).toBe(false);
+  });
+
   it('rejects missing scheme', () => {
     expect(() => parseConnectionUri('localhost:27017')).toThrow(ValidationError);
   });

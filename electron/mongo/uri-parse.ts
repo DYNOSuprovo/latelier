@@ -32,6 +32,10 @@ const DROPPED_OPTIONS = new Set([
   'replicaset',
   'loadbalanced',
   'readconcernlevel',
+  // Both weaken verification and are not honoured: the connection stays
+  // strict, but the user is told instead of being left to assume otherwise.
+  'tlsinsecure',
+  'tlsallowinvalidhostnames',
 ]);
 
 /**
@@ -187,6 +191,13 @@ export function parseConnectionUri(raw: string): ParsedUri {
     tlsEnabled = isSrv;
   }
   const tlsVerify = tlsAllow === 'true' ? false : true;
+  if (!tlsVerify) {
+    warnings.push({
+      code: 'TLS_VERIFY_DISABLED',
+      detail:
+        'Certificate verification is turned off: anyone on the network path can impersonate this server',
+    });
+  }
 
   // Advanced options ----------------------------------------------------
   const connectTimeoutMs = parseIntParam(params.get('connecttimeoutms'), 10_000);
