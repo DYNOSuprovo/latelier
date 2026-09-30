@@ -98,7 +98,7 @@ The durable, per-Connection record of Operations. Survives relaunch; dies with i
 _Avoid_: activity log, history, event log
 
 **Pre-image**:
-The document or documents as they existed immediately before an Operation. Captured only when small enough to be worth keeping, and only for as long as Undo is still plausible.
+The document or documents as they existed immediately before an Operation. Captured only when small enough to be worth keeping, and held in memory for the running session only — never written to disk, so a restart forgets them, and only the most recent ones are kept even within a session.
 _Avoid_: snapshot, backup, previous version
 
 **Reversible**:

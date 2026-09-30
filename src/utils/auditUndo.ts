@@ -21,7 +21,7 @@ export function undoFailureMessage(e: unknown): string {
     case 'AUDIT_ALREADY_UNDONE':
       return 'This change has already been undone.';
     case 'AUDIT_UNDO_EXPIRED':
-      return 'This change is too old to undo — its earlier version is no longer kept.';
+      return "This change can't be undone any more — earlier versions are kept only for recent changes, and only until L'Atelier restarts.";
     case 'AUDIT_NOT_REVERSIBLE':
       return "This change can't be undone — its earlier version was never kept.";
     case 'CONFLICT':

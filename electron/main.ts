@@ -62,6 +62,7 @@ import { RecentFieldValueService } from './services/RecentFieldValueService.ts';
 import { MaintenanceService } from './services/MaintenanceService.ts';
 import { AuditRepo } from './db/repositories/AuditRepo.ts';
 import { AuditService } from './services/AuditService.ts';
+import { UndoStore } from './services/UndoStore.ts';
 import { registerAuditChannels } from './ipc/handlers/audit.ts';
 import { registerDataChannels, makeDataEmitter } from './ipc/handlers/data.ts';
 import { ImportService } from './mongo/ImportService.ts';
@@ -541,7 +542,7 @@ app.whenReady().then(() => {
   // captured — and it is re-read per message, which is what keeps it correct
   // across a reload.
   const auditRepo = new AuditRepo(db);
-  const auditSvc = new AuditService(auditRepo, pool, log);
+  const auditSvc = new AuditService(auditRepo, pool, new UndoStore(), log);
   const router = createRouter(
     ipcMain,
     senderCheck(() => win?.webContents.mainFrame ?? null, isAppLocation),

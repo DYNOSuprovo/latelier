@@ -76,7 +76,7 @@ Added to `shared/types.ts`:
 New `AppErrorCode` members, thrown via `SystemError` so the renderer can `switch` on them:
 
 - `AUDIT_NOT_REVERSIBLE` — no Pre-image was captured.
-- `AUDIT_UNDO_EXPIRED` — the Pre-image has been swept.
+- `AUDIT_UNDO_EXPIRED` — the Pre-image is no longer held: it lives in memory only, so every one is gone once L'Atelier restarts (or was evicted past the per-Connection / total-size cap).
 - `AUDIT_ALREADY_UNDONE` — `undone_at` is set.
 - `AUDIT_TARGET_CHANGED` — the document has changed since the Operation.
 
@@ -105,7 +105,7 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_audit_by_conn_time ON audit_log(connection_id, ran_at DESC);
 ```
 
-`summary_json` and `undo_json` are separate columns on purpose: the summary is the durable record and stays for the row's life; `undo_json` holds the Pre-image and is nulled long before the row is deleted. The retention split is structural, not a convention someone has to remember.
+`undo_json` is vestigial: it is always NULL. Pre-images were once stored there, as plaintext copies of production documents; they are now held in main-process memory only (`UndoStore`, §7) and never written to disk. Migration `015` nulled every value a previous version left behind, and the column stays because migrations are append-only. `summary_json` is the durable record and stays for the row's life. `reversible` on disk says a Pre-image was captured this session or earlier.
 
 `collection` is nullable only for `databaseDrop`. `ON DELETE CASCADE` matches `recent_queries` — deleting a Connection takes its trail with it.
 
@@ -118,7 +118,7 @@ CREATE INDEX idx_audit_by_conn_time ON audit_log(connection_id, ran_at DESC);
 
 Neither carries a secret; neither goes on the secret allowlist. Both follow the standard envelope and are registered through `registerAuditChannels(router, svc)` from `electron/main.ts`.
 
-`audit:list` returns newest-first, `limit` defaulting to 100, `before` being a `ran_at` cursor. It never returns `undo_json` — the Pre-image is not sent to the renderer, which only needs to know `reversible`.
+`audit:list` returns newest-first, `limit` defaulting to 100, `before` being a `ran_at` cursor. It never returns the Pre-image — the renderer only needs to know `reversible`, which is true only while the Pre-image is still in memory. After a restart, or once its Pre-image has been evicted, an entry lists as not reversible; that is the normal "no longer undoable" state, not an error.
 
 ## 4. Recording
 
@@ -169,7 +169,7 @@ Either ceiling breached: **the Operation still runs**, the entry records `revers
 | Condition | Error |
 | --- | --- |
 | `reversible = 0` | `AUDIT_NOT_REVERSIBLE` |
-| `undo_json` is null (swept) | `AUDIT_UNDO_EXPIRED` |
+| no Pre-image in memory (restarted or evicted) | `AUDIT_UNDO_EXPIRED` |
 | `undone_at` is set | `AUDIT_ALREADY_UNDONE` |
 | target no longer matches what the Operation left | `AUDIT_TARGET_CHANGED` |
 
@@ -188,12 +188,10 @@ Because Undo refuses on a changed target, Operations against the same document u
 
 ## 7. Retention
 
-Two calls added to `MaintenanceService.vacuum()`, which already runs at most once per 24h:
+- Pre-images: held by `UndoStore` in main-process memory, never on disk. Bounded to the newest **200** per Connection and **64 MiB** in total, oldest evicted first; a Pre-image is also dropped once its Undo has run. A restart drops all of them. The `reversible` column is left as recorded: it says a Pre-image was captured, which is what tells `AUDIT_UNDO_EXPIRED` apart from `AUDIT_NOT_REVERSIBLE`.
+- Rows: `MaintenanceService` deletes rows past **90 days**, at most once per 24h.
 
-- Pre-images: null `undo_json` past **7 days**, or beyond the most recent **200** revertible entries per Connection — whichever bites first. The `reversible` column is left as recorded: it says a Pre-image was captured, which is what tells `AUDIT_UNDO_EXPIRED` apart from `AUDIT_NOT_REVERSIBLE`. `audit:list` reports an entry as reversible only while its Pre-image is still held and unused.
-- Rows: delete past **90 days**.
-
-The record outlives the Pre-image because they have different value curves. Undo happens within minutes; the record is worth reading months later.
+The record outlives the Pre-image because they have different value curves. Undo happens within minutes; the record is worth reading months later. Keeping documents off disk is the point: a Pre-image is a full copy of production data.
 
 ## 8. Renderer
 
@@ -221,9 +219,9 @@ Not a workspace tab: `workspace_tabs.kind` is a SQL `CHECK` constraint, so a new
 - [ ] Undo of an already-undone entry fails `AUDIT_ALREADY_UNDONE`.
 - [ ] Undo of `deleteMany` where some ids exist again restores the rest and reports `{ restored, skipped }`.
 - [ ] A successful Undo sets `undone_at` and writes no second entry.
-- [ ] `audit:list` never returns `undo_json`.
+- [ ] `audit_log.undo_json` is NULL after every audited Operation, and `audit:list` never returns a Pre-image.
 - [ ] Deleting a Connection deletes its `audit_log` rows.
-- [ ] The maintenance sweep nulls Pre-images past 7 days / 200 entries and deletes rows past 90 days, leaving newer rows untouched.
+- [ ] The maintenance sweep deletes rows past 90 days, leaving newer rows untouched; Pre-images are session-only and bounded, and a restart or an eviction lists their entries as not reversible.
 - [ ] No audited channel accepts a plaintext secret; `npm run audit:ipc` stays green with no allowlist change.
 - [ ] The delete confirm dialog states whether the pending delete is within the undo limit; the two drop dialogs state that they cannot be undone.
 - [ ] The success toast for an audited write offers Undo, and restores the documents when used.
@@ -265,12 +263,12 @@ Explicitly **not** tested:
 12. `updateOne` then immediate undo → document matches its Pre-image exactly.
 13. Undo twice → second call fails `AUDIT_ALREADY_UNDONE`; the document is not written twice.
 14. Undo of a `collectionDrop` entry fails `AUDIT_NOT_REVERSIBLE`.
-15. Undo after the sweep nulled `undo_json` fails `AUDIT_UNDO_EXPIRED`.
+15. Undo after a restart (a fresh `AuditService` over the same database) fails `AUDIT_UNDO_EXPIRED`, and the entry lists as not reversible.
 16. `collectionRename` undone restores the original name; undone when a collection already holds the old name surfaces the driver error.
-17. `audit:list` filters by `dbName` and `collection`, orders newest-first, honours `limit` and `before`, and omits `undo_json` from every entry.
+17. `audit:list` filters by `dbName` and `collection`, orders newest-first, honours `limit` and `before`, and omits the Pre-image from every entry.
 18. Deleting a Connection removes its `audit_log` rows and no other Connection's.
-19. The sweep nulls `undo_json` on an 8-day-old entry, leaves a 6-day-old one intact, deletes a 91-day-old row, and keeps an 89-day-old one.
-20. The sweep keeps the newest 200 revertible entries per Connection and nulls the 201st.
+19. The sweep deletes a 91-day-old row and keeps an 89-day-old one.
+20. `UndoStore` keeps the newest 200 Pre-images per Connection and evicts the 201st, and evicts oldest-first past its total byte cap.
 21. Migration `012` applies to a database that predates it and is idempotent under the runner.
 22. Component: the success toast for `docDeleteMany` renders an Undo action; activating it calls `audit:undo` with the entry id and reports the restored count.
 23. Component: the toast surfaces `AUDIT_TARGET_CHANGED` as an explanation the user can act on, not a raw code.
