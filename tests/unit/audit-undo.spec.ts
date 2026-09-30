@@ -43,7 +43,7 @@ describe('assertUndoable — refuses before anything is written', () => {
   });
 
   it('names what happened in the message, not only the code', () => {
-    expect(() => assertUndoable({ ...held, undo_json: null })).toThrow('too old to undo');
+    expect(() => assertUndoable({ ...held, undo_json: null })).toThrow("kept only for recent changes, and only until L'Atelier restarts");
     expect(() => assertUndoable({ ...held, reversible: 0 })).toThrow('Nothing was kept');
     expect(() => assertUndoable({ ...held, undone_at: 'x' })).toThrow('already been undone');
   });
@@ -131,7 +131,7 @@ describe('undoFailureMessage', () => {
   it.each([
     ['AUDIT_TARGET_CHANGED', /has changed since.*outside L'Atelier can't be unwound from here/],
     ['AUDIT_ALREADY_UNDONE', /^This change has already been undone\.$/],
-    ['AUDIT_UNDO_EXPIRED', /^This change is too old to undo/],
+    ['AUDIT_UNDO_EXPIRED', /^This change can't be undone any more — earlier versions are kept only for recent changes, and only until L'Atelier restarts\.$/],
     ['AUDIT_NOT_REVERSIBLE', /^This change can't be undone/],
     ['CONFLICT', /same _id exists again/],
   ])('explains %s in words', (code, text) => {

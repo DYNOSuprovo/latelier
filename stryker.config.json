@@ -15,6 +15,7 @@
   },
   "mutate": [
     "electron/mongo/ejson.ts",
+    "electron/services/UndoStore.ts",
     "src/utils/ejson.ts",
     "electron/mongo/uri-parse.ts",
     "src/hooks/useRovingHighlight.ts",

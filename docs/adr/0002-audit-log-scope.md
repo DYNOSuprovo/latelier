@@ -77,6 +77,8 @@ built to prevent data loss cause it — silently, and recorded as a success.
   confirm dialogs state whether the action can be undone.
 - Undo on the same document unwinds in reverse order. If the intervening change came from outside
   L'Atelier there is nothing to unwind first, and Undo stays refused.
-- Pre-images make retention non-uniform: the payload is short-lived, the record is not.
+- Pre-images make retention non-uniform: the payload lives in memory for the session only (never on
+  disk — it is a full copy of production documents), the record is durable. Old Pre-images are also evicted in-session past a per-Connection and total-size cap. After a restart, or once evicted, an entry
+  is still listed but no longer undoable.
 - The Audit Log dies with its Connection (`ON DELETE CASCADE`) — no ghost data, and no trail for a
   server you can no longer reach.
