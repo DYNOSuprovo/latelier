@@ -141,21 +141,27 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
     async toArray(): Promise<unknown[]> {
       const st = stateOf(this);
       const docs = (await terminal(this, 'toArray', [])) as unknown[];
+      // Main forgets a cursor once it is exhausted; a later close() has nothing to close.
+      st.closed = true;
       return st.mappers.length === 0 ? docs : docs.map((d) => applyMappers(st, d));
     }
 
     async next(): Promise<unknown> {
       const doc = await terminal(this, 'next', []);
+      if (doc === null) stateOf(this).closed = true;
       return doc === null ? null : applyMappers(stateOf(this), doc);
     }
 
     async tryNext(): Promise<unknown> {
       const doc = await terminal(this, 'tryNext', []);
+      if (doc === null) stateOf(this).closed = true;
       return doc === null ? null : applyMappers(stateOf(this), doc);
     }
 
-    hasNext(): Promise<boolean> {
-      return terminal(this, 'hasNext', []) as Promise<boolean>;
+    async hasNext(): Promise<boolean> {
+      const more = (await terminal(this, 'hasNext', [])) as boolean;
+      if (!more) stateOf(this).closed = true;
+      return more;
     }
 
     count(): Promise<number> {
