@@ -139,16 +139,42 @@ describe('markWideIntegers', () => {
     expect(out.nested.u[0]).toBeInstanceOf(Double);
   });
 
-  it('passes BSON values, dates, binary data and other objects through untouched', () => {
+  it('passes BSON values, dates and other objects through untouched', () => {
     const long = Long.fromString('9007199254740993');
     const oid = new ObjectId('64b7f0f5a1b2c3d4e5f60718');
     const date = new Date(0);
-    const bytes = new Uint8Array([1, 2]);
     const re = /x/;
     const map = new Map([[1, 2]]);
-    for (const v of [long, oid, date, bytes, re, map, null, undefined, 'str', true, new Int32(1), new Double(2)]) {
+    for (const v of [long, oid, date, re, map, null, undefined, 'str', true, new Int32(1), new Double(2)]) {
       expect(markWideIntegers(v)).toBe(v);
     }
+  });
+
+  it('turns a Uint8Array or a Buffer into a subtype 0 Binary holding the same bytes, at any depth', () => {
+    for (const bytes of [new Uint8Array([1, 2, 3]), Buffer.from([1, 2, 3])]) {
+      const out = markWideIntegers({ a: bytes, b: [{ c: bytes }], d: bytes }) as {
+        a: Binary;
+        b: [{ c: Binary }];
+        d: Binary;
+      };
+      for (const bin of [out.a, out.b[0].c, out.d]) {
+        expect(bin).toBeInstanceOf(Binary);
+        expect(bin.sub_type).toBe(0);
+        expect([...bin.buffer.subarray(0, bin.position)]).toEqual([1, 2, 3]);
+      }
+    }
+    expect(markWideIntegers(new Uint8Array([]))).toBeInstanceOf(Binary);
+  });
+
+  it('turns a Uint8Array from another realm into a Binary, and leaves other typed arrays alone', async () => {
+    const vm = await import('node:vm');
+    const foreign = vm.runInNewContext('new Uint8Array([9, 8])') as Uint8Array;
+    expect(foreign instanceof Uint8Array).toBe(false);
+    const out = markWideIntegers(foreign) as Binary;
+    expect(out).toBeInstanceOf(Binary);
+    expect([...out.buffer.subarray(0, out.position)]).toEqual([9, 8]);
+    const floats = new Float32Array([1]);
+    expect(markWideIntegers(floats)).toBe(floats);
   });
 
   it('keeps a __proto__ field as an own property', () => {

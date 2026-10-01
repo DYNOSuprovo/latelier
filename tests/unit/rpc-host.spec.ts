@@ -627,13 +627,10 @@ describe('rpcHost — cursors', () => {
     expect((errors[0] as Error).message).toBe('evict close failed');
   });
 
-  it.each([
-    ['next', 'next'],
-    ['tryNext', 'tryNext'],
-  ])('%s that finds nothing left frees the cursor', async (_label, method) => {
+  it('next that finds nothing left frees the cursor', async () => {
     findDocs = [];
     const id = cursorIdOf(await send({ method: 'find' }));
-    expect(value(await send({ target: 'cursor', method, cursorId: id }))).toBeNull();
+    expect(value(await send({ target: 'cursor', method: 'next', cursorId: id }))).toBeNull();
     expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: id })).message).toMatch(
       /unknown cursor/,
     );
@@ -657,6 +654,24 @@ describe('rpcHost — cursors', () => {
     await send({ target: 'cursor', method: 'next', cursorId: id });
     await send({ target: 'cursor', method: 'tryNext', cursorId: id });
     expect(value(await send({ target: 'cursor', method: 'toArray', cursorId: id }))).toHaveLength(2);
+  });
+
+  it('a tryNext that finds nothing keeps the cursor, which on a tailable cursor is only an empty batch', async () => {
+    findDocs = [];
+    const id = cursorIdOf(await send({ method: 'find' }));
+    expect(value(await send({ target: 'cursor', method: 'tryNext', cursorId: id }))).toBeNull();
+    expect(value(await send({ target: 'cursor', method: 'tryNext', cursorId: id }))).toBeNull();
+    await send({ target: 'cursor', method: 'close', cursorId: id });
+    expect(calls.filter((c) => c.what === 'cursor.close')).toHaveLength(1);
+    expect(errorOf(await send({ target: 'cursor', method: 'tryNext', cursorId: id })).message).toMatch(/unknown cursor/);
+  });
+
+  it('a cursor kept across an empty tryNext is still closed when the run ends', async () => {
+    findDocs = [];
+    const id = cursorIdOf(await send({ method: 'find' }));
+    await send({ target: 'cursor', method: 'tryNext', cursorId: id });
+    await host.close();
+    expect(calls.filter((c) => c.what === 'cursor.close')).toHaveLength(1);
   });
 
   it('many exhausted cursors never reach the cap', async () => {
@@ -792,6 +807,15 @@ describe('rpcHost — what counts as plain data', () => {
     for (const result of ['text', 7, true, null, new Date(0), new ObjectId('64b7f0f5a1b2c3d4e5f60718'), [1, 2], { a: 1 }, nullProto]) {
       expect((await findOneReturning(result)).type).toBe('rpc-result');
     }
+  });
+
+  it('passes a regular expression, which the driver returns for a stored one, as a canonical sentinel', async () => {
+    const reply = await findOneReturning([/a+b/i, /x/]);
+    expect(reply.type === 'rpc-result' && 'valueEjson' in reply && JSON.parse(reply.valueEjson)).toEqual([
+      { $regularExpression: { pattern: 'a+b', options: 'i' } },
+      { $regularExpression: { pattern: 'x', options: '' } },
+    ]);
+    expect((await findOneReturning(/y/s)).type).toBe('rpc-result');
   });
 
   it('answers a call that resolved to undefined with null', async () => {

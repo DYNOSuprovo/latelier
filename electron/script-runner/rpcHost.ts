@@ -155,11 +155,14 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
         if (shaping) return ok(id, undefined);
         const value = await out;
         // Finished cursors give their slot back: toArray exhausts one, close
-        // ends one, and a read that finds nothing left means the same.
+        // ends one, and a read that finds nothing left means the same. The
+        // driver's next() and hasNext() only answer that way once the cursor is
+        // dead. tryNext() is left out: on a tailable cursor null is an empty
+        // batch, and the cursor must stay for the next poll and for close().
         if (
           method === 'toArray' ||
           method === 'close' ||
-          ((method === 'next' || method === 'tryNext') && value === null) ||
+          (method === 'next' && value === null) ||
           (method === 'hasNext' && value === false)
         ) {
           cursors.delete(cursorId);
@@ -257,11 +260,11 @@ function rpcError(id: number, err: unknown): RpcReply {
   return { type: 'rpc-error', id, error: wire };
 }
 
-/** A value is data when it is a primitive, an array, a plain document or a BSON/Date value. */
+/** A value is data when it is a primitive, an array, a plain document or a BSON/Date/RegExp value. */
 function isPlainData(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
   if (Array.isArray(value)) return true;
-  if (value instanceof Date) return true;
+  if (value instanceof Date || value instanceof RegExp) return true;
   if ('_bsontype' in value) return true;
   const proto = Object.getPrototypeOf(value) as unknown;
   return proto === Object.prototype || proto === null;

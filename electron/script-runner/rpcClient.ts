@@ -153,8 +153,8 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
     }
 
     async tryNext(): Promise<unknown> {
+      // Not a sign the cursor is finished: a tailable one answers null on an empty batch.
       const doc = await terminal(this, 'tryNext', []);
-      if (doc === null) stateOf(this).closed = true;
       return doc === null ? null : applyMappers(stateOf(this), doc);
     }
 
