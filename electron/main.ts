@@ -683,8 +683,11 @@ app.whenReady().then(() => {
   registerAggChannels(router, aggSvc);
   registerShellChannels(router);
 
+  // One spawner for both: scripts and shell sessions fork the same bundled entry.
+  const runnerSpawner = createUtilityProcessSpawner(path.join(MAIN_DIST, 'script-runner.cjs'));
   mshellSvc = new ShellService({
     pool,
+    spawner: runnerSpawner,
     emit: makeMshellEmitter(() => win?.webContents ?? null),
     log,
   });
@@ -692,7 +695,7 @@ app.whenReady().then(() => {
 
   scriptSvc = new ScriptService({
     pool,
-    spawner: createUtilityProcessSpawner(path.join(MAIN_DIST, 'script-runner.cjs')),
+    spawner: runnerSpawner,
     logger: log,
   });
   registerScriptChannels(router, scriptSvc);

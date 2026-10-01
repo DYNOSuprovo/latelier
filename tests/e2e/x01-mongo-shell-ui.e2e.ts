@@ -13,7 +13,7 @@ test.afterAll(stopAllMemoryServers);
 
 /**
  * X01 — Mongo shell pane (UI-driven). The existing `mongo-shell.e2e.ts` IPC
- * test verifies the in-process REPL via `mshell.start/write/onOutput`. This
+ * test verifies the REPL via `mshell.start/write/onOutput`. This
  * spec drives the input textarea + output rendering through the actual UI
  * (`MongoShellPane.tsx:274` — `aria-label="Mongo shell input"`).
  */
@@ -57,7 +57,7 @@ test('mongo shell ui: open pane, run a ping command, output renders', async () =
       await expect(shellInput).not.toHaveAttribute('placeholder', 'starting…', { timeout: 15000 });
 
       // Submit a ping command — Enter is the submit key (MongoShellPane.tsx:283).
-      // The in-process REPL doesn't auto-await Promises, so prefix `await` (the
+      // The REPL doesn't auto-await Promises, so prefix `await` (the
       // existing IPC mongo-shell.e2e.ts uses the same incantation).
       await shellInput.fill('await db.runCommand({ ping: 1 })');
       await shellInput.press('Enter');
