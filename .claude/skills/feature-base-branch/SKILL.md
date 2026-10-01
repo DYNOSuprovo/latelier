@@ -27,6 +27,9 @@ main ─────────────────────────
                                         merge into base in stack order, oldest first
 ```
 
+A ticket that does not build on another open ticket branches straight off the
+base instead; stack only where there is a real dependency.
+
 ## Workflow
 
 1. **Cut the base branch from freshly-pulled `main`, then commit the spec straight onto
@@ -54,16 +57,19 @@ main ─────────────────────────
    gh project item-add <number> --owner "$owner" --url <issue-url>
    ```
 
-3. **One branch per issue, stacked — not each cut from the base and merged before the
-   next starts.** First ticket branches off the base. Every ticket after that branches
-   off the **previous ticket's branch**, not off the base, and not after waiting for the
-   previous ticket to merge — that's what makes it a stack instead of a serial queue.
-   Never commit directly to the base or to another ticket's branch; even a fix gets its
-   own branch and PR.
+3. **One branch per issue; stack only on a real dependency.** A ticket that needs
+   another open ticket's code branches off **that ticket's branch**, without waiting
+   for it to merge — that's what makes it a stack instead of a serial queue. A ticket
+   that needs nothing unmerged branches straight off the base, so it can merge in any
+   order. Never commit directly to the base or to another ticket's branch; even a fix
+   gets its own branch and PR.
 
 4. **Delegate implementation to a subagent**, one ticket per agent. Give it the spec
    section and the *current* `npm test` baseline count — the branch it's stacked on, not
-   `main`'s and not necessarily the base's.
+   `main`'s and not necessarily the base's. Every worker brief carries
+   `.claude/lead-run.md` (worktree, profile and gate rules). Leading the run through
+   agents end to end — planning, briefs, review, waiting, shipping — follows the
+   `pragmatic-orchestrate` skill's `epic-run.md` where you have it installed.
 
 5. **Validate by mutation before pushing.** Break the property the new tests claim to
    protect, confirm they go red, revert. A green `tsc -b` proves nothing; it was green
@@ -76,21 +82,26 @@ main ─────────────────────────
    merged into, so it eventually points at the base (GitHub does this automatically if
    the merged branch is deleted; otherwise retarget by hand before continuing).
 
-7. **Run the gates the non-default base suppresses.** A PR not targeting `main` now
-   triggers **no workflow at all** — `pull_request` is scoped to `branches: [main]` to
-   conserve runner minutes. An empty check list is not a pass; every gate is yours:
+7. **Run the gates the non-default base suppresses.** A PR not targeting `main`
+   triggers **no GitHub workflow** — `pull_request` is scoped to `branches: [main]` to
+   conserve runner minutes. Only the installed apps report on it (SonarCloud, the review
+   bot). Their checks are not the gates; every gate is yours:
    - Lint, `tsc -b`, `audit:ipc`, and `npm test` run locally — CI will not run them.
    - `npm run test:e2e` locally too, nothing else running concurrently (it wedges
-     Rolldown's thread pool). The e2e job is `workflow_dispatch`-only everywhere now.
+     Rolldown's thread pool). CI runs e2e only on PRs into `main`.
    - `Closes #N` does not auto-close → `gh issue close #N` with a comment on what landed.
-   - CodeRabbit skips non-default bases entirely — its "pass" means it never looked.
+   - A review bot's green check is not a review: confirm it actually posted one on the
+     head commit (a bot on a plan that reviews nothing still reports "pass").
 
 8. **Never merge a ticket PR until every check on it is green**, and merge the stack in
    order — oldest first. Wait for the run to finish — a pending or failed check is a
-   block, not a formality:
+   block, not a formality. Wait in one background job rather than polling in the
+   foreground:
    ```bash
    gh pr checks <N> --watch
    ```
+   A check that failed for infrastructure reasons (read its log first) is not a code
+   failure; say so on the PR before merging past it.
    A red check gets fixed on the ticket branch and re-run. Don't merge out of stack
    order — merging a downstream ticket before the one it's stacked on leaves it carrying
    that ticket's diff, and its gates pass against content that isn't in the base yet.
@@ -107,7 +118,7 @@ main ─────────────────────────
 
 10. **When every issue — original and discovered — is closed, run `/verify` before
     calling the feature done.** Only after it passes, open the PR base → `main`. This
-    one gets the full gate: all seven Definition-of-Done gates in `CLAUDE.md`, including
+    one gets the full gate: every Definition-of-Done gate in `CLAUDE.md`, including
     `npx tsc -b` by hand (nothing in CI typechecks `main`) and Gitar's review on the
     combined diff.
 
