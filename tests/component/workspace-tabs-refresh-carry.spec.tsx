@@ -173,6 +173,37 @@ describe('useWorkspaceTabs — a refresh inside the debounce window', () => {
     expect(a().state.lastRun).toEqual(run(2));
   });
 
+  it('keeps a patch whose flush fires while the list is still in flight', async () => {
+    let releaseList: (tabs: CollectionTab[]) => void = () => undefined;
+    let calls = 0;
+    const { result, update } = await mount(() => [collectionTab('a')], {
+      list: () => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve([collectionTab('a')]);
+        // dispatched before the flush; answers after it, without the patch
+        return new Promise<CollectionTab[]>((resolve) => {
+          releaseList = resolve;
+        });
+      },
+    });
+    act(() => {
+      result.current.patchCollectionState('a', { page: 2 });
+    });
+    let refreshing: Promise<void> = Promise.resolve();
+    act(() => {
+      refreshing = result.current.refresh();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(update).toHaveBeenCalledWith('a', { state: { page: 2 } });
+    await act(async () => {
+      releaseList([collectionTab('a')]);
+      await refreshing;
+    });
+    expect((result.current.tabs[0] as CollectionTab).state.page).toBe(2);
+  });
+
   it('keeps every other pending field too: query text, aggregation stages, script source', async () => {
     const { result } = await mount(() => [collectionTab('a'), scriptTab('s')]);
     const stage = { id: 1, op: '$match', body: '{"x":1}', enabled: true };

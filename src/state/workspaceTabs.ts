@@ -170,12 +170,19 @@ export function useWorkspaceTabs(): WorkspaceTabsState {
 
   const refresh = useCallback(async () => {
     try {
+      // Main handles the list and the updates in dispatch order, so a flush
+      // that fires while the list is in flight leaves its patch out of the
+      // answer and already out of `pendingPatches`: snapshot before dispatch.
+      const before = new Map(pendingPatches.current);
       const list = await api.tabs.list();
       // The list lags local state by whatever is still in the debounce, so
       // layer those patches back on first. Listed tabs also carry no result
       // documents (never persisted); keep the in-memory ones of tabs that
       // were already open.
-      const current = applyPendingPatches(list, pendingPatches.current);
+      const current = applyPendingPatches(
+        applyPendingPatches(list, before),
+        pendingPatches.current,
+      );
       setTabs((prev) => carryResultFields(prev, current));
       setError(null);
     } catch (e) {
