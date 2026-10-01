@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { carryResultFields, stripResultPatch } from '../../src/state/tabResultCarry';
+import { applyPendingPatches, carryResultFields, stripResultPatch } from '../../src/state/tabResultCarry';
 import { stripResultFields } from '../../electron/services/tabStateResults';
 import type {
   AggregationLastRun,
@@ -192,4 +192,40 @@ describe('stripResultPatch / stripResultFields parity', () => {
       expect(JSON.stringify(input)).toBe(before);
     });
   }
+});
+
+describe('applyPendingPatches', () => {
+  it('layers a pending patch over the listed tab of the same id and leaves the rest', () => {
+    const list = [coll('a', { page: 0 }), script('s'), coll('b', { page: 3 })];
+    const out = applyPendingPatches(
+      list,
+      new Map<string, object>([
+        ['a', { page: 2, lastRunHasMore: true }],
+        ['s', { source: 'x' }],
+      ]),
+    );
+    expect((out[0] as CollectionTab).state).toMatchObject({ page: 2, lastRunHasMore: true, queryRaw: '{}' });
+    expect((out[1] as ScriptTab).state).toMatchObject({ source: 'x', title: 'T' });
+    expect(out[2]).toBe(list[2]);
+  });
+
+  it('ignores a pending id that is not listed and never mutates its inputs', () => {
+    const list = [coll('a', { page: 0 })];
+    const snapshot = JSON.stringify(list);
+    const pending = new Map<string, object>([['gone', { page: 9 }]]);
+    const out = applyPendingPatches(list, pending);
+    expect(out).toEqual(list);
+    expect(out).not.toBe(list);
+    expect(JSON.stringify(list)).toBe(snapshot);
+    const patched = applyPendingPatches(list, new Map([['a', { page: 1 }]]));
+    expect((list[0] as CollectionTab).state.page).toBe(0);
+    expect((patched[0] as CollectionTab).state.page).toBe(1);
+  });
+
+  it('returns a fresh array when nothing is pending', () => {
+    const list = [coll('a')];
+    const out = applyPendingPatches(list, new Map());
+    expect(out).toEqual(list);
+    expect(out).not.toBe(list);
+  });
 });

@@ -12,7 +12,7 @@ import { DEFAULT_AGGREGATION_TAB_STATE } from '@shared/defaults';
 import type { IpcError } from '@shared/ipc';
 import { confirmDestructive } from '../utils/confirm';
 import { api, isIpcError } from '../api/atelier';
-import { carryResultFields, stripResultPatch } from './tabResultCarry';
+import { applyPendingPatches, carryResultFields, stripResultPatch } from './tabResultCarry';
 
 /**
  * Global sticky-default prefs key (T0.5 / W07 §1). Stores the last page size
@@ -171,9 +171,12 @@ export function useWorkspaceTabs(): WorkspaceTabsState {
   const refresh = useCallback(async () => {
     try {
       const list = await api.tabs.list();
-      // Listed tabs carry no result documents (never persisted); keep the
-      // in-memory ones of tabs that were already open.
-      setTabs((prev) => carryResultFields(prev, list));
+      // The list lags local state by whatever is still in the debounce, so
+      // layer those patches back on first. Listed tabs also carry no result
+      // documents (never persisted); keep the in-memory ones of tabs that
+      // were already open.
+      const current = applyPendingPatches(list, pendingPatches.current);
+      setTabs((prev) => carryResultFields(prev, current));
       setError(null);
     } catch (e) {
       setError(isIpcError(e) ? e : { code: 'INTERNAL', message: String(e) });
@@ -229,6 +232,15 @@ export function useWorkspaceTabs(): WorkspaceTabsState {
   const openAggregation: WorkspaceTabsState['openAggregation'] = useCallback(
     async (input) => {
       const tab = await api.tabs.openAggregation(input);
+      // Main just overwrote these on the tab, so a patch still in the debounce
+      // would otherwise be layered back over it (and later flushed over it).
+      // Without a saved pipeline or name main keeps the persisted aggregation,
+      // so the pending one is newer and stays.
+      const pending = pendingPatches.current.get(tab.id);
+      if (pending) {
+        delete pending.activeView;
+        if (input.savedId || input.name) delete pending.aggregation;
+      }
       await refresh();
       return tab;
     },
