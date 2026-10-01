@@ -356,6 +356,35 @@ describe('a script that escapes its sandbox and posts frames by hand', () => {
     expect(await countDocs('rpc_crafted_ro')).toBe(0);
   });
 
+  it('answers the excess of 200 frames posted at once with errors, and the run still completes', async () => {
+    const s = setup();
+    await s.run({ connectionId: 'rw', source: 'await db.rpc_flood.deleteMany({}); await db.rpc_flood.insertOne({ n: 1 }); 1' });
+    const count = 200;
+    const source = `
+      const proc = this.constructor.constructor('return process')();
+      const post = (m) => (proc.parentPort ? proc.parentPort.postMessage(m) : proc.send(m));
+      let left = ${count};
+      const replies = [];
+      await new Promise((resolve) => {
+        const onReply = (m) => { replies.push(m); if (--left === 0) resolve(); };
+        if (proc.parentPort) proc.parentPort.on('message', (e) => onReply(e.data));
+        else proc.on('message', onReply);
+        for (let i = 0; i < ${count}; i++) {
+          post({ type: 'rpc', id: 800000 + i, target: 'collection', dbName: ${JSON.stringify(DB)}, coll: 'rpc_flood',
+            method: 'findOne', argsEjson: '[{"$where":"sleep(100) || true"}]' });
+        }
+      });
+      JSON.stringify(replies.map((m) => (m.type === 'rpc-error' ? m.error.message : 'ok')))`;
+    const r = await s.run({ connectionId: 'rw', source, maxTimeMs: 60_000 });
+    const outcomes = JSON.parse(JSON.parse(r.valueJson!) as string) as string[];
+    expect(outcomes).toHaveLength(count);
+    const refused = outcomes.filter((o) => o !== 'ok');
+    expect(new Set(refused)).toEqual(new Set(['rpc: too many calls in flight']));
+    // Those admitted before the limit was hit were answered normally.
+    expect(outcomes.filter((o) => o === 'ok')).toHaveLength(64);
+    expect(refused).toHaveLength(count - 64);
+  }, 90_000);
+
   it('a frame that is not even answerable ends the run as an internal error', async () => {
     const s = setup();
     const source = `

@@ -18,6 +18,8 @@ import {
   DB_CURSOR_METHODS,
   DB_METHODS,
   MAX_RPC_ARGS,
+  MAX_RPC_ARGS_CHARS,
+  MAX_RPC_IN_FLIGHT,
 } from './rpcSurface.ts';
 
 /**
@@ -66,6 +68,7 @@ export interface RpcHost {
 export function createRpcHost(opts: RpcHostOpts): RpcHost {
   const cursors = new Map<string, Bag>();
   let closed = false;
+  let inFlight = 0;
 
   const proxyFor = (dbName: string): Bag =>
     makeDbProxy({
@@ -146,10 +149,17 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
 
   return {
     async handle(frame) {
+      // An error reply, not a kill: the excess is refused and the run goes on.
+      if (inFlight >= MAX_RPC_IN_FLIGHT) {
+        return rpcError(frame.id, new ValidationError('rpc: too many calls in flight'));
+      }
+      inFlight++;
       try {
         return await dispatch(frame);
       } catch (err) {
         return rpcError(frame.id, err);
+      } finally {
+        inFlight--;
       }
     },
     async close() {
@@ -189,6 +199,10 @@ function member(obj: Bag, name: string): Callable {
 
 function parseArgs(argsEjson: unknown): unknown[] {
   const text = requireString(argsEjson, 'argsEjson');
+  // Before the parse: the point is that an oversized text is never walked.
+  if (text.length > MAX_RPC_ARGS_CHARS) {
+    throw new ValidationError(`rpc: argsEjson is longer than ${MAX_RPC_ARGS_CHARS} characters`);
+  }
   const args = promoteNumbers(parseEjsonField<unknown>(text, 'argsEjson'), true);
   if (!Array.isArray(args) || args.length > MAX_RPC_ARGS) {
     throw new ValidationError(`rpc: argsEjson must be an array of at most ${MAX_RPC_ARGS} values`);

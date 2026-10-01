@@ -790,3 +790,62 @@ describe('rpcHost — size cap', () => {
     }
   });
 });
+
+describe('rpcHost — flood limits', () => {
+  const MAX_CHARS = 16 * 1024 * 1024;
+
+  /** findOne calls that stay outstanding until `release` runs. */
+  function holdFindOne(): { release: () => void; restore: () => void; started: () => number } {
+    const waiting: Array<() => void> = [];
+    let started = 0;
+    const restore = patched(FakeCollection.prototype, 'findOne', () => {
+      started++;
+      return new Promise((resolve) => waiting.push(() => resolve({ _id: 1 })));
+    });
+    return { release: () => waiting.splice(0).forEach((r) => r()), restore, started: () => started };
+  }
+
+  it('answers the 65th concurrent frame with an error and works again once the others settle', async () => {
+    const held = holdFindOne();
+    try {
+      const first = Array.from({ length: 64 }, () => send({}));
+      const extra = errorOf(await send({}));
+      expect(extra).toMatchObject({ name: 'ValidationError', message: 'rpc: too many calls in flight' });
+      // The refused frame never reached the driver; only the 64 admitted ones did.
+      expect(held.started()).toBe(64);
+
+      held.release();
+      for (const reply of await Promise.all(first)) expect(reply.type).toBe('rpc-result');
+
+      const again = send({});
+      held.release();
+      expect(((await again) as { type: string }).type).toBe('rpc-result');
+    } finally {
+      held.release();
+      held.restore();
+    }
+  });
+
+  it('counts a failed call as finished', async () => {
+    for (let i = 0; i < 70; i++) {
+      expect(errorOf(await send({ method: 'noSuchMethod' })).message).toMatch(/not callable/);
+    }
+    expect((await send({})).type).toBe('rpc-result');
+  });
+
+  it('refuses an argsEjson over the length cap without parsing it', async () => {
+    // Not JSON at all: were it parsed, the error would be about invalid EJSON.
+    const err = errorOf(await send({ argsEjson: 'x'.repeat(MAX_CHARS + 1) }));
+    expect(err).toMatchObject({
+      name: 'ValidationError',
+      message: `rpc: argsEjson is longer than ${MAX_CHARS} characters`,
+    });
+    expect(calls.some((c) => c.what === 'c.findOne')).toBe(false);
+  });
+
+  it('accepts an argsEjson of exactly the length cap', async () => {
+    const argsEjson = `["${'x'.repeat(MAX_CHARS - 4)}"]`;
+    expect(argsEjson).toHaveLength(MAX_CHARS);
+    expect((await send({ argsEjson })).type).toBe('rpc-result');
+  });
+});

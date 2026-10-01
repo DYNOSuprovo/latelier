@@ -10,6 +10,8 @@ import {
   DB_CURSOR_METHODS,
   DB_METHODS,
   MAX_RPC_ARGS,
+  MAX_RPC_ARGS_CHARS,
+  MAX_RPC_IN_FLIGHT,
 } from '../../electron/script-runner/rpcSurface';
 
 const sorted = (s: ReadonlySet<string>): string[] => [...s].sort((a, b) => a.localeCompare(b));
@@ -136,5 +138,10 @@ describe('rpcSurface', () => {
 
   it('caps the argument count', () => {
     expect(MAX_RPC_ARGS).toBe(16);
+  });
+
+  it('caps the argument text and the calls in flight', () => {
+    expect(MAX_RPC_ARGS_CHARS).toBe(16 * 1024 * 1024);
+    expect(MAX_RPC_IN_FLIGHT).toBe(64);
   });
 });

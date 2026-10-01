@@ -135,3 +135,13 @@ export const COLLECTION_ACK_METHODS: ReadonlySet<string> = new Set(['rename']);
 
 /** Longest `argsEjson` array a frame may carry. */
 export const MAX_RPC_ARGS = 16;
+
+/** Longest `argsEjson` text a frame may carry, in characters, checked before it is parsed. */
+export const MAX_RPC_ARGS_CHARS = 16 * 1024 * 1024;
+
+/**
+ * Calls one run may have outstanding at once. A script that posts more is
+ * answered with an error for the excess, so it cannot queue unbounded work on
+ * main's shared pool client.
+ */
+export const MAX_RPC_IN_FLIGHT = 64;
