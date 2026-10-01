@@ -56,6 +56,24 @@ export function carryResultFields(
 }
 
 /**
+ * A tab patch lands in local state at once but reaches main only after the
+ * debounce, so a list fetched in that window is stale for every field the
+ * patch touched (page, query text, aggregation stages ...). Layering the
+ * still-pending patches over the listed tabs makes the list agree with local
+ * state again; `carryResultFields` then runs against the same pipeline, not a
+ * stale one. Never mutates its inputs.
+ */
+export function applyPendingPatches(
+  list: readonly WorkspaceTab[],
+  pending: ReadonlyMap<string, object>,
+): WorkspaceTab[] {
+  return list.map((t): WorkspaceTab => {
+    const patch = pending.get(t.id);
+    return patch ? ({ ...t, state: { ...t.state, ...patch } } as WorkspaceTab) : t;
+  });
+}
+
+/**
  * Drops the result-bearing keys from a pending state patch before it is sent
  * to main. Mirrors `stripResultFields` in `electron/services/tabStateResults.ts`
  * (the renderer cannot import from `electron/`); main remains the guarantee.
