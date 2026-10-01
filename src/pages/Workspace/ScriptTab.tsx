@@ -59,14 +59,16 @@ function ScriptTabInner({ tab, onPatch }: ScriptTabProps) {
   React.useEffect(() => {
     let cancelled = false;
     const dbName = state.dbName?.trim() || 'test';
-    (async () => {
+    void (async () => {
       try {
         const rows = await api.meta.listCollections({
           connectionId: tab.connectionId,
           dbName,
         });
         if (!cancelled) setCollections(rows.map((r) => r.name));
-      } catch {
+      } catch (err) {
+        // Completion falls back to no collection names; the script still runs.
+        console.warn('[script] could not list collections for completion', err);
         if (!cancelled) setCollections([]);
       }
     })();

@@ -76,7 +76,7 @@ export function DeleteConfirm({
   React.useEffect(() => {
     if (!isMulti) return;
     let ignore = false;
-    (async () => {
+    void (async () => {
       try {
         const { count, confirmToken } = await api.doc.confirmDeleteMany({
           connectionId,

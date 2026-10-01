@@ -39,25 +39,28 @@ export function useTheme(): [boolean, () => void] {
   // One-time migration from localStorage → app_state, then load the canonical mode.
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       const legacy = typeof localStorage !== 'undefined' ? localStorage.getItem(LEGACY_LS_KEY) : null;
       if (legacy === 'dark' || legacy === 'light') {
         try {
           await api.prefs.setTheme(legacy);
-        } catch {
-          // ignore migration errors
+        } catch (err) {
+          // Non-fatal: the legacy value is dropped below either way and the
+          // canonical mode is read next.
+          console.warn('[theme] legacy theme migration failed', err);
         }
         try {
           localStorage.removeItem(LEGACY_LS_KEY);
-        } catch {
-          /* ignore */
+        } catch (err) {
+          console.warn('[theme] could not clear the legacy theme key', err);
         }
       }
       try {
         const stored = await api.prefs.getTheme();
         if (!cancelled) setMode(stored);
-      } catch {
-        // keep current value
+      } catch (err) {
+        // Keep the current mode rather than flashing to a default.
+        console.warn('[theme] could not load the stored theme', err);
       }
     })();
     return () => {

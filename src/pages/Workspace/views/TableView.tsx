@@ -271,7 +271,9 @@ function TableCell({
       commitGuardRef.current = true;
       setEditing(false);
       setInputError(null);
-      actions.updateField?.(doc, fieldPath, parsed.value);
+      // `updateField` never rejects: its own `.catch` reports the failure
+      // through `notify.error`, so there is nothing left to handle here.
+      void actions.updateField?.(doc, fieldPath, parsed.value);
       return;
     }
     commitGuardRef.current = true;
@@ -279,7 +281,7 @@ function TableCell({
     // An unchanged value still reaches `updateField`, which is now the same
     // guarded builder the Document Editor uses (W18 §5b: an empty diff sends
     // no request) — one no-op rule instead of a second one duplicated here.
-    actions.updateField?.(doc, fieldPath, draft);
+    void actions.updateField?.(doc, fieldPath, draft);
   };
 
   // S9379 — an `autoFocus` attribute is a Sonar finding regardless of intent;
