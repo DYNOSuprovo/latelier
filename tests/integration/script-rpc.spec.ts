@@ -154,7 +154,7 @@ describe('read-only is refused by main, whichever way the script reaches the wri
   });
 
   it('every route that runs a call is answered by main with a read-only error', async () => {
-    const s = setup();
+    setup();
     const refused = [
       "await db.rpc_ro.insertOne({ n: 1 })",
       "await db.admin().listDatabases()",
@@ -167,7 +167,6 @@ describe('read-only is refused by main, whichever way the script reaches the wri
     const errors = sentToChild().filter((m) => m.type === 'rpc-error') as Array<{ error: { name: string } }>;
     expect(errors).toHaveLength(refused.length);
     expect(errors.every((e) => e.error.name === 'ReadOnlyConnectionError')).toBe(true);
-    void s;
   });
 
   it('the driver internals a cursor or collection keeps are not reachable at all', async () => {
@@ -213,10 +212,9 @@ describe('read-only is refused by main, whichever way the script reaches the wri
   });
 
   it('the same write is fine on the writable connection', async () => {
-    const s = setup();
+    setup();
     expect(await outcome('rw', "await db.rpc_ro_ok.insertOne({ n: 1 })")).toBe('completed');
     expect(await countDocs('rpc_ro_ok')).toBeGreaterThan(0);
-    void s;
   });
 });
 
@@ -438,7 +436,7 @@ describe('no credential is ever sent to the child', () => {
   });
 
   it('not in an error a script provokes: a failed connection-level call reports no URI or password', async () => {
-    const s = setup();
+    setup();
     const sentinel = 'pw-SENTINEL-errs';
     const result = await outcome('rw', "await db.runCommand({ definitelyNotACommand: 1 })");
     expect(result).not.toContain(sentinel);
@@ -447,7 +445,6 @@ describe('no credential is ever sent to the child', () => {
     expect(errors).toHaveLength(1);
     expect(JSON.stringify(errors)).not.toContain('mongodb://');
     expect('stack' in (errors[0] as { error: object }).error).toBe(false);
-    void s;
   });
 });
 
@@ -685,7 +682,7 @@ describe('cursors', () => {
   });
 
   it('a script cannot open more cursors than the cap', async () => {
-    const s = setup();
+    setup();
     const result = await outcome(
       'rw',
       `for (let i = 0; i < 300; i++) { await db.rpc_cur_cap.find().batchSize(1).hasNext(); }`,
@@ -705,14 +702,19 @@ describe('a kill stops the work main started for the script', () => {
         .toArray();
       return ops.length;
     };
-    await expect(
-      s.run({
-        connectionId: 'rw',
-        source: 'await db.rpc_slow.find({ $where: "sleep(4000) || true" }).maxTimeMS(6000).toArray()',
-        maxTimeMs: 700,
-      }),
-    ).rejects.toMatchObject({ code: 'TIMEOUT' });
-    await until(async () => (await slowOps()) === 0, 'the abandoned operation to stop', 4_000);
+    const running = s.run({
+      connectionId: 'rw',
+      // Long enough that the server would still be working well after the test is over.
+      source: 'await db.rpc_slow.find({ $where: "sleep(20000) || true" }).maxTimeMS(30000).toArray()',
+      maxTimeMs: 1500,
+    });
+    const settled = running.then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+    await until(async () => (await slowOps()) === 1, 'the operation to start on the server');
+    expect(await settled).toMatchObject({ code: 'TIMEOUT' });
+    await until(async () => (await slowOps()) === 0, 'the abandoned operation to stop', 5_000);
     expect(await slowOps()).toBe(0);
   }, 30_000);
 });

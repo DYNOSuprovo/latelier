@@ -73,6 +73,63 @@ test('script.run returns valueJson and captures print() over the real preload', 
 });
 
 /**
+ * The database bridge over the real utility process: the runner holds no
+ * client, so every call here crosses `process.parentPort` to main and back.
+ * The Node-fork integration suite covers the semantics; this is the one place
+ * the Electron channel itself (message events carrying `{ data }`) is
+ * exercised, and where a read-only connection refuses a write end to end.
+ */
+test('a script reads and writes through the bridge, and a read-only connection refuses the write', async () => {
+  const { host, port } = await startMemoryServer();
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    const result = await win.evaluate(
+      async ({ host, port, conn }) => {
+        const api = (window as unknown as {
+          atelier: {
+            conn: {
+              create: (input: unknown) => Promise<{ id: string }>;
+              update: (id: string, patch: unknown) => Promise<unknown>;
+            };
+            mongo: { connect: (id: string) => Promise<{ status: string }> };
+            script: {
+              run: (input: { connectionId: string; source: string }) => Promise<{ valueJson: string | null }>;
+            };
+          };
+        }).atelier;
+
+        const created = await api.conn.create({ ...conn, host, port });
+        await api.mongo.connect(created.id);
+
+        const wrote = await api.script.run({
+          connectionId: created.id,
+          source:
+            'await db.bridge_e2e.deleteMany({}); await db.bridge_e2e.insertOne({ n: 1 }); (await db.bridge_e2e.find().toArray()).length',
+        });
+        await api.conn.update(created.id, { readOnly: true });
+        const refused = await api.script
+          .run({ connectionId: created.id, source: 'await db.bridge_e2e.insertOne({ n: 2 })' })
+          .then(() => ({ rejected: false as const }))
+          .catch((e: { code?: string }) => ({ rejected: true as const, code: e.code }));
+        const read = await api.script.run({
+          connectionId: created.id,
+          source: 'await db.bridge_e2e.countDocuments({})',
+        });
+        return { wrote: wrote.valueJson, refused, read: read.valueJson };
+      },
+      { host, port, conn: baseConnInput(host, port) },
+    );
+
+    expect(result.wrote).toBe('1');
+    expect(result.refused).toEqual({ rejected: true, code: 'READ_ONLY' });
+    // The refused insert never landed: still one document.
+    expect(result.read).toBe('1');
+  });
+});
+
+/**
  * A script that only ever awaits resolved promises never lets the event loop
  * turn. Run in the main process it froze every IPC call; the runner is a
  * separate process that main kills on the wall clock, so the app must keep
