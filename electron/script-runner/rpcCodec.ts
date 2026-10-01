@@ -1,4 +1,4 @@
-import { Double, Int32 } from 'bson';
+import { Binary, Double, Int32 } from 'bson';
 
 /**
  * The one number rule for values crossing the script bridge.
@@ -65,16 +65,23 @@ function isInt32(n: number): boolean {
  * An actual `Long` is a BSON value and is left alone, so a value past 2^53
  * keeps its type.
  *
+ * A `Uint8Array` (a `Buffer` is one) becomes a `Binary`, as the driver would
+ * have written it: left as it is, EJSON would encode it as a plain document of
+ * index keys and the stored type would be lost. Only arguments carry one; a
+ * result holds the `Binary` the driver already made.
+ *
  * Copies what it walks (arrays and ordinary documents), so a script's own
- * objects are never changed. Anything else, BSON values, dates and binary
- * data included, is passed through as it is.
+ * objects are never changed. Anything else, BSON values and dates included,
+ * is passed through as it is.
  */
 export function markWideIntegers(value: unknown): unknown {
   if (typeof value === 'number') return isWideInteger(value) ? new Double(value) : value;
   if (Array.isArray(value)) return value.map(markWideIntegers);
   if (value === null || typeof value !== 'object' || '_bsontype' in value) return value;
   // The tag, not the prototype: a script's objects come from another realm.
-  if (Object.prototype.toString.call(value) !== '[object Object]') return value;
+  const tag = Object.prototype.toString.call(value);
+  if (tag === '[object Uint8Array]') return new Binary(value as Uint8Array);
+  if (tag !== '[object Object]') return value;
   const doc: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
     Object.defineProperty(doc, key, {

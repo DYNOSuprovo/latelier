@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { MongoClient } from 'mongodb';
-import { Long } from 'bson';
+import { Binary, Long } from 'bson';
 import type { MongoMemoryServer } from 'mongodb-memory-server';
 import { ScriptService } from '../../electron/services/ScriptService';
 import { MongoPool } from '../../electron/mongo/MongoPool';
@@ -551,6 +551,35 @@ describe('what the script sees of the database is what the driver returns', () =
     expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual({ oid: true, at: true, dec: '12.50', bin: 'hello', re: '^a+b$/i' });
   });
 
+  it('a Uint8Array and a Buffer are written as binary data, at any depth, as the driver would', async () => {
+    const s = setup();
+    await direct!.db(DB).collection('rpc_bytes').deleteMany({});
+    await s.run({
+      connectionId: 'rw',
+      // The sandbox has no Buffer global; a Binary's own buffer is one.
+      source: `await db.rpc_bytes.insertOne({ _id: 'a', bytes: new Uint8Array([1, 2, 3]), nested: { list: [new Binary(new Uint8Array([4, 5])).buffer] } }); 1`,
+    });
+    const stored = await direct!.db(DB).collection<{ bytes: Binary; nested: { list: Binary[] } }>('rpc_bytes').findOne({ _id: 'a' as never });
+    expect(stored!.bytes._bsontype).toBe('Binary');
+    expect(stored!.bytes.sub_type).toBe(0);
+    expect([...stored!.bytes.buffer]).toEqual([1, 2, 3]);
+    expect(stored!.nested.list[0]!._bsontype).toBe('Binary');
+    expect([...stored!.nested.list[0]!.buffer]).toEqual([4, 5]);
+  });
+
+  it('a regular expression stored in a document comes back through distinct as a RegExp', async () => {
+    const s = setup();
+    await direct!.db(DB).collection('rpc_re_distinct').deleteMany({});
+    await direct!.db(DB).collection('rpc_re_distinct').insertOne({ re: /^a+b$/i });
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `const vals = await db.rpc_re_distinct.distinct('re');
+        JSON.stringify(vals.map((v) => [v.constructor.name, String(v.pattern ?? v.source), String(v.options ?? v.flags)]))`,
+    });
+    const [[type, pattern, flags]] = JSON.parse(JSON.parse(r.valueJson!) as string) as string[][];
+    expect([type, pattern, flags]).toEqual(['BSONRegExp', '^a+b$', 'i']);
+  });
+
   it('a filter with $regex and $options is a filter, not a regular expression value', async () => {
     const s = setup();
     const r = await s.run({
@@ -819,6 +848,63 @@ describe('cursors', () => {
     });
     await until(async () => (await open()) <= before, 'the cursor to be closed');
     expect(await open()).toBeLessThanOrEqual(before);
+  });
+
+  it('a regular cursor read to the end with tryNext gives its slot back, so a live tailable cursor is never evicted', async () => {
+    const s = setup();
+    await seed(s, 'rpc_cur_try', 3);
+    await direct!.db(DB).collection('rpc_tail_slot').drop().catch(() => undefined);
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `(async () => {
+        await db.createCollection('rpc_tail_slot', { capped: true, size: 65536 });
+        await db.rpc_tail_slot.insertOne({ n: 1 });
+        const tail = db.rpc_tail_slot.find({}, { tailable: true });
+        await tail.tryNext();
+        // 300 cursors read to the end and never closed: past the cap if the handles were kept,
+        // and the oldest handle (the tailable one) would be the one evicted.
+        let complete = true;
+        let last;
+        for (let i = 0; i < 300; i++) {
+          const c = db.rpc_cur_try.find().batchSize(1);
+          let n = 0;
+          while ((await c.tryNext()) !== null) n++;
+          if (n !== 3) complete = false;
+          last = c;
+        }
+        await last.close();
+        await db.rpc_tail_slot.insertOne({ n: 2 });
+        const next = await tail.tryNext();
+        await tail.close();
+        return JSON.stringify({ complete, next: next.n });
+      })()`,
+      maxTimeMs: 30_000,
+    });
+    expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual({ complete: true, next: 2 });
+  });
+
+  it('a tailable cursor survives an empty tryNext, yields the next insert, and still closes', async () => {
+    const s = setup();
+    await direct!.db(DB).collection('rpc_tail').drop().catch(() => undefined);
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `(async () => {
+        await db.createCollection('rpc_tail', { capped: true, size: 65536 });
+        await db.rpc_tail.insertOne({ n: 1 });
+        const open = async () => Number((await db.getSiblingDB('admin').runCommand({ serverStatus: 1 })).metrics.cursor.open.total);
+        const before = await open();
+        const c = db.rpc_tail.find({}, { tailable: true });
+        const first = await c.tryNext();
+        const empty = await c.tryNext();
+        await db.rpc_tail.insertOne({ n: 2 });
+        const second = await c.tryNext();
+        const held = await open();
+        await c.close();
+        return JSON.stringify({ first: first.n, empty, second: second.n, held: held - before, left: (await open()) - before });
+      })()`,
+      maxTimeMs: 20_000,
+    });
+    expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual({ first: 1, empty: null, second: 2, held: 1, left: 0 });
   });
 
   it('a run that is killed leaves no cursor open either', async () => {

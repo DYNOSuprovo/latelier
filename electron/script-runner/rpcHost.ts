@@ -72,6 +72,13 @@ export interface RpcHost {
 
 export function createRpcHost(opts: RpcHostOpts): RpcHost {
   const cursors = new Map<string, Bag>();
+  /**
+   * Ids of cursors freed because tryNext() found them exhausted. The script
+   * cannot tell that from an empty tailable batch, so it may still close()
+   * one; that must stay a no-op, not an unknown-cursor error. Bounded like
+   * the cursor table.
+   */
+  const exhausted = new Set<string>();
   let closed = false;
   let inFlight = 0;
 
@@ -149,17 +156,27 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
         if (!shaping) requireMember(CURSOR_TERMINAL_METHODS, method, 'cursor');
         const cursorId = requireString(frame.cursorId, 'cursorId');
         const cursor = cursors.get(cursorId);
-        if (cursor === undefined) throw new ValidationError('rpc: unknown cursor');
+        if (cursor === undefined) {
+          if (method === 'close' && exhausted.has(cursorId)) return ok(id, undefined);
+          throw new ValidationError('rpc: unknown cursor');
+        }
         const args = parseArgs(frame.argsEjson);
         const out = member(cursor, method)(...args);
         if (shaping) return ok(id, undefined);
         const value = await out;
         // Finished cursors give their slot back: toArray exhausts one, close
-        // ends one, and a read that finds nothing left means the same.
-        if (
+        // ends one, and a read that finds nothing left means the same. The
+        // driver's next() and hasNext() only answer that way once the cursor is
+        // dead. tryNext() answers null for an empty tailable batch too, so it
+        // only frees a cursor the driver reports closed.
+        if (method === 'tryNext' && value === null && cursor.closed === true) {
+          cursors.delete(cursorId);
+          exhausted.add(cursorId);
+          if (exhausted.size > MAX_OPEN_CURSORS) exhausted.delete(exhausted.values().next().value as string);
+        } else if (
           method === 'toArray' ||
           method === 'close' ||
-          ((method === 'next' || method === 'tryNext') && value === null) ||
+          (method === 'next' && value === null) ||
           (method === 'hasNext' && value === false)
         ) {
           cursors.delete(cursorId);
@@ -257,11 +274,11 @@ function rpcError(id: number, err: unknown): RpcReply {
   return { type: 'rpc-error', id, error: wire };
 }
 
-/** A value is data when it is a primitive, an array, a plain document or a BSON/Date value. */
+/** A value is data when it is a primitive, an array, a plain document or a BSON/Date/RegExp value. */
 function isPlainData(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
   if (Array.isArray(value)) return true;
-  if (value instanceof Date) return true;
+  if (value instanceof Date || value instanceof RegExp) return true;
   if ('_bsontype' in value) return true;
   const proto = Object.getPrototypeOf(value) as unknown;
   return proto === Object.prototype || proto === null;
