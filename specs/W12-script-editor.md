@@ -215,6 +215,17 @@ Main answers in `electron/script-runner/rpcHost.ts`. A frame never says
   `Collection`, a change stream) is refused rather than serialized, and
   `createCollection`/`rename` answer `{ ok: 1 }`. A result over the 50 MB
   cap is an error the script can catch.
+  A call's result is encoded in main, synchronously, on main's event
+  loop: about 50 ms for a 10 MB result, growing toward the 50 MB cap, and
+  the wall-clock kill does not bound it (it can only act between event
+  loop turns). This is the same trade as the UI query path, which encodes
+  its results in main the same way.
+- **A script cannot flood main.** A run may have at most 64 calls
+  outstanding (`MAX_RPC_IN_FLIGHT`); a frame past that is answered with an
+  `rpc-error` ('rpc: too many calls in flight') and the run goes on. An
+  `argsEjson` longer than 16 MiB characters (`MAX_RPC_ARGS_CHARS`) is
+  refused before it is parsed. These bound the work one run can queue on
+  the shared pool client; they are not a rate limit.
 - **Arguments** are parsed with the shape-exact EJSON parser, so a
   filter such as `{ $regex, $options }` stays a filter. Numbers keep the
   type the driver would have given them (`rpcCodec.ts`): results are
