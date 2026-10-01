@@ -4,15 +4,18 @@ import {
   dialog,
   globalShortcut,
   ipcMain,
+  Menu,
   nativeTheme,
   safeStorage,
   screen,
+  session,
+  type WebContents,
 } from 'electron';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { openDatabase, closeDatabase } from './db/sqlite.ts';
+import { openDatabase, closeDatabase, truncateWal } from './db/sqlite.ts';
 import { AppStateRepo } from './db/repositories/AppStateRepo.ts';
 import { AppStateService } from './services/AppStateService.ts';
 import { SecretsVault } from './secrets/SecretsVault.ts';
@@ -23,6 +26,7 @@ import {
   connectionReader,
 } from './mongo/ConnectionService.ts';
 import { registerConnChannels } from './ipc/handlers/conn.ts';
+import { createPickedCredentialPaths } from './security/credentialPaths.ts';
 import { registerAppChannels, saveFilters } from './ipc/handlers/app.ts';
 import { registerMongoChannels } from './ipc/handlers/mongo.ts';
 import { registerMetaChannels } from './ipc/handlers/meta.ts';
@@ -30,6 +34,8 @@ import { registerIndexChannels } from './ipc/handlers/indexes.ts';
 import { registerCollectionAdminChannels } from './ipc/handlers/collectionAdmin.ts';
 import { registerUserChannels } from './ipc/handlers/users.ts';
 import { registerPrefsChannels } from './ipc/handlers/prefs.ts';
+import { registerSecretsChannels } from './ipc/handlers/secrets.ts';
+import { PLAINTEXT_FALLBACK_KEY } from './ipc/prefKeys.ts';
 import { registerTabsChannels } from './ipc/handlers/tabs.ts';
 import { registerQueryChannels } from './ipc/handlers/query.ts';
 import { registerDocChannels } from './ipc/handlers/doc.ts';
@@ -41,7 +47,9 @@ import { registerMshellChannels, makeMshellEmitter } from './ipc/handlers/mshell
 import { ShellService } from './services/ShellService.ts';
 import { registerScriptChannels } from './ipc/handlers/script.ts';
 import { ScriptService } from './services/ScriptService.ts';
+import { createUtilityProcessSpawner } from './services/runner/utilityProcessSpawner.ts';
 import { DiagnosticService } from './services/DiagnosticService.ts';
+import { vaultSafeStorage, selectedBackend } from './secrets/keychainAvailability.ts';
 import { registerRefsChannels } from './ipc/handlers/refs.ts';
 import { ReferenceRulesRepo } from './db/repositories/ReferenceRulesRepo.ts';
 import { ReferenceRulesService } from './services/ReferenceRulesService.ts';
@@ -61,15 +69,19 @@ import { RecentFieldValueService } from './services/RecentFieldValueService.ts';
 import { MaintenanceService } from './services/MaintenanceService.ts';
 import { AuditRepo } from './db/repositories/AuditRepo.ts';
 import { AuditService } from './services/AuditService.ts';
+import { UndoStore } from './services/UndoStore.ts';
 import { registerAuditChannels } from './ipc/handlers/audit.ts';
 import { registerDataChannels, makeDataEmitter } from './ipc/handlers/data.ts';
 import { ImportService } from './mongo/ImportService.ts';
 import { DEFAULT_EXPORT_CAP, QueryService } from './mongo/QueryService.ts';
 import { DocumentService } from './mongo/DocumentService.ts';
 import { createLogger, type Logger } from './log.ts';
+import { PrivateModeError } from './utils/privateFs.ts';
 import { createRouter } from './ipc/router.ts';
 import { senderCheck } from './ipc/senderGuard.ts';
 import { makeAppLocationCheck } from './security/appLocation.ts';
+import { installPermissionHandlers } from './security/permissions.ts';
+import { buildAppMenuTemplate } from './security/appMenu.ts';
 import { IPC_CHANNELS } from '@shared/ipc';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -115,10 +127,17 @@ if (APP_ICON_AVAILABLE && process.platform === 'darwin' && app.dock) {
 // in parallel, the test instance loses the lock and calls `app.quit()`,
 // which Playwright surfaces as "Target page, context or browser has been
 // closed" before any window appears. Skip the lock under the test harness
-// — each e2e instance has its own throwaway userData dir, so the data
-// isolation the lock normally protects is already guaranteed.
-const isTestInstance =
-  process.env.NODE_ENV === 'test' && !!process.env.ATELIER_USER_DATA_DIR;
+// — each e2e instance has its own throwaway userData dir, enforced by
+// app.setPath('userData', ...) below.
+const testUserDataDir =
+  process.env.NODE_ENV === 'test' ? process.env.ATELIER_USER_DATA_DIR : undefined;
+const isTestInstance = !!testUserDataDir;
+
+// A test run must touch nothing outside its throwaway dir. Redirecting only
+// the app's own database (resolveUserDataDir) left Chromium's profile (Local
+// Storage, caches) in the real ~/Library/Application Support/L'Atelier.
+if (testUserDataDir) app.setPath('userData', testUserDataDir);
+
 if (!isTestInstance) {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
@@ -248,13 +267,17 @@ function contentSecurityPolicy(dev: boolean): string {
   ].join('; ');
 }
 
-function hardenWindow(w: BrowserWindow): void {
+/**
+ * Session-wide hardening, installed once before any window exists. Everything
+ * here runs on the default session — the app never creates another partition.
+ */
+function hardenSession(): void {
   const dev = !!VITE_DEV_SERVER_URL;
 
   // Serve the policy as a header rather than a <meta> tag: one document, two
   // origins (the dev server over http, the build over file:), and a meta tag
   // would have to carry the looser of the two policies into the shipped app.
-  w.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -263,21 +286,33 @@ function hardenWindow(w: BrowserWindow): void {
     });
   });
 
+  installPermissionHandlers(session.defaultSession);
+}
+
+/**
+ * Applied to every webContents via `web-contents-created`, the main window
+ * included, so a window or view added later inherits the guard instead of
+ * needing someone to remember to call it.
+ */
+function guardWebContents(wc: WebContents): void {
   // Nothing in this app opens a second window. Denying by default means a
   // window.open or a target=_blank that slipped past review cannot spawn one
   // with this app's privileges. External links go through app:openExternal,
   // which validates the protocol and hands off to the system browser.
-  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   // Top-level navigation is likewise never legitimate here — the renderer is a
   // single-page app. Without this, a link click could replace the app with a
   // remote page that still holds the preload bridge.
-  w.webContents.on('will-navigate', (event, url) => {
+  wc.on('will-navigate', (event, url) => {
     if (!isAppLocation(url)) {
       event.preventDefault();
       log?.warn('window', 'blocked navigation', { url });
     }
   });
+
+  // No <webview> anywhere in the app; one would get its own renderer process.
+  wc.on('will-attach-webview', (event) => event.preventDefault());
 }
 
 function createWindow(): void {
@@ -309,11 +344,11 @@ function createWindow(): void {
       // this up, and the OS-level sandbox is worth more than the convenience.
       sandbox: true,
       webSecurity: true,
+      // Blocks Cmd/Ctrl+Alt+I and programmatic openDevTools in a shipped build.
+      devTools: !app.isPackaged,
       preload: path.join(MAIN_DIST, 'preload.cjs'),
     },
   });
-
-  hardenWindow(win);
 
   win.once('ready-to-show', () => {
     const w = win;
@@ -437,7 +472,7 @@ function registerDevResetShortcut(): void {
     fs.rmSync(path.join(userDataDir, 'mongolab.db'), { force: true });
     fs.rmSync(path.join(userDataDir, 'mongolab.db-wal'), { force: true });
     fs.rmSync(path.join(userDataDir, 'mongolab.db-shm'), { force: true });
-    db = openDatabase({ userDataDir });
+    db = openDatabase({ userDataDir, log: log ?? undefined });
     appState = new AppStateService(new AppStateRepo(db));
     if (pool) {
       void pool.disconnectAll();
@@ -480,15 +515,30 @@ app.whenReady().then(() => {
   log = createLogger(userDataDir, { level: app.isPackaged ? 'info' : 'debug' });
   log.info('boot', 'starting', { userDataDir, platform: process.platform });
 
+  // Security posture first: nothing may create a webContents before these are
+  // in place. The listener also fires for the main window.
+  hardenSession();
+  app.on('web-contents-created', (_e, wc) => guardWebContents(wc));
+  // The default menu carries View > Toggle Developer Tools and Reload. Dev
+  // keeps it; a packaged build gets a role-based menu without a View menu.
+  if (app.isPackaged) {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(buildAppMenuTemplate(process.platform === 'darwin', app.name)),
+    );
+  }
+
   // 1. DB + migrations
   try {
-    db = openDatabase({ userDataDir });
+    db = openDatabase({ userDataDir, log });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('boot', 'db open failed', { message });
     dialog.showErrorBox(
       "L'Atelier failed to start",
-      `Could not open the database.\n\n${message}\n\nYou may need to delete:\n${userDataDir}/mongolab.db`,
+      // Deleting the DB does not fix a permissions problem on a healthy one.
+      err instanceof PrivateModeError
+        ? `Could not open the database.\n\n${message}`
+        : `Could not open the database.\n\n${message}\n\nYou may need to delete:\n${userDataDir}/mongolab.db`,
     );
     app.exit(1);
     return;
@@ -510,16 +560,13 @@ app.whenReady().then(() => {
 
   // 3. Secrets
   const appStateRef = appState;
+  const vaultCrypto = vaultSafeStorage(safeStorage, process.platform);
   vault = new SecretsVault(
     db,
-    {
-      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-      encryptString: (s) => safeStorage.encryptString(s),
-      decryptString: (b) => safeStorage.decryptString(b),
-    },
+    vaultCrypto,
     {
       getAllowPlaintext: () =>
-        appStateRef.get<boolean>('secrets.allowPlaintextFallback') === true,
+        appStateRef.get<boolean>(PLAINTEXT_FALLBACK_KEY) === true,
     },
   );
 
@@ -539,7 +586,7 @@ app.whenReady().then(() => {
   // captured — and it is re-read per message, which is what keeps it correct
   // across a reload.
   const auditRepo = new AuditRepo(db);
-  const auditSvc = new AuditService(auditRepo, pool, log);
+  const auditSvc = new AuditService(auditRepo, pool, new UndoStore(), log);
   const router = createRouter(
     ipcMain,
     senderCheck(() => win?.webContents.mainFrame ?? null, isAppLocation),
@@ -563,22 +610,57 @@ app.whenReady().then(() => {
   const indexSvc = new IndexService(pool);
   const collectionAdminSvc = new CollectionAdminService(pool);
   const userSvc = new UserService(pool);
-  const maintenance = new MaintenanceService(recentRepo, auditRepo);
+  const checkpointDb = db;
+  const checkpointLog = log;
+  const maintenance = new MaintenanceService({
+    recentRepo,
+    recentFieldValueRepo,
+    auditRepo,
+    checkpoint: () => {
+      if (!truncateWal(checkpointDb)) checkpointLog.warn('maintenance', 'wal checkpoint was blocked');
+    },
+  });
   maintenance.runIfNeeded(appState);
 
-  const diagnostic = new DiagnosticService({ userDataDir, connRepo });
+  const diagnostic = new DiagnosticService({
+    userDataDir,
+    connRepo,
+    secretsStatus: () => ({
+      encryptionAvailable: vaultCrypto.isEncryptionAvailable(),
+      backend: selectedBackend(safeStorage, process.platform),
+    }),
+  });
 
-  registerConnChannels(router, connSvc);
+  const pickedCredentialPaths = createPickedCredentialPaths();
+  registerConnChannels(router, connSvc, pickedCredentialPaths);
   // Filled by the open dialog, read by the data channels: the only files an
   // import may read are ones the user picked in main's own dialog.
   const pickedImports = new Set<string>();
-  registerAppChannels(router, () => win, pickedImports, diagnostic);
+  registerAppChannels(router, () => win, pickedImports, pickedCredentialPaths, diagnostic);
   registerMongoChannels(router, pool, () => win?.webContents ?? null);
   registerMetaChannels(router, metaSvc);
   registerIndexChannels(router, indexSvc);
   registerCollectionAdminChannels(router, collectionAdminSvc);
   registerUserChannels(router, userSvc);
   registerPrefsChannels(router, appState, () => win?.webContents ?? null);
+  // The renderer cannot write this switch through prefs:set; this dialog is
+  // the only way to turn it on, and a compromised renderer cannot answer it.
+  registerSecretsChannels(router, appState, async () => {
+    const options = {
+      type: 'warning' as const,
+      buttons: ['Cancel', 'Store unencrypted'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Store passwords unencrypted?',
+      message: 'Store connection passwords without encryption?',
+      detail:
+        'No OS keychain is available. Passwords you save will be written to disk as plain text, readable by anyone or anything that can read your user data folder.',
+    };
+    const result = await (win
+      ? dialog.showMessageBox(win, options)
+      : dialog.showMessageBox(options));
+    return result.response === 1;
+  });
   registerTabsChannels(router, tabsSvc);
   // Same window-lookup + `saveFilters` pattern as `app.ts`'s `saveFile`,
   // kept as a closure here rather than an import into query.ts so that file
@@ -601,14 +683,21 @@ app.whenReady().then(() => {
   registerAggChannels(router, aggSvc);
   registerShellChannels(router);
 
+  // One spawner for both: scripts and shell sessions fork the same bundled entry.
+  const runnerSpawner = createUtilityProcessSpawner(path.join(MAIN_DIST, 'script-runner.cjs'));
   mshellSvc = new ShellService({
     pool,
+    spawner: runnerSpawner,
     emit: makeMshellEmitter(() => win?.webContents ?? null),
     log,
   });
   registerMshellChannels(router, mshellSvc);
 
-  scriptSvc = new ScriptService({ pool });
+  scriptSvc = new ScriptService({
+    pool,
+    spawner: runnerSpawner,
+    logger: log,
+  });
   registerScriptChannels(router, scriptSvc);
 
   const refsRepo = new ReferenceRulesRepo(db);

@@ -20,7 +20,7 @@ describe('migrationRunner', () => {
   it('applies migrations in order and advances schema_version', () => {
     const db = new BetterSqlite3(tmpFile());
     opened.push(db);
-    runMigrations(db, [
+    const ran = runMigrations(db, [
       {
         version: 1,
         name: '001-init.sql',
@@ -38,6 +38,7 @@ describe('migrationRunner', () => {
     ]);
     const v = db.prepare('SELECT version FROM schema_version').get() as { version: number };
     expect(v.version).toBe(2);
+    expect(ran).toBe(2);
     expect(
       db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='t2'").get(),
     ).toBeDefined();
@@ -55,8 +56,8 @@ describe('migrationRunner', () => {
               UPDATE schema_version SET version = 1;`,
       },
     ];
-    runMigrations(db, migs);
-    runMigrations(db, migs);
+    expect(runMigrations(db, migs)).toBe(1);
+    expect(runMigrations(db, migs)).toBe(0);
     const v = db.prepare('SELECT version FROM schema_version').get() as { version: number };
     expect(v.version).toBe(1);
   });

@@ -10,6 +10,7 @@ import type { Logger } from '../log.ts';
 import { ejsonParse, ejsonStringify } from '../mongo/ejson.ts';
 import { classifyMongoOpError } from '../mongo/errors.ts';
 import { QUERY_TIMEOUT_MS } from '../mongo/timeouts.ts';
+import type { UndoStore } from './UndoStore.ts';
 import { asStored, assertUndoable, undoCaptureOf, EXACT_BSON, importDigest, type UndoCapture } from '../mongo/undo.ts';
 
 /** Ids are chunked into reads/deletes this large — matches `insertBatch`'s write-side batch size. */
@@ -17,7 +18,7 @@ const UNDO_ID_CHUNK = 1000;
 
 const DEFAULT_LIST_LIMIT = 100;
 
-function toEntry(row: AuditRow): AuditEntry {
+function toEntry(row: AuditRow, undoable: boolean): AuditEntry {
   return {
     id: row.id,
     connectionId: row.connection_id,
@@ -29,18 +30,26 @@ function toEntry(row: AuditRow): AuditEntry {
     ...(row.error_code !== null ? { errorCode: row.error_code } : {}),
     ranAt: row.ran_at,
     durationMs: row.duration_ms,
-    reversible: row.reversible === 1,
+    reversible: row.reversible === 1 && undoable,
     ...(row.undone_at !== null ? { undoneAt: row.undone_at } : {}),
   };
 }
 
+/**
+ * Pre-images are held in `store` (memory) and never written to SQLite, so
+ * Undo works for the running session only, and only for recent entries: after a
+ * restart, or once the store evicts one, an entry is still listed but no longer
+ * Reversible, and `undo` refuses it as expired.
+ */
 export class AuditService {
   private repo: AuditRepo;
   private pool: MongoPool;
+  private store: UndoStore;
   private log: Logger | undefined;
-  constructor(repo: AuditRepo, pool: MongoPool, log?: Logger) {
+  constructor(repo: AuditRepo, pool: MongoPool, store: UndoStore, log?: Logger) {
     this.repo = repo;
     this.pool = pool;
+    this.store = store;
     this.log = log;
   }
 
@@ -97,8 +106,10 @@ export class AuditService {
       duration_ms: durationMs,
       reversible: undoJson !== null ? 1 : 0,
       undone_at: null,
-    }, undoJson);
-    return undoJson !== null ? id : null;
+    });
+    if (undoJson === null) return null;
+    this.store.put(id, rec.connectionId, undoJson);
+    return id;
   }
 
   /**
@@ -108,10 +119,11 @@ export class AuditService {
   async undo(input: { entryId: string }): Promise<UndoResult> {
     const row = this.repo.findForUndo(input.entryId);
     if (!row) throw new NotFoundError(`audit entry ${input.entryId} not found`);
-    assertUndoable(row);
+    const held = { ...row, undo_json: this.store.get(input.entryId) ?? null };
+    assertUndoable(held);
     // Refuses a Connection made read-only since the Operation ran.
     const w = this.pool.write(row.connection_id);
-    const capture = ejsonParse<UndoCapture>(row.undo_json);
+    const capture = ejsonParse<UndoCapture>(held.undo_json);
     let result: UndoResult;
     try {
       if (row.op === 'collectionRename') {
@@ -152,6 +164,7 @@ export class AuditService {
       throw classifyMongoOpError(err);
     }
     this.repo.markUndone(input.entryId, new Date().toISOString());
+    this.store.delete(input.entryId);
     return result;
   }
 
@@ -237,7 +250,7 @@ export class AuditService {
       // reused `_id` (11000) — the expected "restored the rest" case (X13
       // test case 9). Anything else (a validator rejecting one document, a
       // dropped connection mid-batch) must not be folded into `skipped`: that
-      // would mark the entry undone and null its `undo_json` while some
+      // would mark the entry undone and drop its Pre-images while some
       // Pre-images were never actually written back.
       if (err instanceof MongoBulkWriteError) {
         const writeErrors = Array.isArray(err.writeErrors) ? err.writeErrors : [err.writeErrors];
@@ -299,6 +312,8 @@ export class AuditService {
   }
 
   list(input: AuditListInput): AuditEntry[] {
-    return this.repo.list({ ...input, limit: input.limit ?? DEFAULT_LIST_LIMIT }).map(toEntry);
+    return this.repo
+      .list({ ...input, limit: input.limit ?? DEFAULT_LIST_LIMIT })
+      .map((row) => toEntry(row, this.store.has(row.id)));
   }
 }

@@ -91,6 +91,7 @@ const NON_MONGO_CHANNELS = new Set<string>([
   IPC_CHANNELS.prefsGetTheme,
   IPC_CHANNELS.prefsSetTheme,
   IPC_CHANNELS.prefsThemeEvent,
+  IPC_CHANNELS.secretsSetPlaintextFallback,
   IPC_CHANNELS.savedList,
   IPC_CHANNELS.savedGet,
   IPC_CHANNELS.savedCreate,

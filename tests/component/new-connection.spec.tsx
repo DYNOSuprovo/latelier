@@ -126,6 +126,34 @@ describe('NewConnection (create mode)', () => {
     });
   });
 
+  async function pasteWith(input: Record<string, unknown>, warnings: Array<{ code: string; detail?: string }>) {
+    installAtelierMock({
+      conn: { parseUri: (async () => ({ input, warnings })) as never },
+    });
+    renderNew();
+    await userEvent.click(await screen.findByText(/Paste URI/i));
+    await userEvent.type(screen.getByPlaceholderText(/mongodb\+srv/i), 'mongodb://db.example.com/');
+    await userEvent.click(screen.getByText('Apply'));
+  }
+
+  it('pasting a URI that turns verification off says so in the toast and on the TLS tab', async () => {
+    await pasteWith(
+      { host: 'db.example.com', tls: { enabled: true, verify: false } },
+      [{ code: 'TLS_VERIFY_DISABLED', detail: 'Certificate verification is turned off: anyone on the network path can impersonate this server' }],
+    );
+    expect((await screen.findByRole('status')).textContent).toMatch(/1 warning: Certificate verification is turned off/);
+    await userEvent.click(screen.getByRole('tab', { name: 'TLS' }));
+    expect((await screen.findByTestId('tls-warning')).textContent).toMatch(/impersonate/);
+  });
+
+  it('pasting a URI with a dropped TLS option lists it in the toast', async () => {
+    await pasteWith(
+      { host: 'db.example.com', tls: { enabled: true, verify: true } },
+      [{ code: 'OPTION_DROPPED', detail: 'tlsinsecure' }],
+    );
+    expect((await screen.findByRole('status')).textContent).toMatch(/1 warning: tlsinsecure/);
+  });
+
   it('Test button calls api.conn.test and shows ok state', async () => {
     const testSpy = vi.fn(async () => ({ ok: true, serverVersion: '7.0.0', roundTripMs: 12 }));
     installAtelierMock({ conn: { test: testSpy } });
@@ -174,13 +202,10 @@ describe('NewConnection (create mode)', () => {
       }
       return { id: 'c1' } as never;
     });
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       conn: { create: createSpy as never },
-      prefs: {
-        get: async () => null,
-        set: setSpy,
-      } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
 
     renderNew();
@@ -205,7 +230,7 @@ describe('NewConnection (create mode)', () => {
     fireEvent.click(screen.getByText(/Store as plaintext/i));
 
     await waitFor(() => {
-      expect(setSpy).toHaveBeenCalledWith('secrets.allowPlaintextFallback', true);
+      expect(setSpy).toHaveBeenCalledWith(true);
     });
     await waitFor(() => {
       expect(createSpy).toHaveBeenCalledTimes(2);
@@ -216,13 +241,10 @@ describe('NewConnection (create mode)', () => {
     const createSpy = vi.fn(async () => {
       throw { code: 'SECRETS_UNAVAILABLE', message: 'OS keychain not accessible' };
     });
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       conn: { create: createSpy as never },
-      prefs: {
-        get: async () => null,
-        set: setSpy,
-      } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
 
     renderNew();
@@ -246,14 +268,45 @@ describe('NewConnection (create mode)', () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a cancelled main-process confirmation closes the modal without retrying the save', async () => {
+    const createSpy = vi.fn(async () => {
+      throw { code: 'SECRETS_UNAVAILABLE', message: 'OS keychain not accessible' };
+    });
+    // Main answers a declined dialog with the value still in force: disabled.
+    const setSpy = vi.fn(async () => ({ enabled: false }));
+    installAtelierMock({
+      conn: { create: createSpy as never },
+      secrets: { setPlaintextFallback: setSpy },
+    });
+
+    renderNew();
+    await userEvent.type(await screen.findByPlaceholderText(/My MongoDB Server/i), 'X');
+    await userEvent.type(screen.getByPlaceholderText(/cluster\.mongodb\.net/i), 'localhost');
+    await userEvent.click(screen.getByText('Auth'));
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'scram256');
+    await userEvent.type(screen.getAllByPlaceholderText('admin')[0]!, 'alice');
+    await userEvent.type(await screen.findByPlaceholderText(/^••••••••$/), 'pw');
+    fireEvent.click(screen.getByText(/^Save$/));
+
+    const modal = await screen.findByTestId('plaintext-fallback-modal');
+    fireEvent.click(within(modal).getByText(/Store as plaintext/i));
+
+    await waitFor(() => expect(setSpy).toHaveBeenCalledWith(true));
+    await waitFor(() => {
+      expect(screen.queryByTestId('plaintext-fallback-modal')).toBeNull();
+    });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('plaintext-fallback-banner')).toBeNull();
+  });
+
   it('renders the plaintext-fallback banner when the pref is on and disables it on click', async () => {
-    const setSpy = vi.fn(async (_k: string, v: unknown) => v);
+    const setSpy = vi.fn(async (enabled: boolean) => ({ enabled }));
     installAtelierMock({
       prefs: {
         get: async (k: string) =>
           k === 'secrets.allowPlaintextFallback' ? true : null,
-        set: setSpy,
       } as never,
+      secrets: { setPlaintextFallback: setSpy },
     });
     renderNew();
     const banner = await screen.findByTestId('plaintext-fallback-banner');
@@ -261,7 +314,7 @@ describe('NewConnection (create mode)', () => {
 
     fireEvent.click(screen.getByText(/^Disable$/));
     await waitFor(() => {
-      expect(setSpy).toHaveBeenCalledWith('secrets.allowPlaintextFallback', false);
+      expect(setSpy).toHaveBeenCalledWith(false);
     });
     await waitFor(() => {
       expect(screen.queryByTestId('plaintext-fallback-banner')).toBeNull();

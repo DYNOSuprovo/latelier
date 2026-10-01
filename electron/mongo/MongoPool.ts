@@ -15,7 +15,7 @@ import type {
   ProbeErrorCode,
   ProbeResult,
 } from '@shared/types';
-import { NotFoundError, ReadOnlyConnectionError, SystemError } from '../errors.ts';
+import { NotFoundError, ReadOnlyConnectionError, SystemError, ValidationError } from '../errors.ts';
 import type { Logger } from '../log.ts';
 import type { SecretsVault } from '../secrets/SecretsVault.ts';
 import { classifyMongoError, classifyMongoOpError, isMaxTimeMSExpired } from './errors.ts';
@@ -412,6 +412,11 @@ export class MongoPool extends EventEmitter {
     return this.getClientInternal(id);
   }
 
+  private connectArgs(id: string, conn: Connection): { uri: string; opts: MongoClientOptions } {
+    const password = conn.authMech === 'none' ? undefined : this.vault.get(id, 'password') ?? undefined;
+    return { uri: buildUri(conn, password), opts: buildOptions(conn) };
+  }
+
   /**
    * Refuses a read-only connection **now**, synchronously, and hands back the
    * only route to a writable handle. Nothing is connected until the caller
@@ -428,6 +433,10 @@ export class MongoPool extends EventEmitter {
   async connect(id: string): Promise<ConnectionRuntime> {
     const conn = this.repo.findById(id);
     if (!conn) throw new NotFoundError(`connection ${id} not found`);
+    // Fail closed before any entry or status exists: a stored ssh_enabled row
+    // (legacy data, or a patch that kept the flag) must never fall through to a
+    // direct connection that bypasses the tunnel the user expected.
+    if (conn.ssh?.enabled) throw new ValidationError('SSH tunnels are not supported yet');
 
     // X16 §4.1 — several Connections stay connected at once. The pool is
     // keyed by id and holds one entry per Connection, so connecting to B
@@ -463,9 +472,7 @@ export class MongoPool extends EventEmitter {
     const isCurrent = () => this.entries.get(id) === entry && entry.connectGen === gen;
 
     const run = async (): Promise<MongoClient> => {
-      const password = conn.authMech === 'none' ? undefined : this.vault.get(id, 'password') ?? undefined;
-      const uri = buildUri(conn, password);
-      const opts = buildOptions(conn);
+      const { uri, opts } = this.connectArgs(id, conn);
       const client = this.clientFactory(uri, opts);
       this.attachDriverEventListeners(client, id);
       // Reconnecting on an id that already holds a client (edit-reconnect,

@@ -9,11 +9,11 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * W11 — In-process Mongo shell. Start the REPL through the IPC bridge,
+ * W11 — Mongo shell (REPL in a runner child). Start the REPL through the IPC bridge,
  * connect via the existing pool, and drive a real `db.runCommand({ ping: 1 })`
  * round-trip end-to-end. No external `mongosh` required.
  */
-test('mshell in-process REPL pings the server through the existing pool', async () => {
+test('mshell REPL in a runner child pings the server through the existing pool', async () => {
   const mongoServer = await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
   const m = uri.match(/mongodb:\/\/([^:/]+):(\d+)/);

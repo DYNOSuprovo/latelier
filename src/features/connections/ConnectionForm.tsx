@@ -1,5 +1,6 @@
 import React from 'react';
 import { themeVars } from '../../theme/themeVars';
+import { tlsWarning } from '../../utils/hostLocality';
 import { I } from '../../icons';
 import { Button, Modal, Tabs } from '@mantine/core';
 import { useForm } from '@mantine/form';
@@ -133,42 +134,83 @@ function toUpdate(f: FormState): ConnectionUpdate {
 }
 
 
-function Label({ children, required }: { children: React.ReactNode; required?: boolean }) {
-  const T = themeVars;
-  return (
-    <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 5, display: 'flex', gap: 3 }}>
-      {children}
-      {required && <span style={{ color: T.warn }}>*</span>}
-    </div>
-  );
+// What a `Field` hands its control so the visible label names it and the error
+// text describes it. Null outside a `Field`: the control then renders no id and
+// no aria wiring, exactly as before. Not exported — react-refresh only lets a
+// component file export components.
+const FieldControlContext = React.createContext<{ id: string; errorId: string; invalid: boolean; required: boolean } | null>(null);
+
+function useFieldControlProps() {
+  const ctx = React.useContext(FieldControlContext);
+  if (!ctx) return {};
+  return {
+    id: ctx.id,
+    'aria-invalid': ctx.invalid || undefined,
+    'aria-required': ctx.required || undefined,
+    'aria-describedby': ctx.invalid ? ctx.errorId : undefined,
+  };
 }
 
-function Field({ label, required, error, children }: {
-  label?: string; required?: boolean; error?: string; children: React.ReactNode;
+function Label({ children, required, htmlFor, id }: {
+  children: React.ReactNode; required?: boolean; htmlFor?: string; id?: string;
 }) {
   const T = themeVars;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {label && <Label required={required}>{label}</Label>}
+  const style: React.CSSProperties = {
+    fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 5, display: 'flex', gap: 3,
+  };
+  const content = (
+    <>
       {children}
-      {error && (
-        <div style={{ marginTop: 4, fontSize: 11, color: T.warn }}>{error}</div>
-      )}
-    </div>
+      {required && <span aria-hidden="true" style={{ color: T.warn }}>*</span>}
+    </>
+  );
+  // A label with no labelable control to point at (the colour swatches are a
+  // group of buttons) stays a plain element; `Field group` names it instead.
+  return htmlFor
+    ? <label htmlFor={htmlFor} style={style}>{content}</label>
+    : <div id={id} style={style}>{content}</div>;
+}
+
+function Field({ label, required, error, group, children }: {
+  label?: string; required?: boolean; error?: string; group?: boolean; children: React.ReactNode;
+}) {
+  const T = themeVars;
+  const id = React.useId();
+  const errorId = `${id}-error`;
+  const labelId = `${id}-label`;
+  return (
+    <FieldControlContext.Provider value={{ id, errorId, invalid: Boolean(error), required: Boolean(required) }}>
+      <div
+        style={{ display: 'flex', flexDirection: 'column' }}
+        role={group && label ? 'group' : undefined}
+        aria-labelledby={group && label ? labelId : undefined}
+      >
+        {label && (
+          <Label required={required} htmlFor={group ? undefined : id} id={labelId}>{label}</Label>
+        )}
+        {children}
+        {error && (
+          <div id={errorId} style={{ marginTop: 4, fontSize: 11, color: T.warn }}>{error}</div>
+        )}
+      </div>
+    </FieldControlContext.Provider>
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', style: sx }: {
+function Input({ value, onChange, placeholder, type = 'text', style: sx, readOnly }: {
   value: string; onChange: (v: string) => void; placeholder?: string;
-  type?: string; style?: React.CSSProperties;
+  type?: string; style?: React.CSSProperties; readOnly?: boolean;
 }) {
   const T = themeVars;
+  const fieldProps = useFieldControlProps();
   return (
     <input
+      {...fieldProps}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      readOnly={readOnly}
       style={{
         width: '100%', boxSizing: 'border-box',
         padding: '6px 10px', border: `1px solid ${T.border}`,
@@ -184,8 +226,10 @@ function Select({ value, onChange, children }: {
   value: string; onChange: (v: string) => void; children: React.ReactNode;
 }) {
   const T = themeVars;
+  const fieldProps = useFieldControlProps();
   return (
     <select
+      {...fieldProps}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       style={{
@@ -270,9 +314,11 @@ function PasswordInput({ value, onChange, placeholder }: {
 }) {
   const T = themeVars;
   const [showPwd, setShowPwd] = React.useState(false);
+  const fieldProps = useFieldControlProps();
   return (
     <div style={{ position: 'relative' }}>
       <input
+        {...fieldProps}
         type={showPwd ? 'text' : 'password'}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -286,6 +332,8 @@ function PasswordInput({ value, onChange, placeholder }: {
       />
       <button
         type="button"
+        aria-label={showPwd ? 'Hide password' : 'Show password'}
+        aria-pressed={showPwd}
         onClick={() => setShowPwd((s) => !s)}
         style={{
           position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
@@ -299,8 +347,12 @@ function PasswordInput({ value, onChange, placeholder }: {
   );
 }
 
-function FilePathRow({ purpose, value, onChange, placeholder }: {
+// The path is read-only: main accepts a credential path only if its own file
+// dialog returned it (or it is already stored), so a typed path would be
+// rejected on save. Browse sets it, Clear empties it.
+function FilePathRow({ purpose, label, value, onChange, placeholder }: {
   purpose: PickFilePurpose;
+  label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -317,11 +369,12 @@ function FilePathRow({ purpose, value, onChange, placeholder }: {
   };
   return (
     <div style={{ display: 'flex', gap: 6 }}>
-      <Input value={value} onChange={onChange} placeholder={placeholder} />
+      <Input value={value} onChange={onChange} placeholder={placeholder} readOnly />
       <button
         type="button"
         onClick={() => void pick()}
         title="Browse"
+        aria-label={`Browse for ${label}`}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: T.rs,
@@ -331,6 +384,21 @@ function FilePathRow({ purpose, value, onChange, placeholder }: {
       >
         ⋯
       </button>
+      {value !== '' && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label={`Clear ${label}`}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: T.rs,
+            background: T.surfaceRaised, color: T.textMuted, cursor: 'pointer',
+            fontSize: 11,
+          }}
+        >
+          Clear
+        </button>
+      )}
     </div>
   );
 }
@@ -362,7 +430,7 @@ function GeneralTab({
           <Field label="Name" required error={fieldErrors['name']}>
             <Input value={form.name} onChange={(v) => set('name', v)} placeholder="My MongoDB Server" />
           </Field>
-          <Field label="Color">
+          <Field label="Color" group>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {COLORS.map((c) => (
                 <button
@@ -597,12 +665,31 @@ function TLSTab({ form, set, fieldErrors }: {
   fieldErrors: Record<string, string>;
 }) {
   const T = themeVars;
+  const warning = tlsWarning({
+    enabled: form.tlsEnabled,
+    verify: form.tlsVerify,
+    host: form.host,
+    viaSshTunnel: form.sshEnabled,
+  });
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Toggle checked={form.tlsEnabled} onChange={(v) => set('tlsEnabled', v)} label="Enable TLS / SSL" />
       <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>
         {TLS_INLINE_EXPLAINER}
       </div>
+      {warning && (
+        <div
+          role="status"
+          data-testid="tls-warning"
+          style={{
+            padding: '8px 10px', background: T.redSoft, color: T.redText,
+            border: `1px solid ${T.redBorder}`, borderRadius: T.rs,
+            fontSize: 12, lineHeight: 1.5,
+          }}
+        >
+          <strong>Warning:</strong> {warning}
+        </div>
+      )}
       {form.tlsEnabled && (
         <>
           <div style={{ height: 1, background: T.border }} />
@@ -610,6 +697,7 @@ function TLSTab({ form, set, fieldErrors }: {
             <Field label="CA Certificate" error={fieldErrors['tls.caPath']}>
               <FilePathRow
                 purpose="tls-ca"
+                label="CA Certificate"
                 value={form.tlsCaPath}
                 onChange={(v) => set('tlsCaPath', v)}
                 placeholder="/path/to/ca.pem"
@@ -618,6 +706,7 @@ function TLSTab({ form, set, fieldErrors }: {
             <Field label="Client Certificate" error={fieldErrors['tls.clientCertPath']}>
               <FilePathRow
                 purpose="tls-client-cert"
+                label="Client Certificate"
                 value={form.tlsClientCertPath}
                 onChange={(v) => set('tlsClientCertPath', v)}
                 placeholder="/path/to/client.pem"
@@ -925,7 +1014,9 @@ function ConnectionFormImpl({
           tlsVerify: c.tls.verify,
           tlsCaPath: c.tls.caPath ?? '',
           tlsClientCertPath: c.tls.clientCertPath ?? '',
-          sshEnabled: Boolean(c.ssh?.enabled),
+          // A legacy row may carry ssh.enabled=true. SSH is unsupported and the schema now
+          // rejects it, so load it as off; the next save sends ssh.enabled=false and clears it.
+          sshEnabled: false,
           sshHost: c.ssh?.host ?? '',
           sshPort: c.ssh?.port ? String(c.ssh.port) : '22',
           sshUsername: c.ssh?.username ?? '',
@@ -1057,7 +1148,13 @@ function ConnectionFormImpl({
 
   const enablePlaintextFallbackAndRetry = async () => {
     try {
-      await api.prefs.set('secrets.allowPlaintextFallback', true);
+      // Main asks for its own confirmation before enabling; cancelling there
+      // comes back disabled, and a save would only hit the same error again.
+      const { enabled } = await api.secrets.setPlaintextFallback(true);
+      if (!enabled) {
+        setShowPlaintextModal(false);
+        return;
+      }
       setPlaintextFallback(true);
     } catch (err) {
       notify.error(isIpcError(err) ? err.message : String(err), { title: 'Could not enable fallback' });
@@ -1070,7 +1167,7 @@ function ConnectionFormImpl({
 
   const disablePlaintextFallback = async () => {
     try {
-      await api.prefs.set('secrets.allowPlaintextFallback', false);
+      await api.secrets.setPlaintextFallback(false);
       setPlaintextFallback(false);
       setToast('Plaintext password storage disabled. New saves will require an OS keychain.');
     } catch (err) {
@@ -1209,7 +1306,7 @@ function ConnectionFormImpl({
           </Tabs>
 
           {toast && (
-            <div style={{
+            <div role="status" style={{
               padding: '8px 24px', fontSize: 11, color: T.textMuted,
               borderTop: `1px solid ${T.border}`, background: T.surfaceRaised,
             }}>

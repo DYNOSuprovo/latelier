@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { MongoClient } from 'mongodb';
+import { createTestSpawner, type TestSpawner } from '../helpers/runnerSpawner';
 import { ShellService } from '../../electron/services/ShellService';
 import type { MongoPool } from '../../electron/mongo/MongoPool';
 import { ReadOnlyConnectionError } from '../../electron/errors';
 import type { ShellOutputEvent } from '@shared/types';
+
+/** The pool is an emitter: the service listens for status and read-only flips. */
+function poolStub(stub: object): MongoPool {
+  return Object.assign(new EventEmitter(), stub) as unknown as MongoPool;
+}
 
 /**
  * Fake MongoClient — only the surface the REPL exercises in these tests.
@@ -41,7 +48,7 @@ function fakeClient(): MongoClient {
 
 function fakePool(client: MongoClient, opts: { readOnly?: boolean } = {}): MongoPool {
   const readOnly = opts.readOnly ?? false;
-  return {
+  return poolStub({
     readClient: async () => client,
     isReadOnly: () => readOnly,
     assertWritable: () => {
@@ -49,7 +56,7 @@ function fakePool(client: MongoClient, opts: { readOnly?: boolean } = {}): Mongo
         throw new ReadOnlyConnectionError('Connection "test" is read-only.');
       }
     },
-  } as unknown as MongoPool;
+  });
 }
 
 /**
@@ -59,7 +66,7 @@ function fakePool(client: MongoClient, opts: { readOnly?: boolean } = {}): Mongo
  */
 function mutableFakePool(client: MongoClient): { pool: MongoPool; setReadOnly: (v: boolean) => void } {
   let readOnly = false;
-  const pool = {
+  const pool = poolStub({
     readClient: async () => client,
     isReadOnly: () => readOnly,
     assertWritable: () => {
@@ -67,7 +74,7 @@ function mutableFakePool(client: MongoClient): { pool: MongoPool; setReadOnly: (
         throw new ReadOnlyConnectionError('Connection "test" is read-only.');
       }
     },
-  } as unknown as MongoPool;
+  });
   return { pool, setReadOnly: (v: boolean) => { readOnly = v; } };
 }
 
@@ -104,13 +111,23 @@ async function drive(
   );
 }
 
-describe('ShellService (in-process)', () => {
+// One runner child per session, forked under Node from the real runner entry.
+let spawner: TestSpawner;
+beforeEach(() => {
+  spawner = createTestSpawner();
+});
+afterEach(() => {
+  spawner.killAll();
+});
+
+describe('ShellService (runner child)', () => {
   let events: ShellOutputEvent[];
   let svc: ShellService;
 
   beforeEach(() => {
     events = [];
     svc = new ShellService({
+      spawner,
       pool: fakePool(fakeClient()),
       emit: (e) => events.push(e),
     });
@@ -123,8 +140,11 @@ describe('ShellService (in-process)', () => {
   it('greets the user with a banner including the connection id', async () => {
     const info = await svc.start({ connectionId: 'conn-1' });
     expect(info.connectionId).toBe('conn-1');
-    // Banner is written synchronously after start resolves.
-    await new Promise((r) => setTimeout(r, 5));
+    // The child writes the banner once it has booted.
+    const deadline = Date.now() + 3000;
+    while (events.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     const banner = events.map((e) => e.data ?? '').join('');
     expect(banner).toMatch(/L'Atelier shell/);
     expect(banner).toMatch(/conn-1/);
@@ -230,6 +250,7 @@ describe('ShellService — read-only connection', () => {
 
   it('start() refuses outright with ReadOnlyConnectionError', async () => {
     const svc = new ShellService({
+      spawner,
       pool: fakePool(fakeClient(), { readOnly: true }),
       emit: (e) => events.push(e),
     });
@@ -242,6 +263,7 @@ describe('ShellService — read-only connection', () => {
 
   it('the identical start() succeeds on a non-read-only connection (regression)', async () => {
     const svc = new ShellService({
+      spawner,
       pool: fakePool(fakeClient(), { readOnly: false }),
       emit: (e) => events.push(e),
     });
@@ -255,7 +277,7 @@ describe('ShellService — read-only connection', () => {
   // start()'s guard alone only gates NEW sessions.
   it('write() is re-checked: a session opened writable is cut off once the connection flips read-only', async () => {
     const { pool, setReadOnly } = mutableFakePool(fakeClient());
-    const svc = new ShellService({ pool, emit: (e) => events.push(e) });
+    const svc = new ShellService({ pool, spawner, emit: (e) => events.push(e) });
 
     const info = await svc.start({ connectionId: 'conn-1' });
     // Works fine while still writable.

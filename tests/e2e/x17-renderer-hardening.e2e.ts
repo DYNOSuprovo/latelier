@@ -120,3 +120,52 @@ test('the app still works under the policy — no CSP violation during boot', as
     expect(violations).toEqual([]);
   });
 });
+
+test('the renderer is denied every permission Electron would otherwise grant', async () => {
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    // With no handler installed Electron answers notifications and geolocation
+    // as granted. Reading both the permission state and the request outcome
+    // covers the check handler and the request handler separately.
+    const result = await win.evaluate(async () => {
+      const state = (await navigator.permissions.query({ name: 'notifications' })).state;
+      const requested = await Notification.requestPermission();
+      const geoCode = await new Promise<number>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          () => resolve(0),
+          (err) => resolve(err.code),
+        );
+      });
+      return { state, requested, geoCode };
+    });
+
+    expect(result.state).toBe('denied');
+    expect(result.requested).toBe('denied');
+    // PERMISSION_DENIED
+    expect(result.geoCode).toBe(1);
+  });
+});
+
+test('a window created later inherits the navigation guard', async () => {
+  await withApp(async (app) => {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    // The guard is installed on `web-contents-created`, not on the main window
+    // alone. A second window built outside createWindow() proves it: it never
+    // went through any per-window setup.
+    const denied = await app.evaluate(async ({ BrowserWindow }) => {
+      const w = new BrowserWindow({ show: false });
+      await w.loadURL('about:blank');
+      const result = await w.webContents.executeJavaScript(
+        "window.open('https://example.com') === null",
+      );
+      w.destroy();
+      return result;
+    });
+
+    expect(denied).toBe(true);
+  });
+});

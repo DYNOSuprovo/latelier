@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shiftLineNumbers } from '../../electron/services/ScriptService';
+import { shiftLineNumbers } from '../../electron/script-runner/scriptSource';
 
 describe('shiftLineNumbers', () => {
   it('decrements `script.js:N` by the wrapper offset', () => {
@@ -34,5 +34,10 @@ describe('shiftLineNumbers', () => {
     expect(shiftLineNumbers('script.js:5 -> script.js:10 -> script.js:1')).toBe(
       'script.js:4 -> script.js:9 -> script.js:1',
     );
+  });
+
+  it('passes a non-string through untouched', () => {
+    expect(shiftLineNumbers(undefined as unknown as string)).toBeUndefined();
+    expect(shiftLineNumbers('')).toBe('');
   });
 });

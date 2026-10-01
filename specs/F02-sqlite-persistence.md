@@ -17,6 +17,7 @@ Provide a single, well-typed, versioned SQLite store for every piece of persiste
 ## 1. Location & bootstrap
 
 - DB path: `path.join(app.getPath('userData'), 'mongolab.db')`.
+- On POSIX the user-data dir is `0700` and `mongolab.db`, `-wal` and `-shm` are `0600` (existing ones are tightened at open; the db file is created before SQLite opens it so the side files inherit the mode); a chmod failure aborts startup. No-op on Windows.
 - Opened synchronously on app startup (F06) before any window is created.
 - Pragmas (applied once, in order, on every open):
   ```sql
@@ -24,6 +25,7 @@ Provide a single, well-typed, versioned SQLite store for every piece of persiste
   PRAGMA synchronous = NORMAL;
   PRAGMA foreign_keys = ON;
   PRAGMA busy_timeout = 5000;
+  PRAGMA secure_delete = ON;
   ```
 - On first run the file is created and migrations run to the latest version.
 - On subsequent runs migrations with version > `schema_version.version` run in a transaction.
@@ -36,7 +38,11 @@ export function openDatabase(userDataDir: string): Database {
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  runMigrations(db);
+  db.pragma('secure_delete = ON');
+  // VACUUM when an upgrade ran migrations: erases bytes freed before
+  // secure_delete was on. Then fold and truncate the WAL.
+  if (runMigrations(db) > 0) db.exec('VACUUM');
+  db.pragma('wal_checkpoint(TRUNCATE)');
   return db;
 }
 ```
@@ -246,6 +252,7 @@ Repositories MAY nest transactions safely (`better-sqlite3` uses savepoints).
   - Creates DB at a temp path, closes, reopens: tables exist.
   - WAL mode active (`PRAGMA journal_mode` returns `wal`).
   - Foreign keys active.
+  - `PRAGMA secure_delete` returns `1`.
   - `withTransaction` commits on success, rolls back on throw.
 - **cascade.spec.ts**
   - Insert a connection + secret + saved query + recent + tab + preview_fields.

@@ -20,6 +20,7 @@ import { ConflictError, NotFoundError } from '../errors.ts';
 import { normalizeConnectionInput } from './normalize.ts';
 import { parseConnectionUri } from './uri-parse.ts';
 import { withTimeout } from '../utils/withTimeout.ts';
+import type { CredentialPaths } from '../security/credentialPaths.ts';
 
 /**
  * Connection domain service. Owns orchestration between the SQLite repo, the
@@ -61,6 +62,15 @@ export class ConnectionService {
     const row = this.repo.findById(id);
     if (!row) throw new NotFoundError(`connection ${id} not found`);
     return this.rowToConnectionWithFlags(row);
+  }
+
+  /** Credential file paths currently stored on every connection. */
+  storedCredentialPaths(): CredentialPaths[] {
+    return this.repo.list().map((row) => ({
+      caPath: row.tls_ca_path ?? undefined,
+      clientCertPath: row.tls_client_cert_path ?? undefined,
+      privateKeyPath: row.ssh_private_key_path ?? undefined,
+    }));
   }
 
   async create(raw: ConnectionInput): Promise<Connection> {
@@ -118,6 +128,13 @@ export class ConnectionService {
       this.applySecretPatch(id, 'password', patch.password, patch.clearPassword);
       this.applySecretPatch(id, 'ssh_password', patch.sshPassword, patch.clearSshPassword);
       this.applySecretPatch(id, 'ssh_passphrase', patch.sshPassphrase, patch.clearSshPassphrase);
+
+      // A running script already has every call checked against the live flag,
+      // but one started on a writable connection should not carry on once it is
+      // turned read-only, so it must hear it.
+      if (existing.read_only !== 1 && merged.readOnly === true) {
+        this.pool.emit('read-only-enabled', id);
+      }
 
       if (mongoRelevantFieldsChanged(existing, merged)) {
         await this.pool.disconnect(id);

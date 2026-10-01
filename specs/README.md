@@ -60,7 +60,7 @@ The project started as **MongoLab**. Iteration 1 — F01–F06, C01–C08, W01�
 | [W08](./W08-document-write-ops.md) | Document write ops (insert/edit/delete) | main + renderer |
 | [W09](./W09-saved-queries.md) | Saved queries (repo + UI) | main + renderer |
 | [W10](./W10-recent-preview.md) | Recent queries + preview fields | main + renderer |
-| [W11](./W11-mongo-shell.md) | Mongo shell pane (in-process REPL) — *post-iteration-1* | main + renderer |
+| [W11](./W11-mongo-shell.md) | Mongo shell pane (REPL in a runner child) — *post-iteration-1* | main + renderer |
 | [W12](./W12-script-editor.md) | Script editor tab — *post-iteration-1* | main + renderer |
 | [W13](./W13-filter-tree-editor.md) | Filter tree editor (supersedes the W04 condition model + W05 sync machine) — *post-iteration-1* | renderer |
 | [W14](./W14-query-bar-advanced-row.md) | Query bar advanced row: correctness, affordance, projection — *post-iteration-1* | renderer |

@@ -174,6 +174,9 @@ function EmptyState({ onClearFilter, onImport }: { onClearFilter: () => void; on
   // No filter, first page, no error: the collection itself is empty, not
   // just this query's match — a different message and CTA than "no match".
   const isEmptyCollection = isUnfilteredFirstPage(state);
+  // Results are never persisted, so a restored tab with a custom query has not
+  // run yet: say so instead of claiming the query matched nothing.
+  const neverRun = state.lastRun === undefined;
 
   return (
     <div
@@ -188,7 +191,9 @@ function EmptyState({ onClearFilter, onImport }: { onClearFilter: () => void; on
         gap: 8,
       }}
     >
-      {isEmptyCollection ? (
+      {neverRun ? (
+        <span>Run the query to see results</span>
+      ) : isEmptyCollection ? (
         <>
           <span>This collection is empty</span>
           {!meta.isReadOnly && (

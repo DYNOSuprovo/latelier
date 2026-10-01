@@ -67,6 +67,7 @@ describe('parseConnectionUri property: query-parameter key casing is ignored', (
 
   const DROPPED_OPTIONS = [
     'retrywrites', 'w', 'wtimeoutms', 'journal', 'replicaset', 'loadbalanced', 'readconcernlevel',
+    'tlsinsecure', 'tlsallowinvalidhostnames',
   ];
   const droppedKeyVariantArb = fc
     .constantFrom(...DROPPED_OPTIONS)

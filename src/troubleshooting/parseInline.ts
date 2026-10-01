@@ -1,6 +1,8 @@
 /**
  * Tiny inline-markdown tokenizer supporting **bold**, *italic*, `code`, and
- * [label](https://...). Block-level constructs (headings, paragraphs, lists)
+ * [label](https://...). Only https targets become links: the main process
+ * refuses every other scheme, so an `http://` target stays plain text rather
+ * than rendering a link that does nothing. Block-level constructs (headings, paragraphs, lists)
  * are out of scope — recipe step bodies are single paragraphs by convention.
  *
  * Order matters in the loop: code first (literal — anything inside backticks
@@ -43,7 +45,7 @@ export function parseInline(source: string): InlineNode[] {
         const closeParen = source.indexOf(')', closeBracket + 2);
         if (closeParen > closeBracket) {
           const href = source.slice(closeBracket + 2, closeParen);
-          if (href.startsWith('https://') || href.startsWith('http://')) {
+          if (href.startsWith('https://')) {
             flushText(i);
             out.push({
               kind: 'link',
