@@ -51,6 +51,8 @@ type FrameBase = Omit<RpcFrame, 'type' | 'id' | 'argsEjson'>;
 
 interface CursorState {
   dbName: string;
+  /** What the cursor reads, for display: `db.coll`, or just `db` for a database-level one. */
+  label: string;
   open: () => Promise<string>;
   shaping: Array<[string, unknown[]]>;
   mappers: Array<(doc: unknown) => unknown>;
@@ -122,8 +124,13 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
     st.mappers.reduce((acc, fn) => fn(acc), doc);
 
   class FacadeCursor {
-    constructor(dbName: string, open: () => Promise<string>) {
-      cursorState.set(this, { dbName, open, shaping: [], mappers: [], closed: false });
+    constructor(dbName: string, label: string, open: () => Promise<string>) {
+      cursorState.set(this, { dbName, label, open, shaping: [], mappers: [], closed: false });
+    }
+
+    /** One line, so typing a cursor into a REPL does not dump its internals. */
+    [Symbol.for('nodejs.util.inspect.custom')](): string {
+      return `Cursor on ${stateOf(this).label} — iterate it or call .toArray()`;
     }
 
     map(fn: (doc: unknown) => unknown): this {
@@ -206,8 +213,8 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
     });
   }
 
-  function makeCursor(dbName: string, open: () => Promise<string>): FacadeCursor {
-    return new FacadeCursor(dbName, open);
+  function makeCursor(dbName: string, label: string, open: () => Promise<string>): FacadeCursor {
+    return new FacadeCursor(dbName, label, open);
   }
 
   function makeCollection(dbName: string, coll: string): unknown {
@@ -226,7 +233,7 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
           if (!COLLECTION_METHODS.has(prop)) return undefined;
           if (COLLECTION_CURSOR_METHODS.has(prop)) {
             return (...args: unknown[]) =>
-              makeCursor(dbName, () => callCursor({ ...base, method: prop }, args));
+              makeCursor(dbName, `${dbName}.${coll}`, () => callCursor({ ...base, method: prop }, args));
           }
           return (...args: unknown[]) => callValue({ ...base, method: prop }, args);
         },
@@ -268,7 +275,7 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
           if (DB_METHODS.has(prop)) {
             if (DB_CURSOR_METHODS.has(prop)) {
               return (...args: unknown[]) =>
-                makeCursor(dbName, () => callCursor({ target: 'db', dbName, method: prop }, args));
+                makeCursor(dbName, dbName, () => callCursor({ target: 'db', dbName, method: prop }, args));
             }
             return (...args: unknown[]) => callValue({ target: 'db', dbName, method: prop }, args);
           }

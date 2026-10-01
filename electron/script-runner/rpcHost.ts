@@ -41,7 +41,12 @@ import {
  * a result only leaves as EJSON after a check that it is plain data.
  */
 
-/** A script that opens more cursors than this without closing them is refused. */
+/**
+ * Cursor handles one run may hold at once. A script that opens more has its
+ * oldest handle closed to make room: a long shell session leaves a handle
+ * behind for every bare `db.x.find()` it never iterates, so refusing the
+ * next one would end the session's usefulness rather than bound anything.
+ */
 const MAX_OPEN_CURSORS = 256;
 
 type Callable = (...args: unknown[]) => unknown;
@@ -78,9 +83,20 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
       isReadOnly: opts.isReadOnly,
     }) as Bag;
 
+  async function closeCursor(cursor: Bag): Promise<void> {
+    try {
+      await member(cursor, 'close')();
+    } catch (err) {
+      opts.onCloseError?.(err);
+    }
+  }
+
   function keepCursor(cursor: unknown): string {
     if (cursors.size >= MAX_OPEN_CURSORS) {
-      throw new ValidationError(`rpc: more than ${MAX_OPEN_CURSORS} cursors are open in this script`);
+      // A Map iterates in insertion order, so the first entry is the oldest.
+      const [oldestId, oldest] = cursors.entries().next().value as [string, Bag];
+      cursors.delete(oldestId);
+      void closeCursor(oldest);
     }
     const cursorId = randomUUID();
     cursors.set(cursorId, cursor as Bag);
@@ -138,8 +154,16 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
         const out = member(cursor, method)(...args);
         if (shaping) return ok(id, undefined);
         const value = await out;
-        // toArray exhausts the cursor and close ends it: either way it is finished.
-        if (method === 'toArray' || method === 'close') cursors.delete(cursorId);
+        // Finished cursors give their slot back: toArray exhausts one, close
+        // ends one, and a read that finds nothing left means the same.
+        if (
+          method === 'toArray' ||
+          method === 'close' ||
+          ((method === 'next' || method === 'tryNext') && value === null) ||
+          (method === 'hasNext' && value === false)
+        ) {
+          cursors.delete(cursorId);
+        }
         return ok(id, value);
       }
       default:
@@ -166,15 +190,7 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
       closed = true;
       const open = [...cursors.values()];
       cursors.clear();
-      await Promise.all(
-        open.map(async (cursor) => {
-          try {
-            await member(cursor, 'close')();
-          } catch (err) {
-            opts.onCloseError?.(err);
-          }
-        }),
-      );
+      await Promise.all(open.map(closeCursor));
     },
   };
 }

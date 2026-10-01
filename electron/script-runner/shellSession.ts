@@ -37,7 +37,8 @@ export function startShellSession(channel: Channel, rpc: RpcClient, req: ShellSt
     terminal: false,
     useColors: false,
     ignoreUndefined: true,
-    writer: shellWriter,
+    // A cursor prints its one-line hint; everything else goes through the EJSON writer.
+    writer: (value: unknown) => (rpc.isCursor(value) ? inspect(value) : shellWriter(value)),
   });
   server.context.db = db;
   server.context.use = (name: string) => {

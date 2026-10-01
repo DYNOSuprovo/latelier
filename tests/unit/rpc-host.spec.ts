@@ -20,7 +20,7 @@ const rec = (what: string, args: unknown[]): void => {
 class FakeCursor {
   cursorClient = { secret: 'the-client' };
   private readonly docs: unknown[];
-  constructor(docs: unknown[] = [{ _id: 1 }, { _id: 2 }]) {
+  constructor(docs: unknown[] = findDocs) {
     this.docs = docs;
   }
   sort(...a: unknown[]): this {
@@ -43,11 +43,22 @@ class FakeCursor {
     rec('cursor.next', a);
     return Promise.resolve(this.docs[0] ?? null);
   }
+  tryNext(...a: unknown[]): Promise<unknown> {
+    rec('cursor.tryNext', a);
+    return Promise.resolve(this.docs[0] ?? null);
+  }
+  hasNext(...a: unknown[]): Promise<boolean> {
+    rec('cursor.hasNext', a);
+    return Promise.resolve(this.docs.length > 0);
+  }
   close(...a: unknown[]): Promise<void> {
     rec('cursor.close', a);
     return closeBehaviour();
   }
 }
+
+/** What a cursor made by `find` holds; an empty list makes it exhausted from the start. */
+let findDocs: unknown[] = [{ _id: 1 }, { _id: 2 }];
 
 let closeBehaviour: () => Promise<void> = () => Promise.resolve();
 
@@ -195,6 +206,7 @@ beforeEach(() => {
   ctrl = new AbortController();
   errors = [];
   closeBehaviour = () => Promise.resolve();
+  findDocs = [{ _id: 1 }, { _id: 2 }];
   host = makeHost();
 });
 
@@ -219,6 +231,12 @@ function value(reply: RpcReply): unknown {
   }
   return promoteNumbers(ejsonParse(reply.valueEjson), false);
 }
+async function until(cond: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1));
+  if (!cond()) throw new Error('timed out waiting for the condition');
+}
+
 function cursorIdOf(reply: RpcReply): string {
   if (reply.type !== 'rpc-result' || !('cursorId' in reply)) {
     throw new Error(`expected a cursor reply, got ${JSON.stringify(reply)}`);
@@ -586,11 +604,68 @@ describe('rpcHost — cursors', () => {
     expect(errorOf(reply).message).toMatch(/unknown cursor/);
   });
 
-  it('refuses the 257th open cursor', async () => {
+  it('closes the oldest cursor to make room for the 257th, which then answers unknown cursor', async () => {
+    const first = cursorIdOf(await send({ method: 'find' }));
+    const second = cursorIdOf(await send({ method: 'find' }));
+    for (let i = 0; i < 254; i++) cursorIdOf(await send({ method: 'find' }));
+    expect(calls.filter((c) => c.what === 'cursor.close')).toEqual([]);
+    expect(cursorIdOf(await send({ method: 'find' }))).toBeTruthy();
+    await until(() => calls.some((c) => c.what === 'cursor.close'));
+    expect(calls.filter((c) => c.what === 'cursor.close')).toHaveLength(1);
+    expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: first })).message).toMatch(
+      /unknown cursor/,
+    );
+    // Only the oldest went: the next one is still there.
+    expect(value(await send({ target: 'cursor', method: 'toArray', cursorId: second }))).toHaveLength(2);
+  });
+
+  it('reports an evicted cursor that will not close, and still hands out the new one', async () => {
+    closeBehaviour = () => Promise.reject(new Error('evict close failed'));
     for (let i = 0; i < 256; i++) cursorIdOf(await send({ method: 'find' }));
-    const reply = await send({ method: 'find' });
-    expect(errorOf(reply)).toMatchObject({ code: 'VALIDATION' });
-    expect(errorOf(reply).message).toMatch(/256 cursors/);
+    expect(cursorIdOf(await send({ method: 'find' }))).toBeTruthy();
+    await until(() => errors.length > 0);
+    expect((errors[0] as Error).message).toBe('evict close failed');
+  });
+
+  it.each([
+    ['next', 'next'],
+    ['tryNext', 'tryNext'],
+  ])('%s that finds nothing left frees the cursor', async (_label, method) => {
+    findDocs = [];
+    const id = cursorIdOf(await send({ method: 'find' }));
+    expect(value(await send({ target: 'cursor', method, cursorId: id }))).toBeNull();
+    expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: id })).message).toMatch(
+      /unknown cursor/,
+    );
+  });
+
+  it('hasNext that answers false frees the cursor, and true keeps it', async () => {
+    const live = cursorIdOf(await send({ method: 'find' }));
+    expect(value(await send({ target: 'cursor', method: 'hasNext', cursorId: live }))).toBe(true);
+    expect(value(await send({ target: 'cursor', method: 'toArray', cursorId: live }))).toHaveLength(2);
+
+    findDocs = [];
+    const done = cursorIdOf(await send({ method: 'find' }));
+    expect(value(await send({ target: 'cursor', method: 'hasNext', cursorId: done }))).toBe(false);
+    expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: done })).message).toMatch(
+      /unknown cursor/,
+    );
+  });
+
+  it('next and tryNext that return a document keep the cursor', async () => {
+    const id = cursorIdOf(await send({ method: 'find' }));
+    await send({ target: 'cursor', method: 'next', cursorId: id });
+    await send({ target: 'cursor', method: 'tryNext', cursorId: id });
+    expect(value(await send({ target: 'cursor', method: 'toArray', cursorId: id }))).toHaveLength(2);
+  });
+
+  it('many exhausted cursors never reach the cap', async () => {
+    findDocs = [];
+    for (let i = 0; i < 300; i++) {
+      const id = cursorIdOf(await send({ method: 'find' }));
+      await send({ target: 'cursor', method: 'next', cursorId: id });
+    }
+    expect(calls.filter((c) => c.what === 'cursor.close')).toEqual([]);
   });
 
   it('a finished cursor frees its slot', async () => {

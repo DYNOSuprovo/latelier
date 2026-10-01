@@ -137,6 +137,32 @@ describe('ShellService — the REPL runs in a child', () => {
   });
 });
 
+describe('ShellService — cursors', () => {
+  it('a bare cursor prints a one-line hint, not its internals', async () => {
+    const s = setup();
+    const info = await s.start({ connectionId: 'c1' });
+    const out = await say(info.sessionId, 'db.hint_items.find()', 'Cursor on');
+    expect(out).toContain('Cursor on test.hint_items — iterate it or call .toArray()');
+    expect(out).not.toContain('FacadeCursor');
+    // A database-level cursor names the database.
+    const dbOut = await say(info.sessionId, 'db.listCollections()', 'Cursor on test —');
+    expect(dbOut).toContain('Cursor on test — iterate it or call .toArray()');
+  });
+
+  it('a long session never runs out of cursor slots', async () => {
+    const s = setup();
+    const info = await s.start({ connectionId: 'c1' });
+    await say(info.sessionId, 'await db.slots.insertOne({ n: 1 })', 'acknowledged');
+    // Past the host's 256-handle table, in one session. Each bare find() opens
+    // a handle only once something iterates it, so drive 300 through next().
+    const from = events.length;
+    s.write(info.sessionId, 'for (let i = 0; i < 300; i++) { await db.slots.find().next(); }; "looped"\n');
+    await until(() => outputOf(from).includes('looped'), 'the loop to finish', 20_000);
+    expect(outputOf(from)).not.toMatch(/cursors|Error/);
+    expect(await say(info.sessionId, 'JSON.stringify(await db.slots.find().toArray())', '"n":1')).toContain('"n":1');
+  });
+});
+
 describe('ShellService — lifecycle', () => {
   it('stop() kills the child', async () => {
     const s = setup();
