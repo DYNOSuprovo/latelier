@@ -114,7 +114,7 @@ export function ExplainDrawer({
     // exhaustive-deps doesn't flag a ref read from a cleanup closure.
     const onCancelTokenSnapshot = onCancelTokenRef.current;
 
-    (async () => {
+    void (async () => {
       setLoading(true);
       setErr(null);
       try {

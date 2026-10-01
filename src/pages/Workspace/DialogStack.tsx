@@ -48,7 +48,7 @@ export function NewTabPicker({ connectionId, onCancel, onPick }: NewTabPickerPro
   React.useEffect(() => {
     if (!connectionId) return;
     let active = true;
-    (async () => {
+    void (async () => {
       try {
         const rows = await api.meta.listDatabases({ connectionId });
         if (!active) return;
@@ -69,7 +69,7 @@ export function NewTabPicker({ connectionId, onCancel, onPick }: NewTabPickerPro
     if (!connectionId || !selectedDb) return;
     if (ownGet(collsByDb, selectedDb)) return;
     let active = true;
-    (async () => {
+    void (async () => {
       try {
         const rows = await api.meta.listCollections({ connectionId, dbName: selectedDb });
         if (!active) return;
