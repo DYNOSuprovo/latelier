@@ -840,13 +840,27 @@ describe('cursors', () => {
     expect(await open()).toBeLessThanOrEqual(before);
   });
 
-  it('a script cannot open more cursors than the cap', async () => {
-    setup();
-    const result = await outcome(
-      'rw',
-      `for (let i = 0; i < 300; i++) { await db.rpc_cur_cap.find().batchSize(1).hasNext(); }`,
-    );
-    expect(result).toMatch(/256 cursors/);
+  it('a script that opens more cursors than the cap has its oldest ones closed, not refused', async () => {
+    const s = setup();
+    await seed(s, 'rpc_cur_cap', 5);
+    const open = async (): Promise<number> => {
+      const status = await direct!.db('admin').command({ serverStatus: 1 });
+      return (status.metrics as { cursor: { open: { total: number } } }).cursor.open.total;
+    };
+    const before = await open();
+    // batchSize(1) over 5 documents keeps every cursor open on the server
+    // after its first read, so the open count would reach 300 without eviction.
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `(async () => {
+        for (let i = 0; i < 300; i++) { await db.rpc_cur_cap.find().batchSize(1).hasNext(); }
+        const st = await db.getSiblingDB('admin').runCommand({ serverStatus: 1 });
+        return Number(st.metrics.cursor.open.total);
+      })()`,
+      maxTimeMs: 20_000,
+    });
+    expect(Number(JSON.parse(r.valueJson!))).toBeLessThanOrEqual(before + 256);
+    await until(async () => (await open()) <= before, 'the remaining cursors to be closed');
   });
 });
 

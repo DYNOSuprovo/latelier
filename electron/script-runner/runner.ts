@@ -16,14 +16,19 @@ import {
 import { SystemError, ValidationError } from '../errors.ts';
 import { classifyMongoOpError } from '../mongo/errors.ts';
 import { encodeResultJson } from './encodeResult.ts';
+import { openChannel } from './channel.ts';
 import { toWireError, type RunRequest, type RunnerMessage } from './protocol.ts';
 import { createRpcClient, type RpcClient, type RpcCursor } from './rpcClient.ts';
+import { isShellStartRequest } from './shellProtocol.ts';
+import { startShellSession } from './shellSession.ts';
 import { shiftLineNumbers, wrapSource, WRAPPER_LINE_OFFSET } from './scriptSource.ts';
 
 /**
  * Script-runner child. One process per run: main forks it, posts a single
- * `RunRequest`, and kills the process on timeout or cancel. Because nothing
- * here shares memory with main, a script that never yields (a sync loop, or
+ * `RunRequest`, and kills the process on timeout or cancel. The same entry
+ * also serves one Mongo shell session (`shellSession.ts`), when the first
+ * message is a `shell-start` request: a long-lived REPL, ended by main.
+ * Because nothing here shares memory with main, a script that never yields (a sync loop, or
  * `while (true) await Promise.resolve()`) can only ever stall this process.
  *
  * Runs both as a bundled `.cjs` inside Electron's utilityProcess and as plain
@@ -44,40 +49,6 @@ const PRINT_BUFFER_CAP = 64 * 1024;
  * Users who need the full result still call `.toArray()` explicitly.
  */
 const CURSOR_AUTO_ITERATE_LIMIT = 50;
-
-// ─── Message channel ────────────────────────────────────────────────────────
-
-interface Channel {
-  post(message: RunnerMessage): void;
-  onMessage(listener: (message: unknown) => void): void;
-}
-
-/** Electron utilityProcess exposes `process.parentPort`; a Node fork uses IPC. */
-function openChannel(): Channel {
-  const proc = process as NodeJS.Process & {
-    parentPort?: {
-      postMessage(message: unknown): void;
-      on(event: 'message', listener: (e: { data: unknown }) => void): void;
-    };
-  };
-  if (proc.parentPort) {
-    const port = proc.parentPort;
-    return {
-      post: (m) => port.postMessage(m),
-      onMessage: (listener) => port.on('message', (e) => listener(e.data)),
-    };
-  }
-  if (typeof proc.send !== 'function') {
-    throw new Error('script runner started without a parent channel');
-  }
-  const send = proc.send.bind(proc);
-  return {
-    post: (m) => {
-      send(m);
-    },
-    onMessage: (listener) => proc.on('message', listener),
-  };
-}
 
 // ─── Run ────────────────────────────────────────────────────────────────────
 
@@ -266,7 +237,15 @@ function main(): void {
   let started = false;
   channel.onMessage((message) => {
     if (rpc.handleReply(message)) return;
-    if (!isRunRequest(message) || started) return;
+    if (started) return;
+    // The first request picks what this process is for: one script, or one
+    // shell session. Either way it is the only one it will ever serve.
+    if (isShellStartRequest(message)) {
+      started = true;
+      startShellSession(channel, rpc, message);
+      return;
+    }
+    if (!isRunRequest(message)) return;
     started = true;
     void execute(message, appendPrint, rpc)
       .then((msg): RunnerMessage => (msg.type === 'result' ? { ...msg, printBuffer } : msg))
