@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Binary, Decimal128, Double, Int32, Long, ObjectId } from 'bson';
-import { promoteNumbers } from '../../electron/script-runner/rpcCodec';
+import { markWideIntegers, promoteNumbers } from '../../electron/script-runner/rpcCodec';
 
 describe('promoteNumbers', () => {
   it('turns an Int32 into the plain number', () => {
@@ -87,5 +87,80 @@ describe('promoteNumbers', () => {
     const d = new Double(9);
     const out = promoteNumbers({ a: [{ b: d }] }, true) as { a: Array<{ b: unknown }> };
     expect(out.a[0]!.b).toBe(d);
+  });
+});
+
+describe('markWideIntegers', () => {
+  it('wraps an integer outside int32 range as a Double, at and past each edge', () => {
+    for (const n of [2147483648, -2147483649, 1714000000000, 2 ** 53, 2 ** 60, -(2 ** 40)]) {
+      const out = markWideIntegers(n);
+      expect(out).toBeInstanceOf(Double);
+      expect((out as Double).valueOf()).toBe(n);
+    }
+  });
+
+  it('leaves int32-range integers, fractions, non-finite numbers and -0 as numbers', () => {
+    for (const n of [0, 5, -5, 2147483647, -2147483648, 1.5, -1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const out = markWideIntegers(n);
+      expect(typeof out).toBe('number');
+      if (Number.isNaN(n)) expect(out).toBeNaN();
+      else expect(out).toBe(n);
+    }
+    expect(Object.is(markWideIntegers(-0), -0)).toBe(true);
+  });
+
+  it('walks arrays and documents, and does not change its input', () => {
+    const input = { a: [1714000000000, { b: 3000000000, c: 7 }], d: 'x' };
+    const snapshot = JSON.stringify(input);
+    const out = markWideIntegers(input) as { a: [Double, { b: Double; c: number }]; d: string };
+    expect(out).not.toBe(input);
+    expect(out.a[0]).toBeInstanceOf(Double);
+    expect(out.a[1].b).toBeInstanceOf(Double);
+    expect(out.a[1].c).toBe(7);
+    expect(out.d).toBe('x');
+    expect(JSON.stringify(input)).toBe(snapshot);
+    expect(typeof input.a[0]).toBe('number');
+  });
+
+  it('builds ordinary editable documents', () => {
+    const out = markWideIntegers({ n: 1 }) as object;
+    expect(Object.getOwnPropertyDescriptor(out, 'n')).toEqual({ value: 1, enumerable: true, writable: true, configurable: true });
+  });
+
+  it('walks a document from another realm', async () => {
+    const vm = await import('node:vm');
+    const foreign = vm.runInNewContext('({ t: 1714000000000, nested: { u: [3000000000] } })') as {
+      t: number;
+      nested: { u: number[] };
+    };
+    expect(Object.getPrototypeOf(foreign)).not.toBe(Object.prototype);
+    const out = markWideIntegers(foreign) as { t: unknown; nested: { u: unknown[] } };
+    expect(out.t).toBeInstanceOf(Double);
+    expect(out.nested.u[0]).toBeInstanceOf(Double);
+  });
+
+  it('passes BSON values, dates, binary data and other objects through untouched', () => {
+    const long = Long.fromString('9007199254740993');
+    const oid = new ObjectId('64b7f0f5a1b2c3d4e5f60718');
+    const date = new Date(0);
+    const bytes = new Uint8Array([1, 2]);
+    const re = /x/;
+    const map = new Map([[1, 2]]);
+    for (const v of [long, oid, date, bytes, re, map, null, undefined, 'str', true, new Int32(1), new Double(2)]) {
+      expect(markWideIntegers(v)).toBe(v);
+    }
+  });
+
+  it('keeps a __proto__ field as an own property', () => {
+    const src = JSON.parse('{"__proto__":{"t":1714000000000}}') as object;
+    const out = markWideIntegers(src) as Record<string, { t: unknown }>;
+    expect(Object.keys(out)).toEqual(['__proto__']);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(out, '__proto__')!.value.t).toBeInstanceOf(Double);
+  });
+
+  it('round-trips with promoteNumbers to the plain number', () => {
+    expect(promoteNumbers(markWideIntegers(1714000000000), false)).toBe(1714000000000);
+    expect(promoteNumbers(markWideIntegers(1714000000000), true)).toBe(1714000000000);
   });
 });

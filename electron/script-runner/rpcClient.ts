@@ -1,7 +1,7 @@
 import { SystemError, ValidationError } from '../errors.ts';
 import { ejsonParse, ejsonStringify } from '../mongo/ejson.ts';
 import { fromWireError, type RpcFrame, type RpcReply } from './protocol.ts';
-import { promoteNumbers } from './rpcCodec.ts';
+import { markWideIntegers, promoteNumbers } from './rpcCodec.ts';
 import {
   ADMIN_METHODS,
   COLLECTION_CURSOR_METHODS,
@@ -151,6 +151,10 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
       return terminal(this, 'hasNext', []) as Promise<boolean>;
     }
 
+    count(): Promise<number> {
+      return terminal(this, 'count', []) as Promise<number>;
+    }
+
     explain(verbosity?: unknown): Promise<unknown> {
       return terminal(this, 'explain', [verbosity]);
     }
@@ -295,7 +299,8 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
 }
 
 /**
- * Arguments as canonical EJSON. Trailing `undefined`s are dropped (an EJSON
+ * Arguments as canonical EJSON (a wide integer is marked as a double first,
+ * see `markWideIntegers`). Trailing `undefined`s are dropped (an EJSON
  * array would turn them into `null`, and `findOne(f, null)` is not
  * `findOne(f)`), and a `signal` option is dropped because the `signal` global
  * is an AbortSignal, which has no EJSON form: main threads its own.
@@ -303,7 +308,7 @@ export function createRpcClient(send: (frame: RpcFrame) => void): RpcClient {
 function encodeArgs(args: unknown[]): string {
   const out = args.map(withoutSignal);
   while (out.length > 0 && out[out.length - 1] === undefined) out.pop();
-  return ejsonStringify(out);
+  return ejsonStringify(markWideIntegers(out));
 }
 
 function withoutSignal(arg: unknown): unknown {

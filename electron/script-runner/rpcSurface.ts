@@ -113,6 +113,7 @@ export const CURSOR_TERMINAL_METHODS: ReadonlySet<string> = new Set([
   'hasNext',
   'close',
   'explain',
+  'count',
 ]);
 
 /** Methods whose result is a cursor, kept in main as a handle. */

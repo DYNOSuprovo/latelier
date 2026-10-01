@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { MongoClient } from 'mongodb';
+import { Long } from 'bson';
 import type { MongoMemoryServer } from 'mongodb-memory-server';
 import { ScriptService } from '../../electron/services/ScriptService';
 import { MongoPool } from '../../electron/mongo/MongoPool';
@@ -460,6 +461,34 @@ describe('what the script sees of the database is what the driver returns', () =
     expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual(['number', true, 'number', true, 'Long', '9007199254740993', 'number', true]);
   });
 
+  it('an integer past int32 range is still stored and read as a double, as a JS number always was', async () => {
+    const s = setup();
+    await direct!.db(DB).collection('rpc_wide').deleteMany({});
+    // Written by the script: a JS number, so a double.
+    await s.run({
+      connectionId: 'rw',
+      source: 'await db.rpc_wide.insertOne({ _id: "w", t: Date.UTC(2024, 4, 6), neg: -3000000000, small: 7, big: NumberLong("9007199254740993") }); 1',
+    });
+    const types = await direct!
+      .db(DB)
+      .collection('rpc_wide')
+      .aggregate([{ $project: { t: { $type: '$t' }, neg: { $type: '$neg' }, small: { $type: '$small' }, big: { $type: '$big' } } }])
+      .toArray();
+    expect(types[0]).toMatchObject({ t: 'double', neg: 'double', small: 'int', big: 'long' });
+    // Read by the script: a double stored by someone else comes back a number, not a Long.
+    await direct!
+      .db(DB)
+      .collection<{ _id: string; t: number; l: Long }>('rpc_wide')
+      .insertOne({ _id: 'direct', t: 1714000000000, l: Long.fromNumber(1714000000000) });
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `const d = await db.rpc_wide.findOne({ _id: 'direct' }); const w = await db.rpc_wide.findOne({ _id: 'w' });
+        JSON.stringify([typeof d.t, d.t === 1714000000000, typeof d.l, typeof w.t, w.t === Date.UTC(2024, 4, 6), w.big.constructor.name])`,
+    });
+    // A stored int64 inside the safe range is promoted to a number by the driver, so it is one here too.
+    expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual(['number', true, 'number', 'number', true, 'Long']);
+  });
+
   it('a Double the script asked for is still a double in the collection', async () => {
     const s = setup();
     await s.run({ connectionId: 'rw', source: 'await db.rpc_dbl.deleteMany({}); await db.rpc_dbl.insertOne({ _id: 1, d: new Double(5), i: 5, l: NumberLong(5), n: NumberInt(5) }); 1' });
@@ -581,6 +610,107 @@ describe('what the script sees of the database is what the driver returns', () =
         JSON.stringify({ ack, names })`,
     });
     expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual({ ack: { ok: 1 }, names: ['rpc_made'] });
+  });
+});
+
+describe('every call the bridge carries comes back as data', () => {
+  it('none of the allowlisted methods is refused as "not plain data" or breaks', async () => {
+    const s = setup();
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `
+        await db.rpc_sweep.deleteMany({});
+        await db.dropCollection('rpc_sweep_renamed').catch(() => null);
+        const calls = {
+          insertOne: () => db.rpc_sweep.insertOne({ _id: 1, a: 1 }),
+          insertMany: () => db.rpc_sweep.insertMany([{ _id: 2, a: 2 }, { _id: 3, a: 3 }]),
+          bulkWrite: () => db.rpc_sweep.bulkWrite([{ insertOne: { document: { _id: 4, a: 4 } } }, { updateOne: { filter: { _id: 1 }, update: { $set: { a: 10 } } } }, { deleteOne: { filter: { _id: 3 } } }]),
+          updateOne: () => db.rpc_sweep.updateOne({ _id: 1 }, { $set: { b: 1 } }),
+          updateMany: () => db.rpc_sweep.updateMany({}, { $set: { c: 1 } }),
+          replaceOne: () => db.rpc_sweep.replaceOne({ _id: 2 }, { a: 22 }),
+          findOneAndUpdate: () => db.rpc_sweep.findOneAndUpdate({ _id: 1 }, { $set: { d: 1 } }),
+          findOneAndReplace: () => db.rpc_sweep.findOneAndReplace({ _id: 2 }, { a: 222 }),
+          findOneAndDelete: () => db.rpc_sweep.findOneAndDelete({ _id: 4 }),
+          deleteOne: () => db.rpc_sweep.deleteOne({ _id: 99 }),
+          deleteMany: () => db.rpc_sweep.deleteMany({ _id: 98 }),
+          findOne: () => db.rpc_sweep.findOne({ _id: 1 }),
+          countDocuments: () => db.rpc_sweep.countDocuments({}),
+          count: () => db.rpc_sweep.count({}),
+          estimatedDocumentCount: () => db.rpc_sweep.estimatedDocumentCount(),
+          distinct: () => db.rpc_sweep.distinct('a'),
+          aggregate: () => db.rpc_sweep.aggregate([{ $match: {} }]).toArray(),
+          find: () => db.rpc_sweep.find({}).toArray(),
+          createIndex: () => db.rpc_sweep.createIndex({ a: 1 }),
+          createIndexes: () => db.rpc_sweep.createIndexes([{ key: { b: 1 }, name: 'b_1' }]),
+          indexExists: () => db.rpc_sweep.indexExists('a_1'),
+          indexInformation: () => db.rpc_sweep.indexInformation(),
+          indexes: () => db.rpc_sweep.indexes(),
+          listIndexes: () => db.rpc_sweep.listIndexes().toArray(),
+          dropIndex: () => db.rpc_sweep.dropIndex('a_1'),
+          dropIndexes: () => db.rpc_sweep.dropIndexes(),
+          options: () => db.rpc_sweep.options(),
+          isCapped: () => db.rpc_sweep.isCapped(),
+          rename: () => db.rpc_sweep.rename('rpc_sweep_renamed'),
+          drop: () => db.rpc_sweep_renamed.drop(),
+          listSearchIndexes: () => db.rpc_sweep.listSearchIndexes().toArray(),
+          createSearchIndex: () => db.rpc_sweep.createSearchIndex({ name: 'x', definition: { mappings: { dynamic: true } } }),
+          dropSearchIndex: () => db.rpc_sweep.dropSearchIndex('x'),
+          updateSearchIndex: () => db.rpc_sweep.updateSearchIndex('x', { mappings: { dynamic: true } }),
+          'db.runCommand': () => db.runCommand({ ping: 1 }),
+          'db.command': () => db.command({ ping: 1 }),
+          'db.listCollections': () => db.listCollections().toArray(),
+          'db.runCursorCommand': () => db.runCursorCommand({ find: 'rpc_sweep' }).toArray(),
+          'db.createCollection': () => db.createCollection('rpc_sweep_made'),
+          'db.createIndex': () => db.createIndex('rpc_sweep_made', { z: 1 }),
+          'db.indexInformation': () => db.indexInformation('rpc_sweep_made'),
+          'db.renameCollection': () => db.renameCollection('rpc_sweep_made', 'rpc_sweep_made2'),
+          'db.dropCollection': () => db.dropCollection('rpc_sweep_made2'),
+          'db.stats': () => db.stats(),
+          'db.profilingLevel': () => db.profilingLevel(),
+          'db.setProfilingLevel': () => db.setProfilingLevel('off'),
+          'admin.command': () => db.admin().command({ ping: 1 }),
+          'admin.buildInfo': () => db.admin().buildInfo(),
+          'admin.serverInfo': () => db.admin().serverInfo(),
+          'admin.serverStatus': () => db.admin().serverStatus(),
+          'admin.ping': () => db.admin().ping(),
+          'admin.validateCollection': () => db.admin().validateCollection('rpc_sweep'),
+          'admin.listDatabases': () => db.admin().listDatabases(),
+          'admin.replSetGetStatus': () => db.admin().replSetGetStatus(),
+          'cursor.count': () => db.rpc_sweep.find({}).count(),
+          'cursor.explain': () => db.rpc_sweep.find({}).explain(),
+          'cursor.tryNext': () => db.rpc_sweep.find({}).tryNext(),
+        };
+        const out = {};
+        for (const [name, call] of Object.entries(calls)) {
+          try { await call(); out[name] = 'ok'; } catch (e) { out[name] = String(e.message); }
+        }
+        JSON.stringify(out)`,
+      maxTimeMs: 60_000,
+    });
+    const out = JSON.parse(JSON.parse(r.valueJson!) as string) as Record<string, string>;
+    const plainDataRefusals = Object.entries(out).filter(([, v]) => /not plain data|not available|is not callable/.test(v));
+    expect(plainDataRefusals).toEqual([]);
+    // The calls that exist on a standalone mongod worked; the Atlas-only and replica-set-only ones failed on the server, not in the bridge.
+    const worked = Object.entries(out).filter(([, v]) => v === 'ok').map(([k]) => k);
+    expect(worked).toEqual(
+      expect.arrayContaining([
+        'insertOne', 'insertMany', 'bulkWrite', 'updateOne', 'findOneAndUpdate', 'find', 'aggregate', 'createIndex',
+        'rename', 'drop', 'db.runCommand', 'db.listCollections', 'db.runCursorCommand', 'db.createCollection',
+        'db.renameCollection', 'db.dropCollection', 'admin.ping', 'admin.listDatabases', 'cursor.count', 'cursor.explain',
+      ]),
+    );
+  }, 90_000);
+
+  it('bulkWrite reports its counts and the writes landed', async () => {
+    const s = setup();
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `await db.rpc_bulk.deleteMany({});
+        const res = await db.rpc_bulk.bulkWrite([{ insertOne: { document: { _id: 1 } } }, { insertOne: { document: { _id: 2 } } }, { deleteOne: { filter: { _id: 2 } } }]);
+        JSON.stringify([res.insertedCount, res.deletedCount, res.matchedCount, Object.keys(res.insertedIds).length, res.ok])`,
+    });
+    expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual([2, 1, 0, 2, 1]);
+    expect(await countDocs('rpc_bulk')).toBe(1);
   });
 });
 
@@ -706,6 +836,33 @@ describe('a kill stops the work main started for the script', () => {
       connectionId: 'rw',
       // Long enough that the server would still be working well after the test is over.
       source: 'await db.rpc_slow.find({ $where: "sleep(20000) || true" }).maxTimeMS(30000).toArray()',
+      maxTimeMs: 1500,
+    });
+    const settled = running.then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+    await until(async () => (await slowOps()) === 1, 'the operation to start on the server');
+    expect(await settled).toMatchObject({ code: 'TIMEOUT' });
+    await until(async () => (await slowOps()) === 0, 'the abandoned operation to stop', 5_000);
+    expect(await slowOps()).toBe(0);
+  }, 30_000);
+});
+
+describe('a kill aborts an operation that has no cursor', () => {
+  it('stops a findOne in flight, which only the run signal can reach', async () => {
+    const s = setup();
+    await s.run({ connectionId: 'rw', source: 'await db.rpc_slow_one.deleteMany({}); await db.rpc_slow_one.insertOne({ n: 1 }); 1' });
+    const slowOps = async (): Promise<number> => {
+      const ops = await direct!
+        .db('admin')
+        .aggregate([{ $currentOp: { allUsers: true } }, { $match: { ns: `${DB}.rpc_slow_one` } }])
+        .toArray();
+      return ops.length;
+    };
+    const running = s.run({
+      connectionId: 'rw',
+      source: 'await db.rpc_slow_one.findOne({ $where: "sleep(20000) || true" }, { maxTimeMS: 30000 })',
       maxTimeMs: 1500,
     });
     const settled = running.then(

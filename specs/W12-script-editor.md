@@ -216,10 +216,14 @@ Main answers in `electron/script-runner/rpcHost.ts`. A frame never says
   `createCollection`/`rename` answer `{ ok: 1 }`. A result over the 50 MB
   cap is an error the script can catch.
 - **Arguments** are parsed with the shape-exact EJSON parser, so a
-  filter such as `{ $regex, $options }` stays a filter. `Int32` and
-  integral-valued `Double` handling follows `rpcCodec.ts`: results are
-  promoted back to plain numbers as the driver returns them, and a
-  `Double` the script asked for on purpose stays a double.
+  filter such as `{ $regex, $options }` stays a filter. Numbers keep the
+  type the driver would have given them (`rpcCodec.ts`): results are
+  promoted back to plain JS numbers as the driver returns them (so
+  `doc.n === 1`, and a millisecond timestamp stored as a double reads as a
+  number, not a `Long`), a JS integer outside the int32 range is written
+  as a double exactly as the driver writes any JS number, a `Double` the
+  script asked for on purpose stays a double, and a real `Long` stays a
+  `Long`.
 - **A kill aborts the work main started.** Each run has its own abort
   signal, threaded into every call, and the run's cursors are closed at
   settle, whichever way it ends.
@@ -229,7 +233,11 @@ object or bypass the check: `watch` (change streams), the bulk builders
 (`initializeOrderedBulkOp` / `initializeUnorderedBulkOp`), `db.aggregate`,
 `db.collections`, and the aggregation-cursor builders (`out`, `merge`,
 `group`, `match`, ...). Calling one is a `TypeError`, as for any
-unknown method.
+unknown method. Also not carried, for the same economy: cursor `clone`,
+`rewind` and `stream`, and the driver's data properties on a collection or
+cursor (`readPreference`, `closed`, ...); `collectionName`, `dbName` and
+`namespace` are. `bulkWrite` answers with its counts and id maps rather
+than the driver's result object.
 
 Behaviour of the script itself:
 
@@ -376,9 +384,11 @@ tracked as a follow-up in GitHub Issues.
 - No credentials cross the renderer/main IPC boundary, and none reach the
   runner: it has no client and no connection details, and every database
   call is an RPC that main checks.
-- The script has no more database authority than the connection has, and
-  no more than the app grants it: main refuses writes on a read-only
-  connection (live flag) and refuses any method not on the allowlists.
+- A call made through the bridge gets no more database authority than
+  the connection has, and no more than the app grants it: main refuses
+  writes on a read-only connection (live flag) and refuses any method not
+  on the allowlists. A script that escapes its sandbox is not limited to
+  the bridge; see "Trust boundary" for what it keeps.
 - Evaluation happens in a **runner child process**, never in main. The
   renderer only sees the structured wire result.
 - The wall-clock kill (`maxTimeMs`) is the only ceiling, and it holds

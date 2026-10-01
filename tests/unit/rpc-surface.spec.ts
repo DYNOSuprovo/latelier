@@ -109,7 +109,7 @@ describe('rpcSurface', () => {
   });
 
   it('cursor terminal methods', () => {
-    expect(sorted(CURSOR_TERMINAL_METHODS)).toEqual(['close', 'explain', 'hasNext', 'next', 'toArray', 'tryNext']);
+    expect(sorted(CURSOR_TERMINAL_METHODS)).toEqual(['close', 'count', 'explain', 'hasNext', 'next', 'toArray', 'tryNext']);
   });
 
   it('which calls hand back a cursor or an acknowledgement', () => {

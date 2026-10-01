@@ -5,7 +5,7 @@ import { makeDbProxy } from '../mongo/dbProxy.ts';
 import { ejsonEncodeArrayJson, ejsonStringify, parseEjsonField } from '../mongo/ejson.ts';
 import { classifyMongoOpError } from '../mongo/errors.ts';
 import { MAX_SCRIPT_RESULT_BYTES } from './encodeResult.ts';
-import { promoteNumbers } from './rpcCodec.ts';
+import { markWideIntegers, promoteNumbers } from './rpcCodec.ts';
 import { toWireError, type RpcFrame, type RpcReply } from './protocol.ts';
 import {
   ADMIN_METHODS,
@@ -123,7 +123,7 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
           await out;
           return ok(id, { ok: 1 });
         }
-        return ok(id, await out);
+        return ok(id, method === 'bulkWrite' ? bulkWriteSummary(await out) : await out);
       }
       case 'cursor': {
         const shaping = CURSOR_SHAPING_METHODS.has(method);
@@ -196,6 +196,26 @@ function parseArgs(argsEjson: unknown): unknown[] {
   return args;
 }
 
+/**
+ * `bulkWrite` resolves to a `BulkWriteResult`, a class instance, so it would be
+ * refused as not plain data after the write had already happened. What a
+ * script reads off it is these counts and id maps (the raw server reply is
+ * not enumerable on it), so those are what crosses.
+ */
+function bulkWriteSummary(result: unknown): unknown {
+  const r = result as Record<string, unknown>;
+  return {
+    ok: r.ok,
+    insertedCount: r.insertedCount,
+    matchedCount: r.matchedCount,
+    modifiedCount: r.modifiedCount,
+    deletedCount: r.deletedCount,
+    upsertedCount: r.upsertedCount,
+    insertedIds: r.insertedIds,
+    upsertedIds: r.upsertedIds,
+  };
+}
+
 function ok(id: number, value: unknown): RpcReply {
   return { type: 'rpc-result', id, valueEjson: encodeData(value) };
 }
@@ -227,10 +247,12 @@ function encodeData(value: unknown): string {
   if (!isPlainData(value) || (Array.isArray(value) && !value.every(isPlainData))) {
     throw new SystemError('INTERNAL', 'rpc: the call returned something that is not plain data');
   }
+  // Marked per element for an array, so a result over the cap stops at the
+  // element that breaches it instead of after the whole array has been walked.
   if (Array.isArray(value)) {
-    return ejsonEncodeArrayJson(value, { maxBytes: MAX_SCRIPT_RESULT_BYTES });
+    return ejsonEncodeArrayJson(value, { maxBytes: MAX_SCRIPT_RESULT_BYTES, prepare: markWideIntegers });
   }
-  const json = ejsonStringify(value);
+  const json = ejsonStringify(markWideIntegers(value));
   if (json.length > MAX_SCRIPT_RESULT_BYTES) {
     throw new SystemError('INTERNAL', `result size exceeds ${MAX_SCRIPT_RESULT_BYTES} byte cap`);
   }

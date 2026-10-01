@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Double, Int32, ObjectId } from 'bson';
+import { Double, Int32, Long, ObjectId } from 'bson';
 import { createRpcHost, type RpcHost, type RpcHostOpts } from '../../electron/script-runner/rpcHost';
 import type { RpcFrame, RpcReply } from '../../electron/script-runner/protocol';
 import { ejsonParse } from '../../electron/mongo/ejson';
@@ -76,6 +76,27 @@ class FakeCollection {
   countDocuments(...a: unknown[]): Promise<number> {
     rec(`${this.name}.countDocuments`, a);
     return Promise.resolve(3);
+  }
+  bulkWrite(...a: unknown[]): Promise<unknown> {
+    rec(`${this.name}.bulkWrite`, a);
+    // Like the driver's: a class instance, counts as own fields, the raw reply
+    // hidden, `ok` a getter on the prototype.
+    class BulkWriteResultLike {
+      insertedCount = 1;
+      matchedCount = 2;
+      modifiedCount = 3;
+      deletedCount = 4;
+      upsertedCount = 5;
+      upsertedIds = { 0: 'u' };
+      insertedIds = { 0: 'i' };
+      constructor() {
+        Object.defineProperty(this, 'result', { value: { client: 'the-client' }, enumerable: false });
+      }
+      get ok(): number {
+        return 1;
+      }
+    }
+    return Promise.resolve(new BulkWriteResultLike());
   }
   drop(...a: unknown[]): Promise<boolean> {
     rec(`${this.name}.drop`, a);
@@ -299,7 +320,7 @@ describe('rpcHost — what a frame may name', () => {
 
   it('checks the cursor method before it looks the cursor up', async () => {
     const id = cursorIdOf(await send({ method: 'find' }));
-    for (const method of ['cursorClient', 'out', 'merge', '__proto__', 'constructor', 'forEach', 'map', 'count', 's']) {
+    for (const method of ['cursorClient', 'out', 'merge', '__proto__', 'constructor', 'forEach', 'map', 'clone', 's']) {
       const reply = await send({ target: 'cursor', method, cursorId: id });
       expect(errorOf(reply).code).toBe('VALIDATION');
       expect(errorOf(reply).message).toBe(`rpc: '${method}' is not callable on cursor`);
@@ -359,6 +380,21 @@ describe('rpcHost — routes', () => {
     expect(calls.map((c) => c.what)).toContain('c.rename');
   });
 
+  it('answers a bulkWrite with its counts and id maps, not a refusal, and never its raw reply', async () => {
+    const reply = await send({ method: 'bulkWrite', argsEjson: argsOf([{ insertOne: { document: { a: 1 } } }]) });
+    expect(value(reply)).toEqual({
+      ok: 1,
+      insertedCount: 1,
+      matchedCount: 2,
+      modifiedCount: 3,
+      deletedCount: 4,
+      upsertedCount: 5,
+      insertedIds: { 0: 'i' },
+      upsertedIds: { 0: 'u' },
+    });
+    expect(JSON.stringify(reply)).not.toContain('the-client');
+  });
+
   it('refuses a result that is not plain data rather than serializing it', async () => {
     const reply = await send({ method: 'options' });
     const err = errorOf(reply);
@@ -408,6 +444,58 @@ describe('rpcHost — numbers in arguments', () => {
     expect(Object.keys(doc).sort((a, b) => a.localeCompare(b))).toEqual(['__proto__', 'a']);
     expect(Object.getPrototypeOf(doc)).toBe(Object.prototype);
     expect(({} as { isAdmin?: boolean }).isAdmin).toBeUndefined();
+  });
+});
+
+describe('rpcHost — integers outside int32 range', () => {
+  async function findOneReturning(result: unknown): Promise<RpcReply> {
+    const restore = patched(FakeCollection.prototype, 'findOne', () => Promise.resolve(result));
+    try {
+      return await send({ method: 'findOne' });
+    } finally {
+      restore();
+    }
+  }
+
+  it('goes out as a double, so the script reads the number the driver returned', async () => {
+    const reply = await findOneReturning({ t: 1714000000000, small: 5, neg: -3000000000, frac: 1.5 });
+    const text = reply.type === 'rpc-result' && 'valueEjson' in reply ? reply.valueEjson : '';
+    expect(JSON.parse(text)).toEqual({
+      t: { $numberDouble: '1714000000000.0' },
+      small: { $numberInt: '5' },
+      neg: { $numberDouble: '-3000000000.0' },
+      frac: { $numberDouble: '1.5' },
+    });
+    expect(value(reply)).toEqual({ t: 1714000000000, small: 5, neg: -3000000000, frac: 1.5 });
+    const t = (value(reply) as { t: unknown }).t;
+    expect(typeof t).toBe('number');
+  });
+
+  it('keeps a real Long a Long, including one past 2^53', async () => {
+    const reply = await findOneReturning({ big: Long.fromString('9007199254740993'), n: Long.fromNumber(5) });
+    const seen = value(reply) as { big: Long; n: Long };
+    expect(seen.big).toBeInstanceOf(Long);
+    expect(seen.big.toString()).toBe('9007199254740993');
+    expect(seen.n).toBeInstanceOf(Long);
+  });
+
+  it('marks it inside arrays that come back from a cursor, one element at a time', async () => {
+    const restore = patched(FakeCursor.prototype, 'toArray', () => Promise.resolve([{ t: 1714000000000 }, { t: 2 }]));
+    try {
+      const id = cursorIdOf(await send({ method: 'find' }));
+      const reply = await send({ target: 'cursor', method: 'toArray', cursorId: id });
+      expect(value(reply)).toEqual([{ t: 1714000000000 }, { t: 2 }]);
+      expect(reply.type === 'rpc-result' && 'valueEjson' in reply && reply.valueEjson).toContain('$numberDouble');
+    } finally {
+      restore();
+    }
+  });
+
+  it('reads an argument written as a double back as a plain number the driver writes as a double', async () => {
+    await send({ method: 'insertOne', argsEjson: argsOf({ t: { $numberDouble: '1714000000000.0' } }) });
+    const doc = calls.find((c) => c.what === 'c.insertOne')!.args[0] as { t: unknown };
+    expect(doc.t).toBe(1714000000000);
+    expect(typeof doc.t).toBe('number');
   });
 });
 
