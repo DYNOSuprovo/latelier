@@ -294,9 +294,9 @@ Behaviour of the script itself:
   (assignments, declarations) produces no value, and `valueJson` is
   `null`. If acorn fails to parse, the source is run as-is and
   `valueJson` stays `null` — the syntax error surfaces from the vm
-  with the user's original line/column, not the wrapper's. Mirrors
-  how Node's REPL surfaces the last expression without forcing users
-  to write `return`.
+  with the user's original line number (e.g., "syntax error (line 5):
+  Unexpected token"), not the wrapper's. Mirrors how Node's REPL
+  surfaces the last expression without forcing users to write `return`.
 - The returned value is EJSON-encoded via the existing
   `ejsonEncode` (objects/arrays) or `ejsonStringifyRelaxed` helpers.
   Non-serialisable values (functions, the `db` proxy itself) collapse
