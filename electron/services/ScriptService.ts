@@ -1,3 +1,4 @@
+import type { MongoClient } from 'mongodb';
 import type { ScriptRunInput, ScriptRunResultWire } from '@shared/types';
 import {
   ConflictError,
@@ -6,13 +7,14 @@ import {
   ValidationError,
   type AppError,
 } from '../errors.ts';
-import type { ConnectionSpec } from '../mongo/connectionSpec.ts';
+import type { Logger } from '../log.ts';
 import type { MongoPool } from '../mongo/MongoPool.ts';
 import {
   fromWireError,
   isRunnerMessage,
   type RunRequest,
 } from '../script-runner/protocol.ts';
+import { createRpcHost } from '../script-runner/rpcHost.ts';
 import type { RunnerHandle, RunnerSpawner } from './runner/spawner.ts';
 
 const DEFAULT_MAX_TIME_MS = 60_000;
@@ -20,6 +22,7 @@ const DEFAULT_MAX_TIME_MS = 60_000;
 export interface ScriptServiceOpts {
   pool: MongoPool;
   spawner: RunnerSpawner;
+  logger?: Logger;
 }
 
 /** One in-flight script: the connection it runs on and how to stop it. */
@@ -37,7 +40,13 @@ interface Run {
  * cancel, or app quit. A script that never yields can therefore only ever
  * stall its own process, never the main one.
  *
- * Main keeps the pieces that must survive a runner: the cancel-token
+ * The runner holds no database client and no credentials. Its `db` sends every
+ * call back as an RPC frame, and `rpcHost` executes it here over the pool's own
+ * client, through the read-only guard, with the flag read live from the
+ * connection. That is what makes read-only a property of main rather than of
+ * the script's process.
+ *
+ * Main also keeps the pieces that must survive a runner: the cancel-token
  * bookkeeping, the connect pre-flight (clean connect errors, connection status
  * events) and the wall-clock timer.
  */
@@ -47,14 +56,17 @@ export class ScriptService {
   private readonly active = new Map<string, AbortController>();
   private readonly runs = new Set<Run>();
   private readonly live = new Set<RunnerHandle>();
+  private readonly logger?: Logger;
 
   constructor(opts: ScriptServiceOpts) {
     this.pool = opts.pool;
     this.spawner = opts.spawner;
-    // A runner owns its own client, so nothing the pool does to its client
-    // reaches a running script. Two things have to be relayed by hand: the
-    // read-only flag (the runner only holds the value from spawn), and the
-    // connection going away (Disconnect, Cancel, delete, a host edit).
+    this.logger = opts.logger;
+    // Every call a script makes already goes through main, which reads the
+    // read-only flag live, so a flip refuses the next write by itself. These
+    // relays stop the run outright on top of that: a script that was started
+    // on a connection that has since gone read-only, or away (Disconnect,
+    // Cancel, delete, a host edit), should not carry on.
     //
     // The 'disconnected' status also comes from MongoPool.markConnectionLost:
     // when main's own client sees no known servers for the loss grace window,
@@ -127,16 +139,16 @@ export class ScriptService {
       // before any process is spawned, and so the connection's status events
       // fire as they always have. If the user cancels during this phase, the
       // controller is already wired and `aborted` is checked in the catch.
+      let client: MongoClient;
       try {
-        await this.pool.readClient(input.connectionId);
+        client = await this.pool.readClient(input.connectionId);
       } catch (err) {
         if (run.ctrl.signal.aborted) throw stopError(run);
         throw err;
       }
       if (run.ctrl.signal.aborted) throw stopError(run);
 
-      const spec = this.pool.connectionSpec(input.connectionId);
-      return await this.runInChild(run, spec, input, maxTimeMs);
+      return await this.runInChild(run, client, input, maxTimeMs);
     } finally {
       this.runs.delete(run);
       if (input.cancelToken) this.releaseToken(input.cancelToken, run.ctrl);
@@ -144,13 +156,15 @@ export class ScriptService {
   }
 
   /**
-   * Spawn the runner, hand it the request, and settle on the first of: its
-   * result, its exit, the wall clock, or an abort. Every path kills the
-   * process; whatever arrives after settling is ignored.
+   * Spawn the runner, hand it the request, answer its database calls, and
+   * settle on the first of: its result, its exit, the wall clock, or an abort.
+   * Every path kills the process and ends the host (aborting its in-flight
+   * driver work and closing its cursors); whatever arrives after settling is
+   * ignored.
    */
   private runInChild(
     run: Run,
-    spec: ConnectionSpec,
+    client: MongoClient,
     input: ScriptRunInput,
     maxTimeMs: number,
   ): Promise<ScriptRunResultWire> {
@@ -159,12 +173,25 @@ export class ScriptService {
       this.live.add(handle);
       let settled = false;
 
+      // Its own controller: a timeout kills the child without ever aborting
+      // `run.ctrl`, and the driver work already started for it must stop too.
+      const hostCtrl = new AbortController();
+      const host = createRpcHost({
+        client,
+        isReadOnly: () => this.pool.isReadOnly(run.connectionId),
+        signal: hostCtrl.signal,
+        onCloseError: (err) =>
+          this.logger?.warn('script', 'closing a script cursor failed', { error: String(err) }),
+      });
+
       const settle = (finish: () => void): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         run.ctrl.signal.removeEventListener('abort', onAbort);
         handle.kill();
+        // Close first so the close commands go out before the abort reaches them.
+        void host.close().finally(() => hostCtrl.abort());
         finish();
       };
       const onAbort = (): void => settle(() => reject(stopError(run)));
@@ -187,6 +214,18 @@ export class ScriptService {
       handle.onMessage((message) => {
         if (!isRunnerMessage(message)) {
           settle(() => reject(new SystemError('INTERNAL', 'script runner sent a malformed message')));
+        } else if (message.type === 'rpc') {
+          void host
+            .handle(message)
+            .then((reply) => {
+              // A reply for a run that already ended has nowhere to go.
+              if (!settled) handle.postMessage(reply);
+            })
+            .catch((err: unknown) =>
+              settle(() =>
+                reject(new SystemError('INTERNAL', `could not answer the script runner: ${String(err)}`)),
+              ),
+            );
         } else if (message.type === 'result') {
           settle(() =>
             resolve({
@@ -214,9 +253,6 @@ export class ScriptService {
       const request: RunRequest = {
         type: 'run',
         source: input.source,
-        uri: spec.uri,
-        options: spec.options,
-        readOnly: spec.readOnly,
         dbName: input.dbName ?? 'test',
         ejsonRelaxed: input.ejsonRelaxed ?? false,
       };

@@ -205,14 +205,16 @@ export class ByteCapExceededError extends SystemError {
  */
 export function ejsonEncodeArrayJson(
   docs: unknown[],
-  opts: { relaxed?: boolean; maxBytes?: number } = {},
+  opts: { relaxed?: boolean; maxBytes?: number; prepare?: (doc: unknown) => unknown } = {},
 ): string {
   const relaxed = opts.relaxed ?? false;
   const max = opts.maxBytes;
+  const prepare = opts.prepare;
   let out = '[';
   let bytes = 1; // opening '['
   for (let i = 0; i < docs.length; i++) {
-    const piece = JSON.stringify(ejsonEncode(docs[i], relaxed));
+    // `prepare` runs per element, here, so a cap breach still stops the work early.
+    const piece = JSON.stringify(ejsonEncode(prepare ? prepare(docs[i]) : docs[i], relaxed));
     const sep = i === 0 ? '' : ',';
     bytes += Buffer.byteLength(sep, 'utf8') + Buffer.byteLength(piece, 'utf8');
     if (max !== undefined && bytes > max) throw new ByteCapExceededError(max);

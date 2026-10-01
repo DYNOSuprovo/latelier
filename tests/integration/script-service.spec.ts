@@ -74,8 +74,8 @@ function setup(overrides: Record<string, Partial<Parameters<typeof makeConnectio
 function fakePool(readClient: () => Promise<unknown>): MongoPool {
   return Object.assign(new EventEmitter(), {
     readClient,
-    connectionSpec: () => {
-      throw new Error('connectionSpec must not be reached');
+    isReadOnly: () => {
+      throw new Error('isReadOnly must not be reached');
     },
   }) as unknown as MongoPool;
 }
@@ -415,11 +415,12 @@ describe('ScriptService — runner lifecycle', () => {
     await until(async () => spawner.alive().length === 0, 'runner to die', 3000);
   });
 
-  it('never puts credentials in argv or env; they travel only in the request message', async () => {
+  it('never puts credentials anywhere the runner can see: argv, env or any message', async () => {
     setup();
-    // The user is unknown to the server, so the run fails at authentication:
-    // the spawn, which is what this test inspects, has happened by then.
-    // A script-visible secret would show up in argv, env or the request.
+    // The user is unknown to the server, so the pool's own connect would fail
+    // authentication; stand in for it with an unauthenticated client. What the
+    // test inspects is what main hands the runner, and the script makes a real
+    // call so there are RPC frames and replies to inspect as well.
     const sentinel = 'pw-SENTINEL-9f3a';
     const now = new Date().toISOString();
     tmp!.db
@@ -436,20 +437,38 @@ describe('ScriptService — runner lifecycle', () => {
       authUsername: 'nobody',
     });
     pool = new MongoPool({ repo: makeReader([authed]), vault });
-    // The pool pre-flight would fail authentication first, so stand in for it.
-    vi.spyOn(pool, 'readClient').mockResolvedValue({} as never);
+    const direct = new MongoClient(server.getUri());
+    vi.spyOn(pool, 'readClient').mockResolvedValue(direct);
     svc = new ScriptService({ pool, spawner });
-    await expect(svc.run({ connectionId: 'authed', source: '1', maxTimeMs: 5000 })).rejects.toBeInstanceOf(
-      AppError,
-    );
+    try {
+      const r = await svc.run({
+        connectionId: 'authed',
+        source: 'await db.runCommand({ ping: 1 }); 1',
+        maxTimeMs: 5000,
+      });
+      expect(r.valueJson).toBe('1');
+    } finally {
+      await direct.close();
+    }
 
     expect(spawner.spawns).toHaveLength(1);
     const spawn = spawner.spawns[0]!;
     expect(JSON.stringify(spawn.args)).not.toContain(sentinel);
     expect(JSON.stringify(spawn.env)).not.toContain(sentinel);
-    const request = spawn.sent[0] as { type: string; uri: string };
-    expect(request.type).toBe('run');
-    expect(request.uri).toContain(sentinel);
+    // The request carries the script and nothing about the connection.
+    const request = spawn.sent[0] as Record<string, unknown>;
+    expect(Object.keys(request).sort((a, b) => a.localeCompare(b))).toEqual([
+      'dbName',
+      'ejsonRelaxed',
+      'source',
+      'type',
+    ]);
+    const everything = JSON.stringify(spawn.sent);
+    expect(everything).not.toContain(sentinel);
+    expect(everything).not.toContain('mongodb://');
+    expect(everything).not.toContain('nobody');
+    // The ping reply did come back over the bridge, so this covered a reply too.
+    expect(spawn.sent.some((m) => (m as { type?: string }).type === 'rpc-result')).toBe(true);
   });
 });
 
@@ -625,8 +644,9 @@ describe('ScriptService — real cursor results', () => {
   });
 });
 
-// Read-only is still the in-runner proxy guard in this design (the runner owns
-// its own client), so these pin the guard's behaviour across the process split.
+// Read-only is enforced in main, on the calls the runner sends over the bridge;
+// these pin that the ordinary script surface is refused the same way as before.
+// The escape routes are covered in script-rpc.spec.ts.
 describe('ScriptService — read-only connection', () => {
   it('reads still work on a read-only connection', async () => {
     const s = setup();

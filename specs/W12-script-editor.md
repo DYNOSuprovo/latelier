@@ -19,7 +19,8 @@ the work is "poke the cluster one expression at a time".
   `workspace_tabs.state_json`; a CodeMirror 6 editor in the renderer
   with JS syntax highlighting; a `ScriptService` in main that orchestrates
   a script-runner child process, which runs the user buffer in a
-  `node:vm` context wrapped in an async IIFE; IPC channels
+  `node:vm` context wrapped in an async IIFE and reaches the database
+  only through an RPC bridge back to main; IPC channels
   `script:run` / `script:cancel`; structured result rendering (last
   expression value + a print buffer); cancellation by killing the
   child, keyed on a cancel token.
@@ -107,8 +108,8 @@ export interface ScriptRunResultWire {
 | `script:cancel` | `{ token: string }` | `void`              | kills the runner bound to that token. No-op if unknown. |
 
 No `SECRET_INPUT` tag — no credential crosses the renderer/main IPC
-boundary. (The runner does receive the connection's credentials from
-main over a private message port; see §3.)
+boundary, and none reaches the runner either: it holds no client, URI
+or password (see §3, "The database bridge").
 
 ## 3. ScriptService (main)
 
@@ -140,50 +141,127 @@ has answered.
 - **A dead runner is a clean error.** A child that exits before
   answering surfaces as `SystemError('INTERNAL', 'script runner exited
   unexpectedly …')`.
-- **Connect in main first.** `run` still calls `pool.readClient` so
-  connect failures and connection status events surface as before,
-  then asks `pool.connectionSpec(id)` for what the runner needs.
-- **The runner owns its own `MongoClient`** (a second connection per
-  run). Main sends `{ uri, options }` — credentials included, TLS CA and
-  client-certificate files inlined as PEM contents — over the message
-  port. They are never placed in argv or the environment, and the
-  child's environment is an allowlist (`PATH`, OS temp/home, Windows
-  `SystemRoot`), not a copy of main's.
-- **Read-only is a UI safety guard in this design, not a security
-  boundary.** The runner enforces it with the same `dbProxy` allowlist,
-  inside a process that holds live credentials and the OS user's file
-  and exec access. A script that escapes the `vm` context can open its
-  own client and write. What the split buys is that such a script can
-  no longer reach main's memory, the vault, SQLite, or other
-  connections' clients, and can no longer freeze the app. Moving
-  enforcement and credentials out of the child is the RPC bridge
-  follow-up (ADR 0014).
-- **A connection turned read-only mid-run stops its scripts.** The
-  runner only has the flag as it was at spawn, so
-  `ConnectionService.update` announces a false-to-true flip on the pool
-  and `ScriptService` kills that connection's runners with a
-  `READ_ONLY` refusal. Runs that start afterwards get the new flag.
-- **A connection that goes away mid-run stops its scripts.** The runner's
-  client is its own, so Disconnect, Cancel-connect, deleting the
-  connection, or an edit that reconnects would otherwise leave a script
-  running (and writing) against it. `ScriptService` listens for the pool's
-  `disconnected` status and kills that connection's runners with a
-  `DB_ERROR`. That status also fires when the pool decides the
-  deployment is unreachable (its own client saw no known servers for the
-  loss grace window), so a script is stopped on a dropped connection too.
-  This is deliberate and fail-closed: do not narrow it to user-initiated
-  disconnects.
+- **Connect in main first.** `run` calls `pool.readClient` before
+  spawning, so connect failures and connection status events surface as
+  before. That client is the one the run then uses: there is no second
+  connection per run.
+- **The runner holds no `MongoClient`, connection string or
+  credentials.** Its request (`RunRequest`) carries the source, the
+  starting database name and the EJSON mode, nothing about the
+  connection, and its environment is an allowlist (`PATH`, OS temp/home,
+  Windows `SystemRoot`), not a copy of main's. Every database call it
+  makes is an RPC to main (below).
+- **Read-only is enforced in main, for every route a script can take.**
+  Main executes each call through `makeDbProxy` over its own client with
+  the connection's flag read live from the stored connection on every
+  call, so a write is refused whatever the script does and whatever the
+  child's state: `insertOne`, `getCollection`/`collection`, a cached
+  method reference, `admin()`, `runCommand`, an aggregate with `$out` or
+  `$merge`, and a frame posted by hand all arrive at the same check. A
+  connection flipped to read-only mid-run therefore has its next write
+  refused even if nothing stops the run.
+- **A connection turned read-only mid-run also stops its scripts.**
+  On top of the live check, `ConnectionService.update` announces a
+  false-to-true flip on the pool and `ScriptService` kills that
+  connection's runners with a `READ_ONLY` refusal, so a script started
+  on a writable connection does not carry on after the flip.
+- **A connection that goes away mid-run stops its scripts.** Disconnect,
+  Cancel-connect, deleting the connection, or an edit that reconnects
+  would otherwise leave a script running against a client main has
+  closed. `ScriptService` listens for the pool's `disconnected` status
+  and kills that connection's runners with a `DB_ERROR`. That status also
+  fires when the pool decides the deployment is unreachable (its own
+  client saw no known servers for the loss grace window), so a script is
+  stopped on a dropped connection too. This is deliberate and
+  fail-closed: do not narrow it to user-initiated disconnects.
 - **Results are encoded in the runner** (50 MB cap, print buffer cap
   64 KB) and cross the port as a string.
+
+### The database bridge
+
+The runner's `db` (`electron/script-runner/rpcClient.ts`) has the
+mongosh-flavoured surface scripts are written against, but it is a
+facade. Each call that must reach the server becomes a frame
+`{ type: 'rpc', id, target, dbName, coll?, cursorId?, method, argsEjson }`
+posted to main, answered by `{ type: 'rpc-result', id, valueEjson }`,
+`{ type: 'rpc-result', id, cursorId }` or
+`{ type: 'rpc-error', id, error }`. `target` is `db`, `admin`
+(`db.admin()`'s object), `collection` or `cursor`. Arguments and results
+cross as canonical EJSON strings.
+
+Main answers in `electron/script-runner/rpcHost.ts`. A frame never says
+*what* to run, only which entry of a fixed list:
+
+- **Per-object allowlists** (`rpcSurface.ts`): one set each for Db,
+  Admin, Collection, cursor-shaping and cursor-terminal methods, checked
+  with `Set.has`. There is no generic "call property X" path, so a
+  driver internal (a cursor's client, a collection's `s` bag) is not
+  addressable at all, and `__proto__`, `constructor` and inherited names
+  are refused like any other unlisted name.
+- **A well-formed frame the allowlist rejects gets an `rpc-error`
+  reply**, which the script can catch. A frame with no usable `id`
+  cannot be answered and ends the run as `INTERNAL` ("malformed
+  message"), the same as any structurally malformed message.
+- **Cursors are main-side handles** with an id main mints, scoped to the
+  run, capped in number, and closed when the run ends, is killed, or the
+  child dies. A frame naming a cursor this run did not create is refused.
+  `find`/`aggregate` stay synchronous in the script, so the facade
+  queues the shaping calls (`sort`, `limit`, `skip`, `project`, ...) and
+  opens the real cursor on the first terminal call; shaping after that
+  throws. `forEach`, `map` and `for await` run in the script's process
+  over `next()`.
+- **Results leave main only as data.** A call's result must be a
+  primitive, array, plain document or BSON value; a driver object (a
+  `Collection`, a change stream) is refused rather than serialized, and
+  `createCollection`/`rename` answer `{ ok: 1 }`. A result over the 50 MB
+  cap is an error the script can catch.
+  A call's result is encoded in main, synchronously, on main's event
+  loop: about 50 ms for a 10 MB result, growing toward the 50 MB cap, and
+  the wall-clock kill does not bound it (it can only act between event
+  loop turns). This is the same trade as the UI query path, which encodes
+  its results in main the same way.
+- **A script cannot flood main.** A run may have at most 64 calls
+  outstanding (`MAX_RPC_IN_FLIGHT`); a frame past that is answered with an
+  `rpc-error` ('rpc: too many calls in flight') and the run goes on. An
+  `argsEjson` longer than 16 MiB characters (`MAX_RPC_ARGS_CHARS`) is
+  refused before it is parsed. These bound the work one run can queue on
+  the shared pool client; they are not a rate limit.
+- **Arguments** are parsed with the shape-exact EJSON parser, so a
+  filter such as `{ $regex, $options }` stays a filter. Numbers keep the
+  type the driver would have given them (`rpcCodec.ts`): results are
+  promoted back to plain JS numbers as the driver returns them (so
+  `doc.n === 1`, and a millisecond timestamp stored as a double reads as a
+  number, not a `Long`), a JS integer outside the int32 range is written
+  as a double exactly as the driver writes any JS number, a `Double` the
+  script asked for on purpose stays a double, and a real `Long` stays a
+  `Long`.
+- **A kill aborts the work main started.** Each run has its own abort
+  signal, threaded into every call, and the run's cursors are closed at
+  settle, whichever way it ends.
+
+What the facade does not carry, because it would hand back a live driver
+object or bypass the check: `watch` (change streams), the bulk builders
+(`initializeOrderedBulkOp` / `initializeUnorderedBulkOp`), `db.aggregate`,
+`db.collections`, and the aggregation-cursor builders (`out`, `merge`,
+`group`, `match`, ...). Calling one is a `TypeError`, as for any
+unknown method. Also not carried, for the same economy: cursor `clone`,
+`rewind` and `stream`, and the driver's data properties on a collection or
+cursor (`readPreference`, `closed`, ...); `collectionName`, `dbName` and
+`namespace` are. `bulkWrite` answers with its counts and id maps rather
+than the driver's result object.
 
 Behaviour of the script itself:
 
 - A fresh `vm.Context` is created per call. The context globals are:
-  - `db` — the same Proxy `ShellService` builds (extracted to
-    `electron/mongo/dbProxy.ts` so both services share one
-    implementation). Mongosh-style aliases (`runCommand` →
-    `command`, `count` → `countDocuments`) carry over.
-  - `use(name)` — switches the proxy's current database.
+  - `db` — the bridge facade above. In main the calls run through the
+    same proxy `ShellService` builds (`electron/mongo/dbProxy.ts`, one
+    implementation for both), so the mongosh-style aliases
+    (`runCommand` → `command`, `count` → `countDocuments`) carry over.
+    `db.getCollection(name)` and `db.collection(name)` both return a
+    collection, and `db.getSiblingDB(name)` a sibling `db`.
+  - `use(name)` — switches the facade's current database. Each frame
+    names its database, so a collection handle taken before `use()`
+    stays on the database it came from.
   - `print(...args)` / `printjson(value)` — append to the print
     buffer (capped at 64 KB; further writes are silently dropped to
     keep the IPC payload bounded).
@@ -191,17 +269,13 @@ Behaviour of the script itself:
   - `ObjectId`, `ISODate`, `Long`, `Decimal128`, `UUID` — re-exports
     of `bson` constructors so users can write `new ObjectId(...)`
     just as they would in mongosh.
-  - `signal` — an `AbortSignal`, exposed as a global so users can pass
-    it manually to long-running ops. Cancel kills the process rather
-    than aborting this signal, so it never fires; it remains so scripts
-    that reference it keep working. The collection
-    proxy *also* auto-threads it: when the user calls
-    `db.coll.find(filter)` (no options), the wrapper rewrites that to
-    `find(filter, { signal })`. If the user passes their own options
-    object, theirs wins (so explicit `{ signal: undefined }` opts
-    out). Same treatment for `findOne`, `aggregate`,
-    `countDocuments`, `updateOne`, `updateMany`, `deleteOne`,
-    `deleteMany`, `insertOne`, `insertMany`, and cursor `.toArray()`.
+  - `signal` — an `AbortSignal`, exposed as a global so scripts that
+    reference it keep working. Cancel kills the process rather than
+    aborting this signal, so it never fires. An AbortSignal has no EJSON
+    form, so a `signal` option a script passes is dropped from the call;
+    main threads the run's own signal into every driver call instead
+    (the proxy rewrites `find(filter)` to `find(filter, { signal })` and
+    so on), which is what stops in-flight work when the run is killed.
 - The buffer is wrapped in an async IIFE before evaluation:
   ```js
   (async () => {
@@ -236,14 +310,32 @@ Behaviour of the script itself:
 
 `vm.createContext` is *not* a security boundary, and this spec does not
 pretend otherwise: user scripts can reach Node primordials through the
-host-realm objects in their context. The process split does not change
-that; it changes what an escaped script can reach. Inside the runner it
-has the OS user's file and exec access and, in this design, the one
-connection's credentials. It has no route to main's memory, the secrets
-vault, the SQLite database, or other connections. The threat model is
-otherwise unchanged from W11: the user's own code, on the user's own
-machine, against the user's own database. `isolated-vm` is rejected on
-the same grounds as in W11: native ABI complications on top of
+host-realm objects in their context. The process split and the bridge
+change what an escaped script can reach.
+
+- **It holds no credentials.** The runner has no URI, password, TLS
+  material or driver client to find, and nothing main sends it carries
+  one. To use the connection it must send frames, and main applies the
+  read-only guard and the allowlists to each. A script that escapes the
+  `vm` context and posts frames by hand gets the same answers as one that
+  did not.
+- **It has no route to main's memory, the secrets vault, the SQLite
+  database, or other connections.**
+- **It still has the OS user's reach.** The runner is an ordinary child
+  process of the same OS user: it can read and write that user's files,
+  run programs and open network connections. Against a deployment that
+  needs no authentication (a local `mongod` with auth off) it can open its
+  own connection directly and write, because there is nothing to withhold;
+  read-only cannot hold against that, and neither can any other control in
+  the app. Where the deployment has authentication, the credentials stay
+  in main.
+- **MongoDB roles remain the authoritative control.** A read-only
+  connection in this app is a guard on the paths the app controls. For a
+  guarantee, connect with a database user that only has read privileges.
+
+The threat model is otherwise unchanged from W11: the user's own code, on
+the user's own machine, against the user's own database. `isolated-vm` is
+rejected on the same grounds as in W11: native ABI complications on top of
 `better-sqlite3`, and no gain beyond what the process split gives.
 
 ## 4. Renderer surface
@@ -300,17 +392,22 @@ tracked as a follow-up in GitHub Issues.
 
 ## 5. Security
 
-- No credentials cross the renderer/main IPC boundary. Main hands the
-  runner the connection's credentials over a private message port
-  (never argv or env); the runner connects with them.
-- The script has the same database authority the connection has — no
-  privilege escalation, no impersonation.
+- No credentials cross the renderer/main IPC boundary, and none reach the
+  runner: it has no client and no connection details, and every database
+  call is an RPC that main checks.
+- A call made through the bridge gets no more database authority than
+  the connection has, and no more than the app grants it: main refuses
+  writes on a read-only connection (live flag) and refuses any method not
+  on the allowlists. A script that escapes its sandbox is not limited to
+  the bridge; see "Trust boundary" for what it keeps.
 - Evaluation happens in a **runner child process**, never in main. The
   renderer only sees the structured wire result.
 - The wall-clock kill (`maxTimeMs`) is the only ceiling, and it holds
   against sync loops, microtask loops and awaited promises alike.
-- Read-only is enforced by an in-runner guard and is a UI safety guard,
-  not a security boundary (see §3).
+- Read-only is enforced in main. It does not stop a script that escapes
+  its sandbox from using the OS user's own reach, including a direct
+  connection to a deployment that requires no authentication (see "Trust
+  boundary").
 
 ## 6. Acceptance criteria
 
@@ -330,6 +427,16 @@ tracked as a follow-up in GitHub Issues.
       calls keep answering meanwhile, and the next run succeeds.
 - [x] A runner that dies mid-run surfaces a `SystemError`, and live
       runners are killed on quit.
+- [x] On a read-only connection a write is refused by main by every
+      route (collection call, `getCollection`/`collection`, a cached
+      method reference, `admin()`, `runCommand`, `$out`/`$merge`), and a
+      connection flipped read-only mid-run has its next write refused
+      even with no kill.
+- [x] Crafted frames from an escaped script (an unknown method, a
+      prototype name, another run's or an invented cursor id, malformed
+      EJSON) are answered with an `rpc-error` and change nothing.
+- [x] No URI, password or connection string appears in any message sent
+      to the runner, its argv, or its environment.
 - [x] The runner entry is built to `dist-electron/script-runner.cjs`
       and ships inside `app.asar`; a packaged macOS arm64 build (unsigned,
       `--dir`) with the release fuses runs a script. Windows, Linux and a
@@ -356,10 +463,17 @@ tracked as a follow-up in GitHub Issues.
   token bookkeeping, the 50 MB cap, a connection flipped read-only
   mid-run, syntax errors throw `ValidationError`, runtime errors throw
   `MongoOpError` (or `SystemError` for non-Mongo).
-- **script-runner-protocol / script-result-encode /
-  connection-spec-tls** (unit, in the Stryker `mutate` list): wire
-  error round-trip, result encoding and cap, TLS inlining, runner
-  environment allowlist.
+- **script-rpc.spec.ts** (integration, same harness): read-only refused
+  by main on every route, a flip mid-run with no kill, crafted frames
+  from an escaped script, no credential in any message,
+  number and BSON type fidelity through the bridge, cursor shaping and
+  cleanup on end and on kill, in-flight work stopped by a kill.
+- **rpc-host / rpc-surface / rpc-codec / script-runner-protocol /
+  script-result-encode** (unit, in the Stryker `mutate` list): the host
+  over a fake client (allowlists, frame validation, live read-only,
+  cursor handles, result checks, size cap), the pinned allowlist
+  contents, the number rule, wire error round-trip, result encoding and
+  cap.
 
 ### Integration (main + memory Mongo)
 - **script-handler.spec.ts**: drives `script:run` against

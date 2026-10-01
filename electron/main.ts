@@ -693,6 +693,7 @@ app.whenReady().then(() => {
   scriptSvc = new ScriptService({
     pool,
     spawner: createUtilityProcessSpawner(path.join(MAIN_DIST, 'script-runner.cjs')),
+    logger: log,
   });
   registerScriptChannels(router, scriptSvc);
 

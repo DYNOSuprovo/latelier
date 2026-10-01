@@ -172,6 +172,20 @@ describe('ejson', () => {
     expect(ejsonEncode(5, true)).toBe(5);
   });
 
+  it('ejsonEncodeArrayJson: prepare runs on each element before it is encoded, and only as far as the cap lets it', () => {
+    const seen: number[] = [];
+    const prepare = (d: unknown): unknown => {
+      seen.push(d as number);
+      return { wrapped: d };
+    };
+    expect(ejsonEncodeArrayJson([1, 2], { prepare })).toBe(
+      '[{"wrapped":{"$numberInt":"1"}},{"wrapped":{"$numberInt":"2"}}]',
+    );
+    seen.length = 0;
+    expect(() => ejsonEncodeArrayJson([1, 2, 3], { prepare, maxBytes: 10 })).toThrow(/byte cap/);
+    expect(seen).toEqual([1]);
+  });
+
   it('ejsonEncodeArrayJson defaults to canonical when relaxed is omitted', () => {
     expect(ejsonEncodeArrayJson([5])).toBe('[{"$numberInt":"5"}]');
   });

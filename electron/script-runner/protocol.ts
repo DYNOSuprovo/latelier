@@ -8,26 +8,47 @@ import {
   ValidationError,
   type AppErrorCode,
 } from '../errors.ts';
+import type { RpcTarget } from './rpcSurface.ts';
 
 /**
  * Wire protocol between main and the script-runner child. Every message is a
  * plain structured-cloneable object; no Error instances, no class instances.
  */
 
-/** main -> child: run one script, then the child exits. */
+/**
+ * main -> child: run one script, then the child exits. It carries no
+ * connection string, credentials or driver options: the child has no database
+ * client, and every call it makes goes back to main as an `RpcFrame`.
+ */
 export interface RunRequest {
   type: 'run';
   source: string;
-  /** Connection string for the child-owned MongoClient. Carries credentials,
-   *  so it only ever travels over the message port, never argv or env. */
-  uri: string;
-  /** Driver options; TLS material is inlined as PEM contents, no file paths. */
-  options: Record<string, unknown>;
-  /** UI safety guard only: it is enforced inside the child. */
-  readOnly: boolean;
   dbName: string;
   ejsonRelaxed: boolean;
 }
+
+/**
+ * child -> main: one database call. Arguments and results cross as canonical
+ * EJSON strings. Only `type` and `id` are checked when the frame arrives (see
+ * `isRunnerMessage`); every other field is untrusted input to the host, which
+ * answers a bad one with an `rpc-error` instead of ending the run.
+ */
+export interface RpcFrame {
+  type: 'rpc';
+  id: number;
+  target: RpcTarget;
+  dbName: string;
+  coll?: string;
+  cursorId?: string;
+  method: string;
+  argsEjson: string;
+}
+
+/** main -> child: the answer to one `RpcFrame`. */
+export type RpcReply =
+  | { type: 'rpc-result'; id: number; valueEjson: string }
+  | { type: 'rpc-result'; id: number; cursorId: string }
+  | { type: 'rpc-error'; id: number; error: WireError };
 
 export interface WireError {
   name: string;
@@ -38,6 +59,7 @@ export interface WireError {
 }
 
 export type RunnerMessage =
+  | RpcFrame
   | { type: 'result'; valueJson: string | null; printBuffer: string; durationMs: number }
   | { type: 'error'; error: WireError };
 
@@ -108,6 +130,8 @@ function buildError(wire: WireError): AppError {
 export function isRunnerMessage(value: unknown): value is RunnerMessage {
   if (typeof value !== 'object' || value === null) return false;
   const m = value as Record<string, unknown>;
+  // An `id` is all a frame needs to be answerable; the rest is the host's to judge.
+  if (m.type === 'rpc') return Number.isSafeInteger(m.id);
   if (m.type === 'result') {
     return (
       (m.valueJson === null || typeof m.valueJson === 'string') &&

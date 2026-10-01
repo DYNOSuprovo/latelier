@@ -80,9 +80,21 @@ describe('isRunnerMessage', () => {
     ).toBe(true);
   });
 
+  it('accepts an rpc frame on its type and id alone: the rest is the host’s to judge', () => {
+    expect(isRunnerMessage({ type: 'rpc', id: 1 })).toBe(true);
+    expect(isRunnerMessage({ type: 'rpc', id: 0 })).toBe(true);
+    expect(isRunnerMessage({ type: 'rpc', id: 7, target: 99, method: {}, argsEjson: null })).toBe(true);
+  });
+
   it.each([
     ['null', null],
     ['undefined', undefined],
+    ['an rpc frame with no id', { type: 'rpc', target: 'db', method: 'x', argsEjson: '[]' }],
+    ['an rpc frame with a string id', { type: 'rpc', id: '1' }],
+    ['an rpc frame with a fractional id', { type: 'rpc', id: 1.5 }],
+    ['an rpc frame with a NaN id', { type: 'rpc', id: Number.NaN }],
+    ['an rpc frame with an unsafe id', { type: 'rpc', id: 2 ** 60 }],
+    ['an rpc reply, which only ever travels the other way', { type: 'rpc-result', id: 1, valueEjson: 'null' }],
     ['a number', 5],
     ['an unknown type that carries a valid error body', { type: 'ping', error: { name: 'AppError', code: 'INTERNAL', message: 'm' } }],
     ['a string', 'result'],

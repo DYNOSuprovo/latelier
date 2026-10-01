@@ -82,7 +82,9 @@
     "electron/script-runner/protocol.ts",
     "electron/script-runner/encodeResult.ts",
     "electron/script-runner/scriptSource.ts",
-    "electron/mongo/connectionSpec.ts",
+    "electron/script-runner/rpcSurface.ts",
+    "electron/script-runner/rpcCodec.ts",
+    "electron/script-runner/rpcHost.ts",
     "electron/services/runner/spawner.ts"
   ]
 }
