@@ -20,6 +20,10 @@ const rec = (what: string, args: unknown[]): void => {
 class FakeCursor {
   cursorClient = { secret: 'the-client' };
   private readonly docs: unknown[];
+  /** What the driver reports: true once exhausted, false for a tailable cursor with an empty batch. */
+  get closed(): boolean {
+    return cursorsClosed;
+  }
   constructor(docs: unknown[] = findDocs) {
     this.docs = docs;
   }
@@ -59,6 +63,8 @@ class FakeCursor {
 
 /** What a cursor made by `find` holds; an empty list makes it exhausted from the start. */
 let findDocs: unknown[] = [{ _id: 1 }, { _id: 2 }];
+
+let cursorsClosed = false;
 
 let closeBehaviour: () => Promise<void> = () => Promise.resolve();
 
@@ -207,6 +213,7 @@ beforeEach(() => {
   errors = [];
   closeBehaviour = () => Promise.resolve();
   findDocs = [{ _id: 1 }, { _id: 2 }];
+  cursorsClosed = false;
   host = makeHost();
 });
 
@@ -672,6 +679,76 @@ describe('rpcHost — cursors', () => {
     await send({ target: 'cursor', method: 'tryNext', cursorId: id });
     await host.close();
     expect(calls.filter((c) => c.what === 'cursor.close')).toHaveLength(1);
+  });
+
+  describe('a tryNext that finds a closed cursor', () => {
+    const tryNext = (cursorId: string): Promise<RpcReply> => send({ target: 'cursor', method: 'tryNext', cursorId });
+    const close = (cursorId: string): Promise<RpcReply> => send({ target: 'cursor', method: 'close', cursorId });
+
+    it('frees the handle, and a later close() is a no-op that never reaches the driver', async () => {
+      findDocs = [];
+      cursorsClosed = true;
+      const id = cursorIdOf(await send({ method: 'find' }));
+      expect(value(await tryNext(id))).toBeNull();
+      expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: id })).message).toMatch(/unknown cursor/);
+      expect(value(await close(id))).toBeNull();
+      expect(calls.filter((c) => c.what === 'cursor.close')).toEqual([]);
+    });
+
+    it('leaves close() on an id main never minted an unknown-cursor error', async () => {
+      expect(errorOf(await close('00000000-0000-4000-8000-000000000000')).message).toMatch(/unknown cursor/);
+    });
+
+    it('lets many of them pass without touching a live tailable cursor', async () => {
+      findDocs = [];
+      const tailable = cursorIdOf(await send({ method: 'find' }));
+      cursorsClosed = true;
+      for (let i = 0; i < 300; i++) {
+        const id = cursorIdOf(await send({ method: 'find' }));
+        expect(value(await tryNext(id))).toBeNull();
+      }
+      cursorsClosed = false;
+      expect(value(await tryNext(tailable))).toBeNull();
+      expect(calls.filter((c) => c.what === 'cursor.close')).toEqual([]);
+    });
+
+    it('is remembered for the last 256 only, so the oldest id is unknown again', async () => {
+      findDocs = [];
+      cursorsClosed = true;
+      const ids: string[] = [];
+      for (let i = 0; i < 257; i++) {
+        const id = cursorIdOf(await send({ method: 'find' }));
+        await tryNext(id);
+        ids.push(id);
+      }
+      expect(errorOf(await close(ids[0]!)).message).toMatch(/unknown cursor/);
+      expect(value(await close(ids[1]!))).toBeNull();
+      expect(value(await close(ids[256]!))).toBeNull();
+    });
+
+    it('keeps the handle when it returns the last document, which the driver already reports closed', async () => {
+      findDocs = [{ _id: 1 }];
+      cursorsClosed = true;
+      const id = cursorIdOf(await send({ method: 'find' }));
+      expect(value(await tryNext(id))).toEqual({ _id: 1 });
+      expect(value(await tryNext(id))).toEqual({ _id: 1 });
+    });
+
+    it('is not what remembers an id: one freed by next() is unknown to close()', async () => {
+      findDocs = [];
+      cursorsClosed = true;
+      const id = cursorIdOf(await send({ method: 'find' }));
+      expect(value(await send({ target: 'cursor', method: 'next', cursorId: id }))).toBeNull();
+      expect(errorOf(await close(id)).message).toMatch(/unknown cursor/);
+    });
+
+    it('does not make any other method on the freed id work', async () => {
+      findDocs = [];
+      cursorsClosed = true;
+      const id = cursorIdOf(await send({ method: 'find' }));
+      await tryNext(id);
+      expect(errorOf(await tryNext(id)).message).toMatch(/unknown cursor/);
+    });
   });
 
   it('many exhausted cursors never reach the cap', async () => {

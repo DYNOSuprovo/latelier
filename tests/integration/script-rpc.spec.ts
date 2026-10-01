@@ -850,6 +850,39 @@ describe('cursors', () => {
     expect(await open()).toBeLessThanOrEqual(before);
   });
 
+  it('a regular cursor read to the end with tryNext gives its slot back, so a live tailable cursor is never evicted', async () => {
+    const s = setup();
+    await seed(s, 'rpc_cur_try', 3);
+    await direct!.db(DB).collection('rpc_tail_slot').drop().catch(() => undefined);
+    const r = await s.run({
+      connectionId: 'rw',
+      source: `(async () => {
+        await db.createCollection('rpc_tail_slot', { capped: true, size: 65536 });
+        await db.rpc_tail_slot.insertOne({ n: 1 });
+        const tail = db.rpc_tail_slot.find({}, { tailable: true });
+        await tail.tryNext();
+        // 300 cursors read to the end and never closed: past the cap if the handles were kept,
+        // and the oldest handle (the tailable one) would be the one evicted.
+        let complete = true;
+        let last;
+        for (let i = 0; i < 300; i++) {
+          const c = db.rpc_cur_try.find().batchSize(1);
+          let n = 0;
+          while ((await c.tryNext()) !== null) n++;
+          if (n !== 3) complete = false;
+          last = c;
+        }
+        await last.close();
+        await db.rpc_tail_slot.insertOne({ n: 2 });
+        const next = await tail.tryNext();
+        await tail.close();
+        return JSON.stringify({ complete, next: next.n });
+      })()`,
+      maxTimeMs: 30_000,
+    });
+    expect(JSON.parse(JSON.parse(r.valueJson!) as string)).toEqual({ complete: true, next: 2 });
+  });
+
   it('a tailable cursor survives an empty tryNext, yields the next insert, and still closes', async () => {
     const s = setup();
     await direct!.db(DB).collection('rpc_tail').drop().catch(() => undefined);
