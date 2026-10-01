@@ -139,9 +139,22 @@ function classifyRunError(err: unknown): ReturnType<typeof classifyMongoOpError>
   // SyntaxError from the wrapped source — surface as ValidationError so the
   // renderer paints it as a user-fixable error, not a crash.
   if (e.name === 'SyntaxError') {
-    return new ValidationError(`syntax error: ${shiftLineNumbers(e.message ?? '')}`, {
-      field: 'source',
-    });
+    let errorMsg = `syntax error: ${shiftLineNumbers(e.message ?? '')}`;
+    const details: { field: string; line?: number } = { field: 'source' };
+    // Extract line number from the first line of the stack (e.g. "script.js:2").
+    // V8 keeps the position in the stack, not in the message. The lineOffset
+    // parameter to vm.runInContext already adjusts the line numbers.
+    if (typeof e.stack === 'string') {
+      const match = /^script\.js:(\d+)/.exec(e.stack);
+      if (match) {
+        const userLine = Number.parseInt(match[1], 10);
+        if (userLine >= 1) {
+          errorMsg = `syntax error (line ${userLine}): ${shiftLineNumbers(e.message ?? '')}`;
+          details.line = userLine;
+        }
+      }
+    }
+    return new ValidationError(errorMsg, details);
   }
   // Shift line numbers in the message/stack so they match the user's editor
   // before letting classifyMongoOpError wrap it.

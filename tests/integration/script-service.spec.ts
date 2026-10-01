@@ -228,13 +228,25 @@ describe('ScriptService — errors', () => {
   it('reports SyntaxError line numbers that match the user source', async () => {
     let caught: { code: string; message: string } | undefined;
     try {
-      // `const x = ;` is on line 1; expect `script.js:1`, never the wrapper's `script.js:2`.
+      // `const x = ;` is on line 1; expect "line 1" in the message.
       await setup().run({ connectionId: 'c1', source: 'const x = ;' });
     } catch (e) {
       caught = e as { code: string; message: string };
     }
     expect(caught?.code).toBe('VALIDATION');
-    expect(caught?.message).not.toMatch(/script\.js:2\b/);
+    expect(caught?.message).toContain('line 1');
+  });
+
+  it('reports SyntaxError on multi-line source at the correct line', async () => {
+    let caught: { code: string; message: string } | undefined;
+    try {
+      // `const x = ;` is on line 2; expect "line 2" in the message.
+      await setup().run({ connectionId: 'c1', source: 'let a = 1;\nconst x = ;' });
+    } catch (e) {
+      caught = e as { code: string; message: string };
+    }
+    expect(caught?.code).toBe('VALIDATION');
+    expect(caught?.message).toContain('line 2');
   });
 
   it('reports runtime stack lines that match the user source', async () => {
