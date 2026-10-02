@@ -51,6 +51,10 @@ _Avoid_: read-only mode (ambiguous with the unrelated UI-state prop of the same 
 A file holding one or more Connections, written by **Export** and read by **Import**. Carries Connections only — never their saved queries, tabs or Audit Log — and never credential file paths. Importing one always adds new Connections; it never changes an existing one.
 _Avoid_: backup (implies the whole app state), config, profile
 
+**Checked Connection**:
+A row ticked in the Connections table for a batch action — export or delete. Not the same as the *selected* row, whose details are open. A search unchecks the rows it hides, so a batch never reaches a Connection the user cannot see.
+_Avoid_: selected (that is the open row), marked
+
 **Export Passphrase**:
 The passphrase that protects the secrets inside a Connection Export. A Connection Export without secrets has none.
 _Avoid_: password (that word belongs to the Connection's own credentials)
