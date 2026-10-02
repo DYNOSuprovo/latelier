@@ -318,7 +318,7 @@ function CredentialsStep({
         const host = e.srv ? e.host : `${e.host}:${e.port}`;
         return (
           <Group key={e.index} gap="xs" align="flex-start" wrap="nowrap">
-            <div style={{ width: 180, flexShrink: 0, overflowWrap: 'anywhere' }}>
+            <div style={{ width: 180, flexShrink: 0, paddingTop: 6, overflowWrap: 'anywhere' }}>
               <Text size="xs" fw={600}>{e.savedAs}</Text>
               {/* Only when the name alone would not say which server this is, e.g. "host (2)". */}
               {host !== e.savedAs && e.host !== e.savedAs && (
