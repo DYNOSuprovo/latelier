@@ -5,8 +5,8 @@ import { freshUserData, launchApp, startMemoryServer, stopAllMemoryServers } fro
 import { WorkspacePage } from './pages/WorkspacePage';
 
 /**
- * C13 §7–8 — paste connection strings into the Connections table's "Add
- * connections" (one complete, one missing its credentials, one bad), type the
+ * C13 §7–8 — paste connection strings into the Connections table's "Paste
+ * URIs" (one complete, one missing its credentials, one bad), type the
  * missing credentials, connect with them, then check both rows and delete
  * them in one batch without the table closing.
  */
@@ -61,9 +61,9 @@ test('add Connections from pasted strings, with typed credentials, then batch-de
     const switcher = new WorkspacePage(win).switcher;
     await switcher.openExpandedTable();
     const table = switcher.expandedTableDialog;
-    await table.getByRole('button', { name: '+ Add connections' }).click();
+    await table.getByRole('button', { name: 'Paste URIs' }).click();
 
-    const add = win.getByRole('dialog', { name: 'Add connections', exact: true });
+    const add = win.getByRole('dialog', { name: 'Paste URIs', exact: true });
     await add.getByRole('textbox', { name: 'Connection strings' }).fill(
       [
         `mongodb://admin:rootpw@${host}:${port}/?authSource=admin&serverSelectionTimeoutMS=5000`,

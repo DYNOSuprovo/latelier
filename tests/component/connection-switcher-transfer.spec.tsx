@@ -56,30 +56,32 @@ const expectNoneChecked = () => {
 
 afterEach(uninstallAtelierMock);
 
-describe('Connections table: Add connections', () => {
-  it('stacks the Add dialog on the table, and Import from file leaves both for the file import', async () => {
+describe('Connections table: adding', () => {
+  it('stacks Paste URIs on the table', async () => {
     mount([row('c1', 'Prod')]);
     const table = await openTable();
-    await userEvent.click(within(table).getByRole('button', { name: '+ Add connections' }));
-    const add = await screen.findByRole('dialog', { name: 'Add connections' });
+    await userEvent.click(within(table).getByRole('button', { name: 'Paste URIs' }));
+    expect(await screen.findByRole('dialog', { name: 'Paste URIs' })).toBeTruthy();
     expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
+  });
 
-    await userEvent.click(within(add).getByRole('button', { name: 'Import from file' }));
-
+  it('Import leaves the table for the file import', async () => {
+    mount([row('c1', 'Prod')]);
+    const table = await openTable();
+    await userEvent.click(within(table).getByRole('button', { name: 'Import' }));
     expect(await screen.findByRole('dialog', { name: 'Import Connections' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
-    expect(screen.queryByRole('dialog', { name: 'Add connections' })).toBeNull();
   });
 
   it('Escape closes only the dialog stacked on the table', async () => {
     mount([row('c1', 'Prod')]);
     const table = await openTable();
-    await userEvent.click(within(table).getByRole('button', { name: '+ Add connections' }));
-    await screen.findByRole('dialog', { name: 'Add connections' });
+    await userEvent.click(within(table).getByRole('button', { name: 'Paste URIs' }));
+    await screen.findByRole('dialog', { name: 'Paste URIs' });
 
     await userEvent.keyboard('{Escape}');
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add connections' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Paste URIs' })).toBeNull());
     expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
     // With nothing stacked, the table takes Escape again.
     await userEvent.keyboard('{Escape}');

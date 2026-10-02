@@ -124,16 +124,16 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 
 - Command palette: "Export Connections…" and "Import Connections…".
 - The native File menu: the same two items.
-- The Connections table (the Switcher's "Manage connections", or `⌘E` anywhere in the Data View but an Aggregation tab): Import through "+ Add connections" (§7), Export on checked rows (§8). Not in the Switcher popover itself, which stays a list to pick from.
+- The Connections table (the Switcher's "Manage connections", or `⌘E` anywhere in the Data View but an Aggregation tab): Import from its footer (§7), Export on checked rows (§8). Not in the Switcher popover itself, which stays a list to pick from.
 - The empty first-launch screen, when no Connections exist: an "Import connections" button next to the add-connection action. This is where a user on a new machine arrives.
 
 ## 7. Add connections (connection strings, file import, form)
 
-Import is a way of adding, so the Connections table has one **"+ Add connections"** entry with three routes:
+Import is a way of adding, so the Connections table's footer has the three ways side by side, each opening its own screen directly, with no chooser in between:
 
-- **Paste connection strings**, one per line (the main route, §7.1).
-- **Import from file**: the §4 flow, unchanged.
-- **Single connection (full form)**: the existing form, still the only way to set up SSH or TLS certificate files.
+- **+ New**: the existing full form, first because it is the common case, and still the only way to set up SSH or TLS certificate files.
+- **Paste URIs**: connection strings, one per line (§7.1).
+- **Import**: the §4 file flow, unchanged.
 
 ### 7.1 Connection strings
 
@@ -163,7 +163,7 @@ A bar above the table always offers these, disabled until a row is checked:
 
 The table stays open through both, so more batch actions can join the bar later. A dialog stacked on the table takes Escape for itself; the table closes on Escape only when nothing is stacked on it.
 
-The table's footer keeps only "+ Add connections". Export of every Connection stays reachable from the command palette and the File menu.
+The table's footer holds only the three ways to add (§7). Export of every Connection stays reachable from the command palette and the File menu.
 
 ## Acceptance criteria
 

@@ -1395,12 +1395,10 @@ async function openExpandedTable() {
   return screen.findByRole('dialog', { name: 'Connections' });
 }
 
-/** The full form is one route of the table's "+ Add connections" (C13 §7). */
+/** The full form: the table's "+ New" (C13 §7). */
 async function openAddForm() {
   const dialog = await openExpandedTable();
-  await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connections' }));
-  const add = await screen.findByRole('dialog', { name: 'Add connections' });
-  await userEvent.click(within(add).getByRole('button', { name: 'Single connection (full form)' }));
+  await userEvent.click(within(dialog).getByRole('button', { name: '+ New' }));
 }
 
 /** The `<tr>` for a given Connection's row, found via its visible name cell. */
@@ -1494,7 +1492,7 @@ describe('ConnectionSwitcher — expanded table', () => {
     await waitFor(() => expect(document.activeElement).toBe(ctaTrigger));
   });
 
-  it('offers "+ Add connections" instead of a dead end when there are no saved Connections', async () => {
+  it('offers "+ New" instead of a dead end when there are no saved Connections', async () => {
     // With zero Connections there is nothing to select, so no row action ever
     // renders — without this, a first-run `⌘E` could only be escaped, never
     // acted on. This button is a permanent footer fixture (not only shown
@@ -1508,9 +1506,7 @@ describe('ConnectionSwitcher — expanded table', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connections' });
 
-    await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connections' }));
-    const add = await screen.findByRole('dialog', { name: 'Add connections' });
-    await userEvent.click(within(add).getByRole('button', { name: 'Single connection (full form)' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: '+ New' }));
 
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
     await screen.findByRole('dialog', { name: 'New Connection' });
@@ -1549,12 +1545,12 @@ describe('ConnectionSwitcher — expanded table', () => {
 
     fireEvent.keyDown(document.body, { key: 'E', ctrlKey: true });
     const table = await screen.findByRole('dialog', { name: 'Connections' });
-    await userEvent.click(within(table).getByRole('button', { name: '+ Add connections' }));
-    const add = await screen.findByRole('dialog', { name: 'Add connections' });
+    await userEvent.click(within(table).getByRole('button', { name: 'Paste URIs' }));
+    const add = await screen.findByRole('dialog', { name: 'Paste URIs' });
     fireEvent.keyDown(within(add).getByRole('textbox', { name: 'Connection strings' }), { key: 'e', metaKey: true });
-    // Still exactly one table, and the Add dialog is still on top of it.
+    // Still exactly one table, and the paste dialog is still on top of it.
     expect(screen.getAllByRole('dialog', { name: 'Connections' })).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'Add connections' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Paste URIs' })).toBeTruthy();
   });
 
   it('leaves Ctrl+E to a text field as end-of-line, while ⌘E there still opens the table', async () => {

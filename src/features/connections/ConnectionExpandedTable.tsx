@@ -51,9 +51,9 @@ export interface ConnectionExpandedTableProps {
   onManage: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  /** The full single-Connection form, from "Add connections". Closes the table. */
+  /** The full single-Connection form, from "+ New". Closes the table. */
   onAdd: () => void;
-  /** The file Import dialog, from "Add connections". Closes the table. */
+  /** The file Import dialog, from "Import". Closes the table. */
   onImport: () => void;
   /** Open tabs across these Connections, for the batch delete's copy; `null` while unknown. */
   tabCountFor: (ids: string[]) => number | null;
@@ -634,17 +634,21 @@ export function ConnectionExpandedTable({
           {/* Always available, not only in the zero-connections empty
               state (a first-run `⌘E` used to be a dead end otherwise: nothing
               to select, so every footer action stayed disabled). */}
-          <Button size="compact-xs" variant="subtle" onClick={() => setStacked('add')}>
-            + Add connections
-          </Button>
+          <Group gap="xs">
+            <Button size="compact-xs" variant="light" onClick={onAdd}>
+              + New
+            </Button>
+            <Button size="compact-xs" variant="subtle" onClick={() => setStacked('add')}>
+              Paste URIs
+            </Button>
+            <Button size="compact-xs" variant="subtle" onClick={onImport}>
+              Import
+            </Button>
+          </Group>
         </div>
       </div>
       {stacked === 'add' && (
-        <ConnectionAddDialog
-          onClose={() => setStacked(null)}
-          onImportFile={onImport}
-          onSingleForm={onAdd}
-        />
+        <ConnectionAddDialog onClose={() => setStacked(null)} />
       )}
       {stacked === 'export' && <ConnectionExportDialog ids={checkedIds} onClose={() => setStacked(null)} />}
       {stacked !== null && typeof stacked === 'object' && (

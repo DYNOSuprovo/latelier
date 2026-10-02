@@ -28,10 +28,8 @@ function setup(entries: (lines: string[]) => UriPreviewEntry[]) {
   }));
   installAtelierMock({ conn: { previewUris, createFromUris } });
   const onClose = vi.fn();
-  const onImportFile = vi.fn();
-  const onSingleForm = vi.fn();
-  render(<ConnectionAddDialog onClose={onClose} onImportFile={onImportFile} onSingleForm={onSingleForm} />);
-  return { previewUris, createFromUris, onClose, onImportFile, onSingleForm };
+  render(<ConnectionAddDialog onClose={onClose} />);
+  return { previewUris, createFromUris, onClose };
 }
 
 // `fireEvent.change`, not `userEvent.type`: a connection string is pasted, and
@@ -83,7 +81,7 @@ describe('ConnectionAddDialog — paste and preview', () => {
     installAtelierMock({
       conn: { previewUris: vi.fn(async () => Promise.reject({ code: 'VALIDATION', message: 'too long' })) },
     });
-    render(<ConnectionAddDialog onClose={vi.fn()} onImportFile={vi.fn()} onSingleForm={vi.fn()} />);
+    render(<ConnectionAddDialog onClose={vi.fn()} />);
     paste('mongodb://h');
     expect(await screen.findByText('too long')).toBeTruthy();
   });
@@ -94,17 +92,13 @@ describe('ConnectionAddDialog — paste and preview', () => {
     await screen.findByRole('button', { name: 'Add 1 connection' });
     paste('mongodb://a\nmongodb://b');
     // Until the new preview lands, nothing can be added.
-    expect(screen.queryByRole('button', { name: /^Add \d/ })).toBeTruthy();
-    expect((screen.getByRole('button', { name: /^Add 0/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true);
     expect(await screen.findByRole('button', { name: 'Add 2 connections' })).toBeTruthy();
   });
 
-  it('leaves for the file import or the full form', async () => {
-    const { onImportFile, onSingleForm } = setup(() => []);
-    await userEvent.click(screen.getByRole('button', { name: 'Import from file' }));
-    expect(onImportFile).toHaveBeenCalledOnce();
-    await userEvent.click(screen.getByRole('button', { name: 'Single connection (full form)' }));
-    expect(onSingleForm).toHaveBeenCalledOnce();
+  it('offers a plain, disabled "Add" until something is pasted', () => {
+    setup(() => []);
+    expect((screen.getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
@@ -133,6 +127,17 @@ describe('ConnectionAddDialog — adding', () => {
     await waitFor(() =>
       expect(createFromUris.mock.calls[0]![0].defaults).toEqual({ readOnly: false, directConnection: true }),
     );
+  });
+
+  it('names the server under a credentials row only when the name does not already', async () => {
+    setup(() => [
+      ok(0, { savedAs: 'db (2)', host: 'db', needsCredentials: true, hasPassword: false }),
+      ok(1, { savedAs: 'c.net', host: 'c.net', srv: true, needsCredentials: true, hasPassword: false }),
+    ]);
+    paste('mongodb://db\nmongodb+srv://c.net');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    expect(screen.getByText('db:27017')).toBeTruthy();
+    expect(screen.getAllByText('c.net')).toHaveLength(1);
   });
 
   it('asks for credentials only for the lines missing them, prefilled from the string', async () => {
@@ -245,7 +250,7 @@ describe('ConnectionAddDialog — adding', () => {
       },
     });
     const onClose = vi.fn();
-    render(<ConnectionAddDialog onClose={onClose} onImportFile={vi.fn()} onSingleForm={vi.fn()} />);
+    render(<ConnectionAddDialog onClose={onClose} />);
     paste('mongodb://db\nmongodb://host1');
     await userEvent.click(await screen.findByRole('button', { name: 'Add 2 connections' }));
 
@@ -263,7 +268,7 @@ describe('ConnectionAddDialog — adding', () => {
         createFromUris: vi.fn(async () => Promise.reject({ code: 'VALIDATION', message: 'nope' })),
       },
     });
-    render(<ConnectionAddDialog onClose={vi.fn()} onImportFile={vi.fn()} onSingleForm={vi.fn()} />);
+    render(<ConnectionAddDialog onClose={vi.fn()} />);
     paste('mongodb://a');
     await userEvent.click(await screen.findByRole('button', { name: 'Add 1 connection' }));
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'nope');

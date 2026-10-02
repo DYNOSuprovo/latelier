@@ -39,25 +39,14 @@ function linesOf(text: string): string[] {
 }
 
 /**
- * C13 §7 — adding Connections. Pasted connection strings (one per line) are
- * the main route; a file import and the full single-Connection form are one
- * click away, since both are ways of adding too.
+ * C13 §7 — adding Connections from pasted connection strings, one per line.
+ * The table's footer offers the full form and the file import beside it.
  *
  * Steps: paste (live preview + batch defaults) → credentials (only the lines
  * missing a username or password) → result. Main parses every line, so no
  * connection string is interpreted here, and no password ever comes back.
  */
-export function ConnectionAddDialog({
-  onClose,
-  onImportFile,
-  onSingleForm,
-}: {
-  onClose: () => void;
-  /** Leaves this dialog for the file-import flow. */
-  onImportFile: () => void;
-  /** Leaves this dialog for the full Connection form. */
-  onSingleForm: () => void;
-}) {
+export function ConnectionAddDialog({ onClose }: { onClose: () => void }) {
   const [text, setText] = React.useState('');
   const [defaults, setDefaults] = React.useState<UriBatchDefaults>({ readOnly: false, directConnection: false });
   // Keyed by the text it was made for, so a preview of older text is never shown or acted on.
@@ -148,10 +137,10 @@ export function ConnectionAddDialog({
     }
   };
 
-  const addLabel = busy ? 'Adding…' : `Add ${plural(good.length, 'connection')}`;
+  const addLabel = busy ? 'Adding…' : good.length === 0 ? 'Add' : `Add ${plural(good.length, 'connection')}`;
 
   return (
-    <Modal opened onClose={busy ? () => {} : onClose} title="Add connections" centered size="lg">
+    <Modal opened onClose={busy ? () => {} : onClose} title="Paste URIs" centered size="lg">
       <Stack gap="sm">
         {result ? (
           <TransferResult
@@ -178,11 +167,11 @@ export function ConnectionAddDialog({
               onChange={(e) => setText(e.currentTarget.value)}
               error={localError ?? previewError ?? undefined}
             />
-            {current && entries.length > 0 && <PreviewTable entries={entries} />}
-            <Group gap="lg">
+            <Group gap="xl" align="flex-start">
               <Checkbox
                 size="xs"
                 label="Read-only"
+                description="No writes from the app."
                 checked={defaults.readOnly}
                 onChange={(e) => {
                   const on = e.currentTarget.checked;
@@ -200,6 +189,7 @@ export function ConnectionAddDialog({
                 }}
               />
             </Group>
+            {current && entries.length > 0 && <PreviewTable entries={entries} />}
           </>
         ) : (
           <CredentialsStep
@@ -214,20 +204,7 @@ export function ConnectionAddDialog({
             {error}
           </Alert>
         )}
-        <Group justify="space-between" gap="xs">
-          <Group gap={4}>
-            {!result && step === 'paste' && (
-              <>
-                <Button variant="subtle" size="compact-xs" onClick={onImportFile}>
-                  Import from file
-                </Button>
-                <Button variant="subtle" size="compact-xs" onClick={onSingleForm}>
-                  Single connection (full form)
-                </Button>
-              </>
-            )}
-          </Group>
-          <Group gap="xs">
+        <Group justify="flex-end" gap="xs">
             {result ? (
               <Button size="compact-xs" onClick={onClose} autoFocus>
                 Done
@@ -267,7 +244,6 @@ export function ConnectionAddDialog({
                 </SubmitButton>
               </>
             )}
-          </Group>
         </Group>
       </Stack>
     </Modal>
@@ -339,11 +315,16 @@ function CredentialsStep({
       </Text>
       {entries.map((e, i) => {
         const c = credsFor(e);
+        const host = e.srv ? e.host : `${e.host}:${e.port}`;
         return (
           <Group key={e.index} gap="xs" align="flex-start" wrap="nowrap">
-            <Text size="xs" fw={600} w={180} pt={6} style={{ overflowWrap: 'anywhere' }}>
-              {e.savedAs}
-            </Text>
+            <div style={{ width: 180, flexShrink: 0, overflowWrap: 'anywhere' }}>
+              <Text size="xs" fw={600}>{e.savedAs}</Text>
+              {/* Only when the name alone would not say which server this is, e.g. "host (2)". */}
+              {host !== e.savedAs && e.host !== e.savedAs && (
+                <Text size="xs" c="dimmed" ff="monospace" truncate="end" title={host}>{host}</Text>
+              )}
+            </div>
             <TextInput
               size="xs"
               style={{ flex: 1 }}
