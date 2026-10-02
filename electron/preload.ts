@@ -47,6 +47,9 @@ const api: IpcApi = {
     touchUsed: (id) => call(IPC_CHANNELS.connTouchUsed, { id }),
     parseUri: (uri) => call(IPC_CHANNELS.connParseUri, { uri }),
     test: (input) => call(IPC_CHANNELS.connTest, input),
+    export: (input) => call(IPC_CHANNELS.connExport, input),
+    importPreview: () => call(IPC_CHANNELS.connImportPreview, {}),
+    importCommit: (input) => call(IPC_CHANNELS.connImportCommit, input),
   },
 
   app: {

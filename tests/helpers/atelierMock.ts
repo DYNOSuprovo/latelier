@@ -33,6 +33,9 @@ export function installAtelierMock(overrides: Deep<IpcApi> = {}): IpcApi {
       touchUsed: async (id) => ({ id }),
       parseUri: unused('conn.parseUri') as IpcApi['conn']['parseUri'],
       test: unused('conn.test') as IpcApi['conn']['test'],
+      export: unused('conn.export') as IpcApi['conn']['export'],
+      importPreview: unused('conn.importPreview') as IpcApi['conn']['importPreview'],
+      importCommit: unused('conn.importCommit') as IpcApi['conn']['importCommit'],
     },
     app: {
       pickFile: async () => ({ path: null }),
@@ -343,6 +346,9 @@ function makePermissiveStub(): IpcApi {
       touchUsed: async (id) => ({ id }),
       parseUri: noopAsync as IpcApi['conn']['parseUri'],
       test: okAsync({ ok: false }) as IpcApi['conn']['test'],
+      export: okAsync({ cancelled: true as const }) as IpcApi['conn']['export'],
+      importPreview: okAsync({ cancelled: true as const }) as IpcApi['conn']['importPreview'],
+      importCommit: noopAsync as IpcApi['conn']['importCommit'],
     },
     app: {
       pickFile: async () => ({ path: null }),

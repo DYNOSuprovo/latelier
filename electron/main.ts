@@ -26,6 +26,8 @@ import {
   connectionReader,
 } from './mongo/ConnectionService.ts';
 import { registerConnChannels } from './ipc/handlers/conn.ts';
+import { registerConnExportChannels } from './ipc/handlers/connExport.ts';
+import { ConnectionExportService } from './services/ConnectionExportService.ts';
 import { createPickedCredentialPaths } from './security/credentialPaths.ts';
 import { registerAppChannels, saveFilters } from './ipc/handlers/app.ts';
 import { registerMongoChannels } from './ipc/handlers/mongo.ts';
@@ -165,6 +167,7 @@ let docSvc: DocumentService | null = null;
 let mshellSvc: ShellService | null = null;
 let scriptSvc: ScriptService | null = null;
 let log: Logger | null = null;
+let connExportSvc: ConnectionExportService | null = null;
 let renderCrashesInWindow = 0;
 let firstCrashAt = 0;
 
@@ -369,6 +372,8 @@ function createWindow(): void {
   // became an uncaughtException, an error dialog, and `app.exit(1)`.
   win.on('closed', () => {
     win = null;
+    // An import token does not outlive the window that asked for it.
+    connExportSvc?.clearPending();
   });
 
   win.on('resize', scheduleBoundsWrite);
@@ -579,6 +584,31 @@ app.whenReady().then(() => {
     debugDriverEvents: process.env.ATELIER_DEBUG_DRIVER === '1',
   });
   const connSvc = new ConnectionService({ repo: connRepo, vault, pool });
+  // Main owns both dialogs, so the picked path never travels to the renderer.
+  const jsonFilters = [
+    { name: 'JSON', extensions: ['json'] },
+    { name: 'All files', extensions: ['*'] },
+  ];
+  connExportSvc = new ConnectionExportService({
+    conns: connSvc,
+    vault,
+    dialogs: {
+      savePath: async (defaultName) => {
+        const options = { defaultPath: defaultName, filters: jsonFilters };
+        const result = await (win
+          ? dialog.showSaveDialog(win, options)
+          : dialog.showSaveDialog(options));
+        return result.canceled || !result.filePath ? null : result.filePath;
+      },
+      openPath: async () => {
+        const options = { properties: ['openFile' as const], filters: jsonFilters };
+        const result = await (win
+          ? dialog.showOpenDialog(win, options)
+          : dialog.showOpenDialog(options));
+        return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]!;
+      },
+    },
+  });
 
   // 5. IPC router + channels
   // Every channel goes through the sender guard. The window is created after
@@ -633,6 +663,7 @@ app.whenReady().then(() => {
 
   const pickedCredentialPaths = createPickedCredentialPaths();
   registerConnChannels(router, connSvc, pickedCredentialPaths);
+  registerConnExportChannels(router, connExportSvc);
   // Filled by the open dialog, read by the data channels: the only files an
   // import may read are ones the user picked in main's own dialog.
   const pickedImports = new Set<string>();
