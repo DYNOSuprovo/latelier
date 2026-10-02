@@ -222,5 +222,8 @@ export class ConnectionSwitcherPage {
     await expect(this.listbox).toBeVisible({ timeout: 10_000 });
     await this.manageButton.click();
     await expect(this.expandedTableDialog).toBeVisible({ timeout: 8000 });
+    // The popover's search field is a `combobox` too; let it finish its exit
+    // transition before the caller queries one (see `waitClosed`).
+    await this.waitClosed();
   }
 }
