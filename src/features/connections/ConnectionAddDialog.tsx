@@ -65,7 +65,9 @@ export function ConnectionAddDialog({
     { key: '', entries: [], error: null },
   );
   const [step, setStep] = React.useState<'paste' | 'credentials'>('paste');
-  const [creds, setCreds] = React.useState<Record<number, Creds>>({});
+  // Keyed by the connection string, not its line number: going Back and
+  // deleting or reordering lines must never move a password onto another host.
+  const [creds, setCreds] = React.useState<Record<string, Creds>>({});
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<ImportCommitResult | null>(null);
@@ -111,7 +113,8 @@ export function ConnectionAddDialog({
   const previewError = current ? preview.error : null;
   const good = current ? entries.filter((e): e is OkEntry => e.ok) : [];
   const asking = good.filter((e) => e.needsCredentials);
-  const credsFor = (e: OkEntry): Creds => creds[e.index] ?? { username: e.authUsername ?? '', password: '' };
+  const credsKey = (e: OkEntry) => lines[e.index]!;
+  const credsFor = (e: OkEntry): Creds => creds[credsKey(e)] ?? { username: e.authUsername ?? '', password: '' };
   const orphanPassword = (e: OkEntry) => {
     const c = credsFor(e);
     return c.password !== '' && c.username.trim() === '';
@@ -127,7 +130,7 @@ export function ConnectionAddDialog({
         uris: lines,
         defaults,
         credentials: asking.flatMap((e) => {
-          const c = creds[e.index];
+          const c = creds[credsKey(e)];
           if (!c) return [];
           return [{
             index: e.index,
@@ -166,6 +169,8 @@ export function ConnectionAddDialog({
               resize="vertical"
               size="xs"
               data-autofocus
+              // `data-autofocus` only acts when the modal opens; this covers coming Back.
+              autoFocus
               spellCheck={false}
               autoComplete="off"
               styles={{ input: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } }}
@@ -197,7 +202,12 @@ export function ConnectionAddDialog({
             </Group>
           </>
         ) : (
-          <CredentialsStep entries={asking} credsFor={credsFor} orphanPassword={orphanPassword} onChange={setCreds} />
+          <CredentialsStep
+            entries={asking}
+            credsFor={credsFor}
+            orphanPassword={orphanPassword}
+            onChange={(e, patch) => setCreds((prev) => ({ ...prev, [credsKey(e)]: { ...credsFor(e), ...patch } }))}
+          />
         )}
         {error && (
           <Alert color="red" variant="light" role="alert">
@@ -219,7 +229,7 @@ export function ConnectionAddDialog({
           </Group>
           <Group gap="xs">
             {result ? (
-              <Button size="compact-xs" onClick={onClose}>
+              <Button size="compact-xs" onClick={onClose} autoFocus>
                 Done
               </Button>
             ) : step === 'paste' ? (
@@ -318,10 +328,9 @@ function CredentialsStep({
   entries: OkEntry[];
   credsFor: (e: OkEntry) => Creds;
   orphanPassword: (e: OkEntry) => boolean;
-  onChange: React.Dispatch<React.SetStateAction<Record<number, Creds>>>;
+  onChange: (e: OkEntry, patch: Partial<Creds>) => void;
 }) {
-  const set = (e: OkEntry, patch: Partial<Creds>) =>
-    onChange((prev) => ({ ...prev, [e.index]: { ...credsFor(e), ...patch } }));
+  const set = onChange;
   return (
     <Stack gap="xs">
       <Text size="xs" c="dimmed">
@@ -341,7 +350,7 @@ function CredentialsStep({
               aria-label={`Username for ${e.savedAs}`}
               placeholder="Username"
               autoComplete="off"
-              data-autofocus={i === 0 ? true : undefined}
+              autoFocus={i === 0}
               value={c.username}
               onChange={(ev) => set(e, { username: ev.currentTarget.value })}
               error={orphanPassword(e) ? 'Add a username for this password.' : undefined}

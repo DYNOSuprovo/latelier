@@ -39,6 +39,20 @@ describe('parseLine', () => {
     });
   });
 
+  it('never echoes a password in the reason a line was refused', () => {
+    for (const uri of [
+      'mongodb://u:s3cret@',
+      'mongodb://u:s3cret@h/%zz',
+      'mongodb://u:s3cret@h/?authMechanism=NOPE',
+      'mongodb://u:s3c%ret@h/',
+      'mongodb+srv://u:s3cret@h:1:2/',
+    ]) {
+      const l = parseLine(uri);
+      expect(l.ok, uri).toBe(false);
+      expect(JSON.stringify(l), uri).not.toContain('s3c');
+    }
+  });
+
   it('records whether the string set directConnection itself, case-insensitively', () => {
     expect(ok('mongodb://h/?directConnection=false').explicitDirect).toBe(true);
     expect(ok('mongodb://h/?DIRECTCONNECTION=true').explicitDirect).toBe(true);

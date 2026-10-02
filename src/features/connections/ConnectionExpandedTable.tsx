@@ -282,8 +282,9 @@ export function ConnectionExpandedTable({
   const confirmDeleteChecked = async (ids: string[]) => {
     setStacked(null);
     await onDeleteMany(ids);
-    setChecked(new Set());
-    // The bar that held focus is gone with the checks.
+    // Only what was deleted: a row checked meanwhile stays checked.
+    setChecked((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+    // The bar that held focus may be gone with the checks.
     searchRef.current?.focus();
   };
 

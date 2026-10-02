@@ -159,6 +159,54 @@ describe('ConnectionAddDialog — adding', () => {
     );
   });
 
+  it('never moves typed credentials onto another host when lines are edited', async () => {
+    // Preview entries follow the current lines; each line asks for credentials.
+    const { createFromUris } = setup((lines) =>
+      lines.map((l, i) => ok(i, { savedAs: l.replace('mongodb://', ''), needsCredentials: true, hasPassword: false })),
+    );
+    paste('mongodb://hostA\nmongodb://hostB');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Username for hostA' }), 'alice');
+    await userEvent.type(screen.getByLabelText('Password for hostA'), 'secretA');
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+    paste('mongodb://hostB');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+
+    expect((screen.getByRole('textbox', { name: 'Username for hostB' }) as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Password for hostB') as HTMLInputElement).value).toBe('');
+    await userEvent.click(screen.getByRole('button', { name: 'Add 1 connection' }));
+    await waitFor(() => expect(createFromUris.mock.calls[0]![0].credentials).toEqual([]));
+  });
+
+  it('keeps typed credentials with their line when another line is removed', async () => {
+    const { createFromUris } = setup((lines) =>
+      lines.map((l, i) => ok(i, { savedAs: l.replace('mongodb://', ''), needsCredentials: true, hasPassword: false })),
+    );
+    paste('mongodb://hostA\nmongodb://hostB');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Username for hostB' }), 'bob');
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    paste('mongodb://hostB');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    expect((screen.getByRole('textbox', { name: 'Username for hostB' }) as HTMLInputElement).value).toBe('bob');
+    await userEvent.click(screen.getByRole('button', { name: 'Add 1 connection' }));
+    await waitFor(() => expect(createFromUris.mock.calls[0]![0].credentials).toEqual([{ index: 0, username: 'bob' }]));
+  });
+
+  it('moves focus to the first credentials field on Next, and back to the strings on Back', async () => {
+    setup(() => [ok(0, { needsCredentials: true, hasPassword: false })]);
+    paste('mongodb://a');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Username for host0' })),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Connection strings' })),
+    );
+  });
+
   it('blocks a password typed without a username, and says why', async () => {
     setup(() => [ok(0, { needsCredentials: true, hasPassword: false })]);
     paste('mongodb://a');
