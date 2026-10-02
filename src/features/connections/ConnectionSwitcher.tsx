@@ -109,6 +109,10 @@ export interface ConnectionSwitcherProps {
   variant?: 'title' | 'cta';
 }
 
+/** `⌘E` / `Ctrl+E`: open the full Connections table. */
+const isExpandShortcut = (e: React.KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && (e.key === 'e' || e.key === 'E');
+
 function ConnectionRow({
   optionId,
   conn,
@@ -531,7 +535,7 @@ export function ConnectionSwitcher({
       case 'E': {
         // No modifier: ordinary text entry into the search field, same as
         // every other letter — must fall through untouched.
-        if (!(e.metaKey || e.ctrlKey)) return;
+        if (!isExpandShortcut(e)) return;
         e.stopPropagation();
         e.preventDefault();
         handleExpand();
@@ -720,13 +724,17 @@ export function ConnectionSwitcher({
           button and pressing Enter would hit `handleKeyDown`'s Enter case
           instead of this button's click, switching to whatever row is
           highlighted (and closing its tabs) rather than opening the table.
+          ⌘E is let through: this button is where focus lands with zero
+          Connections, and the legend promises ⌘E works anywhere in here.
         */}
         <Button
           variant="subtle"
           size="compact-xs"
           autoFocus={addMode}
           onClick={handleExpand}
-          onKeyDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (!isExpandShortcut(e)) e.stopPropagation();
+          }}
           leftSection={
             <span aria-hidden style={{ display: 'flex' }}>
               {I.expand}

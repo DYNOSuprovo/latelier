@@ -503,9 +503,8 @@ export function ConnectionExpandedTable({
                     colSpan={COLUMN_HEADERS.length}
                     style={{ textAlign: 'center', color: T.textMuted, padding: 24 }}
                   >
-                    {/* "+ Add connection" moved to a permanent
-                        footer-left button below, matching the popover's own
-                        always-pinned one — this cell just names the state. */}
+                    {/* "+ Add connection" is a permanent footer-left button
+                        below — this cell just names the state. */}
                     {connections.length === 0
                       ? 'No connections yet'
                       : <>No connections match &quot;{query}&quot;</>}

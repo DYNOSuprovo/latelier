@@ -650,6 +650,20 @@ describe('ConnectionSwitcher — add/edit', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it('⌘E still opens the table while "Manage connections…" holds focus', async () => {
+    // With zero Connections this button is where focus lands on open; its
+    // Enter guard must not swallow the shortcut the legend advertises.
+    mount({ connections: [] });
+    await userEvent.click(await titleBar().findByRole('button', { name: /Connection: none selected/i }));
+    const manage = await screen.findByRole('button', { name: 'Manage connections…' });
+    await waitFor(() => expect(document.activeElement).toBe(manage));
+
+    fireEvent.keyDown(manage, { key: 'e', metaKey: true });
+
+    await screen.findByRole('dialog', { name: 'Connections' });
+    expect(screen.queryByRole('listbox', { name: 'Connections' })).toBeNull();
+  });
+
   it('offers no Add, Import or Export of its own — those live in the table', async () => {
     mount();
     const listbox = await openSwitcher();
