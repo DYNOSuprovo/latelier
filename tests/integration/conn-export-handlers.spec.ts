@@ -30,7 +30,13 @@ const PASS = 'twelve chars!!';
 
 describe('conn:export / conn:importPreview / conn:importCommit handlers', () => {
   let shim: ReturnType<typeof createShim>;
-  let svc: { export: ReturnType<typeof vi.fn>; importPreview: ReturnType<typeof vi.fn>; importCommit: ReturnType<typeof vi.fn> };
+  let svc: {
+    export: ReturnType<typeof vi.fn>;
+    importPreview: ReturnType<typeof vi.fn>;
+    importCommit: ReturnType<typeof vi.fn>;
+    previewUris: ReturnType<typeof vi.fn>;
+    createFromUris: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     shim = createShim();
@@ -38,6 +44,8 @@ describe('conn:export / conn:importPreview / conn:importCommit handlers', () => 
       export: vi.fn(async () => ({ written: 1, omittedSecrets: [] })),
       importPreview: vi.fn(async () => ({ cancelled: true as const })),
       importCommit: vi.fn(async () => ({ created: [], secretsNotStored: [] })),
+      previewUris: vi.fn(() => ({ entries: [] })),
+      createFromUris: vi.fn(async () => ({ created: [], failed: [], secretsNotStored: [] })),
     };
     registerConnExportChannels(
       createRouter(shim.ipcMain, testSenderCheck),
@@ -134,6 +142,62 @@ describe('conn:export / conn:importPreview / conn:importCommit handlers', () => 
     ])('rejects %s', async (_label, payload) => {
       expect(code(await shim.invoke(IPC_CHANNELS.connImportCommit, payload))).toBe('VALIDATION');
       expect(svc.importCommit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('conn:previewUris', () => {
+    it('passes the lines to the service', async () => {
+      expect((await shim.invoke(IPC_CHANNELS.connPreviewUris, { uris: ['mongodb://h'] })).ok).toBe(true);
+      expect(svc.previewUris).toHaveBeenCalledWith(['mongodb://h']);
+    });
+
+    it.each([
+      ['no lines', { uris: [] }],
+      ['an empty line', { uris: [''] }],
+      ['101 lines', { uris: Array.from({ length: 101 }, () => 'mongodb://h') }],
+      ['a 4097-character line', { uris: ['m'.repeat(4097)] }],
+      ['an unknown key', { uris: ['mongodb://h'], extra: 1 }],
+    ])('rejects %s', async (_label, payload) => {
+      expect(code(await shim.invoke(IPC_CHANNELS.connPreviewUris, payload))).toBe('VALIDATION');
+      expect(svc.previewUris).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly 100 lines of 4096 characters', async () => {
+      const uris = Array.from({ length: 100 }, () => 'm'.repeat(4096));
+      expect((await shim.invoke(IPC_CHANNELS.connPreviewUris, { uris })).ok).toBe(true);
+    });
+  });
+
+  describe('conn:createFromUris', () => {
+    const valid = {
+      uris: ['mongodb://h'],
+      defaults: { readOnly: true, directConnection: false },
+      credentials: [{ index: 0, username: 'u', password: 'p' }],
+    };
+
+    it('passes a valid payload to the service', async () => {
+      expect((await shim.invoke(IPC_CHANNELS.connCreateFromUris, valid)).ok).toBe(true);
+      expect(svc.createFromUris).toHaveBeenCalledWith(valid);
+    });
+
+    it('accepts the last line index and a username of 128 characters', async () => {
+      const payload = { ...valid, credentials: [{ index: 99, username: 'u'.repeat(128) }] };
+      expect((await shim.invoke(IPC_CHANNELS.connCreateFromUris, payload)).ok).toBe(true);
+    });
+
+    it.each([
+      ['no defaults', { uris: valid.uris, credentials: [] }],
+      ['an unknown default', { ...valid, defaults: { ...valid.defaults, tls: true } }],
+      ['a non-boolean default', { ...valid, defaults: { readOnly: 'yes', directConnection: false } }],
+      ['an index past the last line', { ...valid, credentials: [{ index: 100 }] }],
+      ['a negative index', { ...valid, credentials: [{ index: -1 }] }],
+      ['an unknown credential key', { ...valid, credentials: [{ index: 0, token: 'x' }] }],
+      ['a 129-character username', { ...valid, credentials: [{ index: 0, username: 'u'.repeat(129) }] }],
+      ['101 credentials', { ...valid, credentials: Array.from({ length: 101 }, () => ({ index: 0 })) }],
+      ['no lines', { ...valid, uris: [] }],
+    ])('rejects %s', async (_label, payload) => {
+      expect(code(await shim.invoke(IPC_CHANNELS.connCreateFromUris, payload))).toBe('VALIDATION');
+      expect(svc.createFromUris).not.toHaveBeenCalled();
     });
   });
 });

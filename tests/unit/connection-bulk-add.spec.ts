@@ -1,0 +1,227 @@
+import { describe, it, expect } from 'vitest';
+import fc from 'fast-check';
+import {
+  baseNames,
+  lineInputProblem,
+  lineToInput,
+  needsCredentials,
+  parseLine,
+  planLineNames,
+  previewEntry,
+  repickFor,
+  type Line,
+  type ParsedLine,
+} from '../../electron/services/connectionBulkAdd';
+
+const DEFAULTS = { readOnly: false, directConnection: false };
+const ok = (uri: string) => {
+  const l = parseLine(uri);
+  if (!l.ok) throw new Error(`expected ${uri} to parse: ${l.reason}`);
+  return l;
+};
+
+describe('parseLine', () => {
+  it('parses a connection string and reports its warnings as words', () => {
+    const l = ok('mongodb://a:1,b:2/');
+    expect(l.input.host).toBe('a');
+    expect(l.warnings).toHaveLength(1);
+    expect(l.warnings[0]).toMatch(/first host/);
+  });
+
+  it('reports a dropped option by its name', () => {
+    expect(ok('mongodb://h/?w=majority').warnings).toEqual(['w']);
+  });
+
+  it('turns a parse failure into a reason instead of throwing', () => {
+    expect(parseLine('http://nope')).toEqual({
+      ok: false,
+      reason: 'URI must start with mongodb:// or mongodb+srv://',
+    });
+  });
+
+  it('records whether the string set directConnection itself, case-insensitively', () => {
+    expect(ok('mongodb://h/?directConnection=false').explicitDirect).toBe(true);
+    expect(ok('mongodb://h/?DIRECTCONNECTION=true').explicitDirect).toBe(true);
+    expect(ok('mongodb://h/?appName=x').explicitDirect).toBe(false);
+  });
+
+  it('never reads params off an SRV line, even one with a port the parser strips', () => {
+    expect(ok('mongodb+srv://c.example.net:27017/?directConnection=true').explicitDirect).toBe(false);
+  });
+});
+
+describe('baseNames / planLineNames', () => {
+  it('names a line by its host, or host:port when the batch has that host on another port', () => {
+    const lines = ['mongodb://localhost:27017', 'mongodb://localhost:27018', 'mongodb://db.example.com']
+      .map(parseLine);
+    expect(baseNames(lines)).toEqual(['localhost:27017', 'localhost:27018', 'db.example.com']);
+  });
+
+  it('keeps the bare host when the same host and port repeat, leaving the clash rule to number them', () => {
+    const lines = ['mongodb://h:1', 'mongodb://h:1'].map(parseLine);
+    expect(baseNames(lines)).toEqual(['h', 'h']);
+    expect(planLineNames([], lines)).toEqual(['h', 'h (2)']);
+  });
+
+  it('numbers clashes with existing names, and leaves bad lines an empty slot', () => {
+    const lines = ['mongodb://prod', 'nope', 'mongodb://prod'].map(parseLine);
+    expect(baseNames(lines)).toEqual(['prod', '', 'prod']);
+    expect(planLineNames(['prod'], lines)).toEqual(['prod (2)', '', 'prod (3)']);
+  });
+
+  it('names an SRV line by its cluster host', () => {
+    expect(planLineNames([], [parseLine('mongodb+srv://u:p@c0.ab.mongodb.net/db')])).toEqual([
+      'c0.ab.mongodb.net',
+    ]);
+  });
+
+  it('property: every planned name is unique against existing names and each other', () => {
+    const host = fc.constantFrom('a', 'b', 'db.example.com');
+    const port = fc.integer({ min: 1, max: 4 });
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(host, port), { maxLength: 12 }),
+        fc.uniqueArray(fc.constantFrom('a', 'b', 'a:1', 'b (2)', 'db.example.com'), { maxLength: 5 }),
+        (pairs, existing) => {
+          const lines = pairs.map(([h, p]) => parseLine(`mongodb://${h}:${p}`));
+          const names = planLineNames(existing, lines);
+          expect(new Set(names).size).toBe(names.length);
+          for (const n of names) expect(existing).not.toContain(n);
+        },
+      ),
+    );
+  });
+});
+
+describe('needsCredentials / repickFor', () => {
+  it('asks for credentials unless the string has both a username and a password', () => {
+    expect(needsCredentials(ok('mongodb://u:p@h').input)).toBe(false);
+    expect(needsCredentials(ok('mongodb://u@h').input)).toBe(true);
+    expect(needsCredentials(ok('mongodb://h').input)).toBe(true);
+  });
+
+  it('never asks an X.509 line, which instead needs its certificate re-picked', () => {
+    const x509 = ok('mongodb://h/?authMechanism=MONGODB-X509&tls=true').input;
+    expect(needsCredentials(x509)).toBe(false);
+    expect(repickFor(x509)).toEqual(['tlsClientCert']);
+    expect(repickFor(ok('mongodb://h').input)).toEqual([]);
+  });
+});
+
+describe('previewEntry', () => {
+  it('says whether a line has a password without ever returning it', () => {
+    const e = previewEntry(ok('mongodb://alice:s3cret@h:2000/?w=1'), 3, 'h');
+    expect(e).toEqual({
+      index: 3,
+      ok: true,
+      savedAs: 'h',
+      host: 'h',
+      port: 2000,
+      srv: false,
+      authUsername: 'alice',
+      hasPassword: true,
+      needsCredentials: false,
+      repick: [],
+      warnings: ['w'],
+    });
+    expect(JSON.stringify(e)).not.toContain('s3cret');
+  });
+
+  it('omits authUsername when the string has none, and marks SRV', () => {
+    const e = previewEntry(ok('mongodb+srv://c.example.net'), 0, 'c.example.net');
+    expect(e).toMatchObject({ srv: true, hasPassword: false, needsCredentials: true });
+    expect(e).not.toHaveProperty('authUsername');
+  });
+
+  it('passes a bad line through as its reason', () => {
+    expect(previewEntry({ ok: false, reason: 'bad' } as Line, 1, '')).toEqual({ index: 1, ok: false, reason: 'bad' });
+  });
+});
+
+describe('lineToInput', () => {
+  it('builds a full Connection from the string, the batch defaults and the name', () => {
+    const c = lineToInput(ok('mongodb://u:p@h:2000/app?authSource=admin'), 'h', { readOnly: true, directConnection: true }, undefined);
+    expect(c).toEqual({
+      name: 'h',
+      color: '#7c6af7',
+      connectionType: 'standard',
+      host: 'h',
+      port: 2000,
+      defaultDb: 'app',
+      authMech: 'default',
+      authUsername: 'u',
+      authDatabase: 'admin',
+      password: 'p',
+      tls: { enabled: false, verify: true },
+      advanced: {
+        connectTimeoutMs: 10_000,
+        socketTimeoutMs: 30_000,
+        serverSelectionTimeoutMs: 30_000,
+        readPreference: 'primary',
+        maxPoolSize: 100,
+        directConnection: true,
+        appName: undefined,
+      },
+      readOnly: true,
+    });
+  });
+
+  it('leaves optional fields out rather than setting them undefined', () => {
+    const c = lineToInput(ok('mongodb://h'), 'h', DEFAULTS, undefined);
+    for (const k of ['defaultDb', 'authUsername', 'authDatabase', 'password']) expect(c).not.toHaveProperty(k);
+    expect(c.authMech).toBe('none');
+  });
+
+  it("keeps the string's own directConnection over the batch default", () => {
+    const on = { readOnly: false, directConnection: true };
+    expect(lineToInput(ok('mongodb://h/?directConnection=false'), 'h', on, undefined).advanced.directConnection).toBe(false);
+    expect(lineToInput(ok('mongodb://h/?directConnection=true'), 'h', DEFAULTS, undefined).advanced.directConnection).toBe(true);
+  });
+
+  it('never sets directConnection on an SRV line, whatever asks for it', () => {
+    const on = { readOnly: false, directConnection: true };
+    expect(lineToInput(ok('mongodb+srv://c.example.net'), 'c', on, undefined).advanced.directConnection).toBe(false);
+  });
+
+  it('lets typed credentials win over the string, and negotiates when a username turns auth on', () => {
+    const typed = lineToInput(ok('mongodb://h'), 'h', DEFAULTS, { index: 0, username: 'bob', password: 'pw' });
+    expect(typed).toMatchObject({ authMech: 'default', authUsername: 'bob', password: 'pw' });
+    const over = lineToInput(ok('mongodb://u:p@h'), 'h', DEFAULTS, { index: 0, username: 'v', password: 'q' });
+    expect(over).toMatchObject({ authUsername: 'v', password: 'q' });
+  });
+
+  it("falls back to the string's credentials for whatever was left blank", () => {
+    const c = lineToInput(ok('mongodb://u@h'), 'h', DEFAULTS, { index: 0, username: '', password: 'pw' });
+    expect(c).toMatchObject({ authUsername: 'u', password: 'pw', authMech: 'default' });
+  });
+
+  it('keeps an explicit mechanism when a username is typed', () => {
+    const c = lineToInput(ok('mongodb://h/?authMechanism=SCRAM-SHA-256'), 'h', DEFAULTS, { index: 0, username: 'bob' });
+    expect(c.authMech).toBe('scram256');
+  });
+});
+
+describe('lineInputProblem', () => {
+  const build = (uri: string, creds?: { username?: string; password?: string }) =>
+    lineToInput(ok(uri) as ParsedLine, 'n', DEFAULTS, creds ? { index: 0, ...creds } : undefined);
+
+  it('accepts a username without a password, which can be entered later', () => {
+    expect(lineInputProblem(build('mongodb://u@h'))).toBeNull();
+  });
+
+  it('accepts an X.509 line without its certificate, which is picked after saving', () => {
+    expect(lineInputProblem(build('mongodb://h/?authMechanism=MONGODB-X509&tls=true'))).toBeNull();
+  });
+
+  it('rejects a password with no username, in words', () => {
+    expect(lineInputProblem(build('mongodb://h', { password: 'pw' }))).toBe(
+      'Password must be empty when authentication is none',
+    );
+  });
+
+  it('rejects an explicit mechanism left without a username', () => {
+    expect(lineInputProblem(build('mongodb://h/?authMechanism=SCRAM-SHA-256'))).toBe(
+      'Username is required for password authentication',
+    );
+  });
+});

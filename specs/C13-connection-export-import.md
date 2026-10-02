@@ -127,6 +127,44 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 - The Connections table (the Switcher's "Manage connections…", or `⌘E`): "Import…" and "Export…" beside "+ Add connection". Not in the Switcher popover itself, which stays a list to pick from.
 - The empty first-launch screen, when no Connections exist: an "Import connections" button next to the add-connection action. This is where a user on a new machine arrives.
 
+## 7. Add connections (connection strings, file import, form)
+
+Import is a way of adding, so the Connections table has one **"+ Add connections"** entry with three routes:
+
+- **Paste connection strings**, one per line (the main route, §7.1).
+- **Import from file…**: the §4 flow, unchanged.
+- **Single connection (full form)…**: the existing form, still the only way to set up SSH or TLS certificate files.
+
+### 7.1 Connection strings
+
+1. **Paste.** Each non-empty line is one `mongodb://` or `mongodb+srv://` string, parsed in main by the same parser as the form's URI paste. Up to 100 lines of up to 4096 characters each. A preview lists every line before anything is written: the name it will be saved under, the host, whether it carries credentials, and the reason for any line that cannot be parsed. Bad lines never block the good ones; they are skipped and listed.
+2. **Defaults** apply to every line. All three are maintainer-overridable choices:
+   - *Read-only*, off by default.
+   - *Direct connection*, off by default. A line that sets `directConnection` itself keeps its own value. Never applied to an SRV line: the driver refuses `directConnection` with `mongodb+srv`.
+3. **Names.** The hostname (an SRV line's cluster host; a replica-set line's first host). When lines in the same batch share a hostname with different ports, those lines are named `host:port`. Clashes with existing names, or within the batch, then get `" (2)"` exactly as §4.2.
+4. **Credentials.** Any line whose string lacks a username or a password is listed again, one per row, asking for both (a username in the string is prefilled). Blank is accepted: a line with no username saves without authentication, and a username with no password saves the username only. X.509 and AWS lines are not asked: X.509 needs its client certificate picked in the form afterwards and is listed like §4.3's re-picks.
+5. **Commit** re-parses and re-plans names against what exists at that moment (as §4.1 does), validates each line with the import rules, and creates them one by one. Passwords go through `SecretsVault` with §4.4's rule: no secure storage keeps the Connection and reports the password as not stored. The result lists what was created, renamed, failed, and still needs a file picked.
+
+Passwords never travel back to the renderer: the preview reports only whether a line has one.
+
+| Channel | Input | Output | SECRET? |
+|---|---|---|---|
+| `conn:previewUris` | `{ uris: string[] }` | `{ entries: ({ index; ok: true; savedAs; host; port; srv; authUsername?; hasPassword; needsCredentials; repick; warnings } \| { index; ok: false; reason })[] }` | yes |
+| `conn:createFromUris` | `{ uris: string[]; defaults: { readOnly; directConnection }; credentials: { index; username?; password? }[] }` | same as `conn:importCommit` | yes |
+
+## 8. Checked rows and batch actions
+
+The Connections table has a checkbox column, with a header checkbox that checks or clears every row the current search shows (indeterminate when only some are). **Checked** is a separate state from the row whose details are open ("selected"). A search drops checks from the rows it hides, so a batch action never touches a Connection the user cannot see.
+
+While any row is checked, a bar offers:
+
+- **Export…**: the §3 export with the checked Connections fixed, so it shows only the passwords option and the passphrase, not a second checklist.
+- **Delete…**: one confirmation naming the count and the total open tabs, then the same delete as a single row for each, reporting any that fail.
+
+The table stays open through both, so more batch actions can join the bar later. A dialog stacked on the table takes Escape for itself; the table closes on Escape only when nothing is stacked on it.
+
+The table's footer keeps only "+ Add connections". Export of every Connection stays reachable from the command palette and the File menu.
+
 ## Acceptance criteria
 
 - [ ] Export writes only the ticked Connections, every field except secrets and the three credential paths, as readable JSON with mode `0600`.
@@ -141,6 +179,11 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 - [ ] Without secure storage and with the plaintext fallback off, Connections import without secrets and the result says why.
 - [ ] Export and Import are reachable from the command palette, the File menu and the empty first-launch screen.
 - [ ] Plaintext secrets and the derived key never cross into the renderer.
+- [ ] Pasting several connection strings previews each line's saved name, credentials and errors before anything is written; bad lines are skipped and listed.
+- [ ] Defaults (read-only, direct connection) apply to every line; a line's own `directConnection` wins; SRV lines never get direct connection.
+- [ ] Lines missing a username or password are listed one per row for credentials; blanks are accepted.
+- [ ] The preview never returns a password to the renderer.
+- [ ] The Connections table checks rows (with check-all over the visible rows) and exports or deletes the checked set without closing.
 
 ## Test cases
 

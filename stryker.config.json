@@ -17,6 +17,7 @@
     "electron/mongo/ejson.ts",
     "electron/services/UndoStore.ts",
     "electron/services/connectionExportFormat.ts",
+    "electron/services/connectionBulkAdd.ts",
     "src/utils/ejson.ts",
     "electron/mongo/uri-parse.ts",
     "src/utils/hostLocality.ts",

@@ -606,4 +606,133 @@ describe('ConnectionExportService', () => {
       expect(later.created).toHaveLength(1);
     });
   });
+
+  describe('connection strings (C13 §7.1)', () => {
+    const DEFAULTS = { readOnly: false, directConnection: false };
+
+    it('previews names against existing Connections and never returns a password', async () => {
+      const a = install();
+      await a.conns.create(input({ name: 'db.example.com' }));
+
+      const preview = a.service.previewUris([
+        'mongodb://alice:s3cret@db.example.com',
+        'not a uri',
+        'mongodb://localhost:1',
+        'mongodb://localhost:2',
+      ]);
+
+      expect(preview.entries.map((e) => (e.ok ? e.savedAs : e.reason))).toEqual([
+        'db.example.com (2)',
+        'URI must start with mongodb:// or mongodb+srv://',
+        'localhost:1',
+        'localhost:2',
+      ]);
+      expect(preview.entries[0]).toMatchObject({ hasPassword: true, needsCredentials: false, authUsername: 'alice' });
+      expect(JSON.stringify(preview)).not.toContain('s3cret');
+    });
+
+    it('creates every good line with the defaults and typed credentials, and reports the bad ones', async () => {
+      const a = install();
+
+      const result = await a.service.createFromUris({
+        uris: ['mongodb://alice:pw1@one', 'nope', 'mongodb://two', 'mongodb+srv://c.example.net'],
+        defaults: { readOnly: true, directConnection: true },
+        credentials: [{ index: 2, username: 'bob', password: 'pw2' }],
+      });
+
+      expect(result.created.map((c) => [c.index, c.name])).toEqual([
+        [0, 'one'],
+        [2, 'two'],
+        [3, 'c.example.net'],
+      ]);
+      expect(result.failed).toEqual([
+        { index: 1, name: 'Line 2', reason: 'URI must start with mongodb:// or mongodb+srv://' },
+      ]);
+      expect(result.secretsNotStored).toEqual([]);
+
+      const [one, two, srv] = result.created.map((c) => a.conns.get(c.id));
+      expect(one).toMatchObject({ readOnly: true, authUsername: 'alice', hasPasswordStored: true });
+      expect(one!.advanced.directConnection).toBe(true);
+      expect(two).toMatchObject({ authMech: 'default', authUsername: 'bob', hasPasswordStored: true });
+      expect(a.vault.get(two!.id, 'password')).toBe('pw2');
+      expect(srv!.advanced.directConnection).toBe(false);
+      expect(srv).toMatchObject({ authMech: 'none', hasPasswordStored: false });
+    });
+
+    it('saves a line with blank credentials without authentication', async () => {
+      const a = install();
+      const result = await a.service.createFromUris({
+        uris: ['mongodb://local'],
+        defaults: DEFAULTS,
+        credentials: [{ index: 0, username: '', password: '' }],
+      });
+      expect(a.conns.get(result.created[0]!.id)).toMatchObject({ authMech: 'none', hasPasswordStored: false });
+    });
+
+    it('fails a line the import rules reject and still creates the rest', async () => {
+      const a = install();
+      const result = await a.service.createFromUris({
+        uris: ['mongodb://h', 'mongodb://k'],
+        defaults: DEFAULTS,
+        credentials: [{ index: 0, password: 'orphan' }],
+      });
+      expect(result.failed).toEqual([
+        { index: 0, name: 'h', reason: 'Password must be empty when authentication is none' },
+      ]);
+      expect(result.created.map((c) => c.name)).toEqual(['k']);
+    });
+
+    it('re-plans names at commit, so a Connection created since the preview is not clashed with', async () => {
+      const a = install();
+      expect(a.service.previewUris(['mongodb://h']).entries[0]).toMatchObject({ savedAs: 'h' });
+      await a.conns.create(input({ name: 'h' }));
+
+      const result = await a.service.createFromUris({ uris: ['mongodb://h'], defaults: DEFAULTS, credentials: [] });
+
+      expect(result.created[0]!.name).toBe('h (2)');
+    });
+
+    it('keeps the Connection and says why when the password cannot be stored securely', async () => {
+      const a = install({ allowPlaintext: false });
+      a.keychain.setAvailable(false);
+
+      const result = await a.service.createFromUris({
+        uris: ['mongodb://u:p@h'],
+        defaults: DEFAULTS,
+        credentials: [],
+      });
+
+      expect(result.created).toHaveLength(1);
+      expect(a.conns.get(result.created[0]!.id).hasPasswordStored).toBe(false);
+      expect(result.secretsNotStored).toEqual([
+        { name: 'h', reason: 'No secure storage on this install, and storing passwords unencrypted is off.' },
+      ]);
+    });
+
+    it('reports a line the repository refuses and carries on', async () => {
+      const a = install();
+      const real = a.conns.create.bind(a.conns);
+      const spy = vi.spyOn(a.conns, 'create');
+      spy.mockImplementationOnce(async () => {
+        throw new ConflictError('taken');
+      });
+      spy.mockImplementation(real);
+
+      const result = await a.service.createFromUris({
+        uris: ['mongodb://h', 'mongodb://k'],
+        defaults: DEFAULTS,
+        credentials: [],
+      });
+
+      expect(result.failed).toEqual([{ index: 0, name: 'h', reason: 'taken' }]);
+      expect(result.created.map((c) => c.name)).toEqual(['k']);
+    });
+
+    it('reports a non-app error generically', async () => {
+      const a = install();
+      vi.spyOn(a.conns, 'create').mockRejectedValueOnce(new Error('disk on fire'));
+      const result = await a.service.createFromUris({ uris: ['mongodb://h'], defaults: DEFAULTS, credentials: [] });
+      expect(result.failed).toEqual([{ index: 0, name: 'h', reason: 'Unexpected error' }]);
+    });
+  });
 });

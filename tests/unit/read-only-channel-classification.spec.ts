@@ -81,6 +81,8 @@ const NON_MONGO_CHANNELS = new Set<string>([
   IPC_CHANNELS.connExport,
   IPC_CHANNELS.connImportPreview,
   IPC_CHANNELS.connImportCommit,
+  IPC_CHANNELS.connPreviewUris,
+  IPC_CHANNELS.connCreateFromUris,
   IPC_CHANNELS.connUpdate,
   IPC_CHANNELS.connDelete,
   IPC_CHANNELS.connTouchUsed,

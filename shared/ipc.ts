@@ -20,6 +20,8 @@ import type {
   ConnectionInput,
   ImportCommitInput,
   ImportCommitResult,
+  UriCommitInput,
+  UriPreview,
   ImportPreview,
   ConnectionRuntime,
   ConnectionSummary,
@@ -175,6 +177,9 @@ export interface IpcApi {
     /** Main shows the open dialog and parses the file; the result holds a token, not the contents. */
     importPreview: () => Promise<ImportPreview>;
     importCommit: (input: ImportCommitInput) => Promise<ImportCommitResult>;
+    /** Parses pasted connection strings and plans their names; passwords never come back. */
+    previewUris: (uris: string[]) => Promise<UriPreview>;
+    createFromUris: (input: UriCommitInput) => Promise<ImportCommitResult>;
   };
 
   app: {
@@ -444,6 +449,8 @@ export const IPC_CHANNELS = {
   connExport:        'conn:export',        // SECRET_INPUT
   connImportPreview: 'conn:importPreview',
   connImportCommit:  'conn:importCommit',  // SECRET_INPUT
+  connPreviewUris:    'conn:previewUris',    // SECRET_INPUT
+  connCreateFromUris: 'conn:createFromUris', // SECRET_INPUT
 
   // App-level utilities -----------------------------------------
   appMenuCommandEvent: 'app:menu-command-event',

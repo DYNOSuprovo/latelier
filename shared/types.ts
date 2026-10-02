@@ -131,6 +131,50 @@ export interface ImportCommitResult {
   secretsNotStored: { name: string; reason: string }[];
 }
 
+// Adding Connections from pasted connection strings (C13 §7.1). Passwords go
+// in only: the preview says whether a line has one, never what it is.
+
+/** Applied to every line of a batch. */
+export interface UriBatchDefaults {
+  readOnly: boolean;
+  directConnection: boolean;
+}
+
+/** What the user typed for one line in the credentials step. */
+export interface UriCredentials {
+  index: number;
+  username?: string;
+  password?: string;
+}
+
+export type UriPreviewEntry =
+  | {
+      index: number;
+      ok: true;
+      /** The name it will be saved under, after clash renaming. */
+      savedAs: string;
+      host: string;
+      port: number;
+      srv: boolean;
+      authUsername?: string;
+      hasPassword: boolean;
+      /** Missing a username or a password, so the credentials step lists it. */
+      needsCredentials: boolean;
+      repick: RepickFile[];
+      warnings: string[];
+    }
+  | { index: number; ok: false; reason: string };
+
+export interface UriPreview {
+  entries: UriPreviewEntry[];
+}
+
+export interface UriCommitInput {
+  uris: string[];
+  defaults: UriBatchDefaults;
+  credentials: UriCredentials[];
+}
+
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ConnectionRuntime {

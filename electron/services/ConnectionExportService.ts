@@ -8,6 +8,8 @@ import type {
   ImportCommitInput,
   ImportCommitResult,
   ImportPreview,
+  UriCommitInput,
+  UriPreview,
 } from '@shared/types';
 import { AppError, SystemError, ValidationError } from '../errors.ts';
 import type { ConnectionService } from '../mongo/ConnectionService.ts';
@@ -26,6 +28,13 @@ import {
   type ScryptParams,
   type SecretValues,
 } from './connectionExportFormat.ts';
+import {
+  lineInputProblem,
+  lineToInput,
+  parseLine,
+  planLineNames,
+  previewEntry,
+} from './connectionBulkAdd.ts';
 
 /** Vault column for each exported secret field. */
 const VAULT_FIELD = {
@@ -221,6 +230,55 @@ export class ConnectionExportService {
       }
       result.created.push({ index: i, id: created.id, name: created.name });
       this.storeSecrets(created.id, created.name, secrets.get(i), result);
+    }
+    return result;
+  }
+
+  /** C13 §7.1 — nothing is written; a line's password is reported as present, never returned. */
+  previewUris(uris: readonly string[]): UriPreview {
+    const lines = uris.map(parseLine);
+    const names = planLineNames(this.conns.list().map((c) => c.name), lines);
+    return { entries: lines.map((l, i) => previewEntry(l, i, names[i]!)) };
+  }
+
+  /**
+   * C13 §7.1 — re-parses and re-plans against what exists now, like
+   * `importCommit`, and keeps a Connection whose password the vault refuses.
+   */
+  async createFromUris(input: UriCommitInput): Promise<ImportCommitResult> {
+    const lines = input.uris.map(parseLine);
+    const names = planLineNames(this.conns.list().map((c) => c.name), lines);
+    const creds = new Map(input.credentials.map((c) => [c.index, c]));
+    const result: ImportCommitResult = { created: [], failed: [], secretsNotStored: [] };
+    for (const [i, line] of lines.entries()) {
+      const label = `Line ${i + 1}`;
+      if (!line.ok) {
+        result.failed.push({ index: i, name: label, reason: line.reason });
+        continue;
+      }
+      const { password, ...conn } = lineToInput(line, names[i]!, input.defaults, creds.get(i));
+      const problem = lineInputProblem({ ...conn, ...(password ? { password } : {}) });
+      if (problem) {
+        result.failed.push({ index: i, name: names[i]!, reason: problem });
+        continue;
+      }
+      let created;
+      try {
+        created = await this.conns.create(conn);
+      } catch (err) {
+        this.log?.error('conn-add', 'could not create a connection from a connection string', {
+          index: i,
+          cause: err instanceof Error ? err.message : String(err),
+        });
+        result.failed.push({
+          index: i,
+          name: names[i]!,
+          reason: err instanceof AppError ? err.message : 'Unexpected error',
+        });
+        continue;
+      }
+      result.created.push({ index: i, id: created.id, name: created.name });
+      this.storeSecrets(created.id, created.name, password ? { password } : undefined, result);
     }
     return result;
   }
