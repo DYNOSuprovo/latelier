@@ -808,7 +808,7 @@ export function ConnectionSwitcher({
         >
           <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↑↓</Kbd> navigate</Text>
           <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↵</Kbd> connect</Text>
-          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>⌘E</Kbd> all connections</Text>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>⌘E</Kbd> manage</Text>
         </Group>
       </Popover.Dropdown>
     </Popover>

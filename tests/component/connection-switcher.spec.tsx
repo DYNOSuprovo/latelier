@@ -2068,8 +2068,9 @@ describe('ConnectionSwitcher keyboard contract', () => {
     expect(text).toContain('↵');
     expect(text).toContain('connect');
     expect(text).toContain('⌘E');
-    expect(text).toContain('all connections');
-    expect(text).not.toContain('manage');
+    // "manage" here is ⌘E's "Manage connections…", not the per-row ⌘↵.
+    expect(text).toContain('manage');
+    expect(text).not.toContain('⌘↵');
     expect(text).not.toContain('disconnect');
     expect(text).not.toContain('esc close');
   });
