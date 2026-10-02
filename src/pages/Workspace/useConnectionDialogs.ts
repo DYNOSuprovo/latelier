@@ -42,7 +42,10 @@ export function useConnectionDialogs(deps: {
   deleteFromExpandedTable: (id: string) => void;
   addFromExpandedTable: () => void;
   importFromExpandedTable: () => void;
-  exportFromExpandedTable: () => void;
+  /** Open tabs across these Connections; `null` while tabs are still loading. */
+  tabCountFor: (ids: string[]) => number | null;
+  /** Deletes each in turn, the same way as one; resolves once all are done. */
+  deleteConnections: (ids: string[]) => Promise<void>;
   confirmDeleteConnection: () => Promise<void>;
   handleConnectionSaved: (id: string) => Promise<void>;
 } {
@@ -175,40 +178,56 @@ export function useConnectionDialogs(deps: {
     () => closeTableThen(openAddConnectionModal)(),
     [closeTableThen, openAddConnectionModal],
   );
-  const { openImport, openExport } = useConnectionTransfer();
+  const { openImport } = useConnectionTransfer();
   const importFromExpandedTable = React.useCallback(
     () => closeTableThen(openImport)(),
     [closeTableThen, openImport],
   );
-  const exportFromExpandedTable = React.useCallback(
-    () => closeTableThen(openExport)(),
-    [closeTableThen, openExport],
+
+  const tabCountFor = React.useCallback(
+    (ids: string[]) => {
+      // Same refusal as the single delete: an unloaded list is not "no tabs".
+      if (tabsRef.current.loading) return null;
+      const set = new Set(ids);
+      return tabsRef.current.tabs.filter((t) => set.has(t.connectionId)).length;
+    },
+    [tabsRef],
+  );
+
+  // One delete, shared by the single confirm and the table's batch delete.
+  // `settled` runs as soon as the IPC call returns, before tabs close.
+  const deleteOne = React.useCallback(
+    async (id: string, settled: () => void) => {
+      try {
+        await api.conn.delete(id);
+      } catch (err) {
+        settled();
+        if (isIpcError(err) && err.code === 'NOT_FOUND') {
+          void refreshConnections();
+        } else {
+          notify.error(isIpcError(err) ? err.message : String(err), { title: 'Delete failed' });
+        }
+        return;
+      }
+      invalidateSampleSchemaCache(id);
+      settled();
+      await closeTabsForConnection(id, 'Connection deleted, but its tabs could not be closed');
+      removeConnectionLocal(id);
+    },
+    [refreshConnections, removeConnectionLocal, closeTabsForConnection],
   );
 
   const confirmDeleteConnection = React.useCallback(async () => {
     if (!deleteConnectionTarget) return;
-    const { id } = deleteConnectionTarget;
-    try {
-      await api.conn.delete(id);
-    } catch (err) {
-      setDeleteConnectionTarget(null);
-      if (isIpcError(err) && err.code === 'NOT_FOUND') {
-        void refreshConnections();
-      } else {
-        notify.error(isIpcError(err) ? err.message : String(err), { title: 'Delete failed' });
-      }
-      return;
-    }
-    invalidateSampleSchemaCache(id);
-    setDeleteConnectionTarget(null);
-    await closeTabsForConnection(id, 'Connection deleted, but its tabs could not be closed');
-    removeConnectionLocal(id);
-  }, [
-    deleteConnectionTarget,
-    refreshConnections,
-    removeConnectionLocal,
-    closeTabsForConnection,
-  ]);
+    await deleteOne(deleteConnectionTarget.id, () => setDeleteConnectionTarget(null));
+  }, [deleteConnectionTarget, deleteOne]);
+
+  const deleteConnections = React.useCallback(
+    async (ids: string[]) => {
+      for (const id of ids) await deleteOne(id, () => {});
+    },
+    [deleteOne],
+  );
 
   // useConnections() only refetches on window focus or a live status event,
   // so an explicit awaited refresh is needed here. On edit, a mongo-relevant
@@ -251,7 +270,8 @@ export function useConnectionDialogs(deps: {
     deleteFromExpandedTable,
     addFromExpandedTable,
     importFromExpandedTable,
-    exportFromExpandedTable,
+    tabCountFor,
+    deleteConnections,
     confirmDeleteConnection,
     handleConnectionSaved,
   };

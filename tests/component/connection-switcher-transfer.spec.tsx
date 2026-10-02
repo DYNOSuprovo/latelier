@@ -1,19 +1,30 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen, within } from '../helpers/render';
+import { render, screen, waitFor, within } from '../helpers/render';
 import { installAtelierMock, uninstallAtelierMock } from '../helpers/atelierMock';
 import Workspace from '../../src/pages/Workspace';
 import { ConnectionTransferProvider } from '../../src/features/connections/ConnectionTransferProvider';
 import type { ConnectionSummary } from '@shared/types';
 
 const row = (id: string, name: string): ConnectionSummary => ({
-  id, name, color: '#1A6835', host: 'localhost', port: 27017,
+  id, name, color: '#1A6835', host: `${name.toLowerCase()}.example.com`, port: 27017,
   connectionType: 'standard', readOnly: false, status: 'unknown',
 });
 
+const THREE = [row('c1', 'Prod'), row('c2', 'Staging'), row('c3', 'Dev')];
+
 function mount(connections: ConnectionSummary[]) {
-  installAtelierMock({ conn: { list: async () => connections }, tabs: { list: async () => [] } });
+  const backing = [...connections];
+  const del = vi.fn(async (id: string) => {
+    backing.splice(backing.findIndex((c) => c.id === id), 1);
+    return { id };
+  });
+  const exp = vi.fn(async () => ({ written: 2, omittedSecrets: [] }));
+  installAtelierMock({
+    conn: { list: async () => [...backing], delete: del, export: exp },
+    tabs: { list: async () => [] },
+  });
   render(
     <MemoryRouter initialEntries={['/workspace']}>
       <ConnectionTransferProvider>
@@ -21,6 +32,7 @@ function mount(connections: ConnectionSummary[]) {
       </ConnectionTransferProvider>
     </MemoryRouter>,
   );
+  return { del, exp };
 }
 
 async function openTable() {
@@ -30,24 +42,156 @@ async function openTable() {
   return screen.findByRole('dialog', { name: 'Connections' });
 }
 
+const check = (table: HTMLElement, name: string) =>
+  userEvent.click(within(table).getByRole('checkbox', { name: `Check ${name}` }));
+const toolbar = () => screen.getByRole('toolbar', { name: 'Checked connections' });
+
 afterEach(uninstallAtelierMock);
 
-describe('Connections table: Export / Import entry points', () => {
-  it.each([
-    ['Export…', 'Export Connections'],
-    ['Import…', 'Import Connections'],
-  ])('%s closes the table and opens its dialog', async (label, dialogName) => {
+describe('Connections table: Add connections', () => {
+  it('stacks the Add dialog on the table, and Import from file leaves both for the file import', async () => {
     mount([row('c1', 'Prod')]);
     const table = await openTable();
-    await userEvent.click(within(table).getByRole('button', { name: label }));
-    expect(await screen.findByRole('dialog', { name: dialogName })).toBeTruthy();
+    await userEvent.click(within(table).getByRole('button', { name: '+ Add connections' }));
+    const add = await screen.findByRole('dialog', { name: 'Add connections' });
+    expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
+
+    await userEvent.click(within(add).getByRole('button', { name: 'Import from file…' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Import Connections' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Add connections' })).toBeNull();
   });
 
-  it('hides Export with zero Connections but still offers Import', async () => {
-    mount([]);
+  it('Escape closes only the dialog stacked on the table', async () => {
+    mount([row('c1', 'Prod')]);
     const table = await openTable();
-    expect(within(table).getByRole('button', { name: 'Import…' })).toBeTruthy();
-    expect(within(table).queryByRole('button', { name: 'Export…' })).toBeNull();
+    await userEvent.click(within(table).getByRole('button', { name: '+ Add connections' }));
+    await screen.findByRole('dialog', { name: 'Add connections' });
+
+    await userEvent.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add connections' })).toBeNull());
+    expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
+    // With nothing stacked, the table takes Escape again.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull());
+  });
+});
+
+describe('Connections table: checked rows', () => {
+  it('shows the batch bar only while something is checked, and Clear empties it', async () => {
+    mount(THREE);
+    const table = await openTable();
+    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+
+    await check(table, 'Prod');
+    await check(table, 'Dev');
+    expect(within(toolbar()).getByText('2 checked')).toBeTruthy();
+
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Clear' }));
+    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+  });
+
+  it('checking a row does not open or close its detail', async () => {
+    mount(THREE);
+    const table = await openTable();
+    const tr = within(table).getByText('Prod').closest('tr')!;
+    await check(table, 'Prod');
+    expect(tr.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('the header checks all shown rows, shows partial, and clears them again', async () => {
+    mount(THREE);
+    const table = await openTable();
+    const all = within(table).getByRole('checkbox', { name: 'Check all shown connections' }) as HTMLInputElement;
+
+    await check(table, 'Prod');
+    expect(all.indeterminate).toBe(true);
+    expect(all.checked).toBe(false);
+
+    await userEvent.click(all);
+    expect(all.checked).toBe(true);
+    expect(within(toolbar()).getByText('3 checked')).toBeTruthy();
+
+    await userEvent.click(all);
+    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+  });
+
+  it('a search drops the checks on the rows it hides, so no batch action reaches them', async () => {
+    mount(THREE);
+    const table = await openTable();
+    await userEvent.click(within(table).getByRole('checkbox', { name: 'Check all shown connections' }));
+
+    await userEvent.type(within(table).getByRole('textbox', { name: /search connections/i }), 'prod');
+    expect(within(toolbar()).getByText('1 checked')).toBeTruthy();
+
+    await userEvent.clear(within(table).getByRole('textbox', { name: /search connections/i }));
+    expect(within(toolbar()).getByText('1 checked')).toBeTruthy();
+  });
+
+  it('the header checks only the rows the search shows', async () => {
+    mount(THREE);
+    const table = await openTable();
+    await userEvent.type(within(table).getByRole('textbox', { name: /search connections/i }), 'staging');
+    await userEvent.click(within(table).getByRole('checkbox', { name: 'Check all shown connections' }));
+    await userEvent.clear(within(table).getByRole('textbox', { name: /search connections/i }));
+    expect((within(table).getByRole('checkbox', { name: 'Check Staging' }) as HTMLInputElement).checked).toBe(true);
+    expect((within(table).getByRole('checkbox', { name: 'Check Prod' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('Export… exports exactly the checked rows, with no second checklist, and the table stays', async () => {
+    const { exp } = mount(THREE);
+    const table = await openTable();
+    await check(table, 'Prod');
+    await check(table, 'Dev');
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Export…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Export Connections' });
+    expect(within(dialog).getByText('2 checked Connections.')).toBeTruthy();
+    expect(within(dialog).queryByRole('checkbox', { name: 'Prod' })).toBeNull();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Export' }));
+
+    await waitFor(() => expect(exp).toHaveBeenCalledWith({ ids: ['c1', 'c3'], includeSecrets: false }));
+    await within(dialog).findByText('2 Connections written.');
+    // The text button, not the header's ×, which carries the same name.
+    await userEvent.click(within(dialog).getByText('Close', { selector: 'button *' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export Connections' })).toBeNull());
+    expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(within(toolbar()).getByRole('button', { name: 'Export…' })));
+  });
+
+  it('Delete… confirms once by typing, deletes each checked row, and keeps the table open', async () => {
+    const { del } = mount(THREE);
+    const table = await openTable();
+    await check(table, 'Prod');
+    await check(table, 'Staging');
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete…' }));
+
+    const confirm = await screen.findByRole('dialog', { name: 'Delete 2 connections?' });
+    const go = within(confirm).getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    await userEvent.type(within(confirm).getByRole('textbox', { name: 'Confirm deletion' }), 'delete 2');
+    await userEvent.click(go);
+
+    await waitFor(() => expect(del.mock.calls.map((c) => c[0])).toEqual(['c1', 'c2']));
+    await waitFor(() => expect(within(table).queryByText('Prod')).toBeNull());
+    expect(within(table).getByText('Dev')).toBeTruthy();
+    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
+  });
+
+  it('cancelling the batch delete deletes nothing and keeps the checks', async () => {
+    const { del } = mount(THREE);
+    const table = await openTable();
+    await check(table, 'Prod');
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete…' }));
+    // One checked row is an ordinary delete: its own name is the phrase.
+    const confirm = await screen.findByRole('dialog', { name: 'Delete "Prod"?' });
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Delete/ })).toBeNull());
+    expect(del).not.toHaveBeenCalled();
+    expect(within(toolbar()).getByText('1 checked')).toBeTruthy();
   });
 });

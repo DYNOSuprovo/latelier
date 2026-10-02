@@ -617,7 +617,7 @@ describe('ConnectionSwitcher', () => {
 // Switcher. Payoff for the earlier form extraction: the same `ConnectionForm`, a
 // second host.
 describe('ConnectionSwitcher — add/edit', () => {
-  it('"+ Add connection" in the table opens the Connection form as a modal over the Data View', async () => {
+  it('the full form, reached from the table, opens as a modal over the Data View', async () => {
     mount();
 
     await openAddForm();
@@ -1395,10 +1395,12 @@ async function openExpandedTable() {
   return screen.findByRole('dialog', { name: 'Connections' });
 }
 
-/** Adding a Connection goes through the table's "+ Add connection". */
+/** The full form is one route of the table's "+ Add connections" (C13 §7). */
 async function openAddForm() {
   const dialog = await openExpandedTable();
-  await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connection' }));
+  await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connections' }));
+  const add = await screen.findByRole('dialog', { name: 'Add connections' });
+  await userEvent.click(within(add).getByRole('button', { name: 'Single connection (full form)…' }));
 }
 
 /** The `<tr>` for a given Connection's row, found via its visible name cell. */
@@ -1492,7 +1494,7 @@ describe('ConnectionSwitcher — expanded table', () => {
     await waitFor(() => expect(document.activeElement).toBe(ctaTrigger));
   });
 
-  it('offers "+ Add connection" instead of a dead end when there are no saved Connections', async () => {
+  it('offers "+ Add connections" instead of a dead end when there are no saved Connections', async () => {
     // With zero Connections there is nothing to select, so no row action ever
     // renders — without this, a first-run `⌘E` could only be escaped, never
     // acted on. This button is a permanent footer fixture (not only shown
@@ -1506,7 +1508,9 @@ describe('ConnectionSwitcher — expanded table', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Manage connections…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connections' });
 
-    await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connection' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connections' }));
+    const add = await screen.findByRole('dialog', { name: 'Add connections' });
+    await userEvent.click(within(add).getByRole('button', { name: 'Single connection (full form)…' }));
 
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
     await screen.findByRole('dialog', { name: 'New Connection' });

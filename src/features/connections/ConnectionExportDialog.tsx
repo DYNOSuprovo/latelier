@@ -18,11 +18,14 @@ const FIELD_LABEL: Record<ExportSecretField, string> = {
  * Connection Export: tick the Connections to write, optionally encrypt their
  * secrets under an Export Passphrase, then main shows the save dialog and
  * writes the file. Cancelling that save dialog leaves this one as it was.
+ *
+ * With `ids` the set is already chosen (the Connections table's checked rows,
+ * C13 §8), so there is no second checklist, only the passwords option.
  */
-export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
+export function ConnectionExportDialog({ onClose, ids }: { onClose: () => void; ids?: string[] }) {
   const close = useDialogFocusReturn(onClose);
   const [connections, setConnections] = React.useState<ConnectionSummary[] | null>(null);
-  const [ticked, setTicked] = React.useState<Set<string>>(new Set());
+  const [ticked, setTicked] = React.useState<Set<string>>(() => new Set(ids));
   const [includeSecrets, setIncludeSecrets] = React.useState(false);
   const [passphrase, setPassphrase] = React.useState('');
   const [confirm, setConfirm] = React.useState('');
@@ -31,6 +34,7 @@ export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
   const [result, setResult] = React.useState<Written | null>(null);
 
   React.useEffect(() => {
+    if (ids) return;
     let live = true;
     api.conn
       .list()
@@ -43,7 +47,7 @@ export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
     return () => {
       live = false;
     };
-  }, []);
+  }, [ids]);
 
   const tooShort = passphrase.length < MIN_EXPORT_PASSPHRASE_LENGTH;
   const mismatch = confirm !== passphrase;
@@ -55,7 +59,7 @@ export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const res = await api.conn.export({
-        ids: (connections ?? []).filter((c) => ticked.has(c.id)).map((c) => c.id),
+        ids: ids ?? (connections ?? []).filter((c) => ticked.has(c.id)).map((c) => c.id),
         includeSecrets,
         ...(includeSecrets ? { passphrase } : {}),
       });
@@ -87,6 +91,9 @@ export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <>
+            {ids ? (
+              <Text size="sm">{plural(ids.length, 'checked Connection')}.</Text>
+            ) : (
             <Checkbox.Group
               label="Connections to export"
               value={[...ticked]}
@@ -103,6 +110,7 @@ export function ConnectionExportDialog({ onClose }: { onClose: () => void }) {
                 ))}
               </Stack>
             </Checkbox.Group>
+            )}
             <Checkbox
               size="xs"
               label="Include passwords"

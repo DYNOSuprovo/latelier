@@ -1,11 +1,12 @@
 import React from 'react';
-import { Alert, Badge, Button, Checkbox, Group, List, Modal, PasswordInput, Stack, Table, Text } from '@mantine/core';
+import { Alert, Badge, Button, Checkbox, Group, Modal, PasswordInput, Stack, Table, Text } from '@mantine/core';
 import type { ImportCommitResult, ImportPreview } from '@shared/types';
 import { api, getErrorMessage, isIpcError } from '../../api/atelier';
 import { notifyConnectionsChanged } from '../../state/connections';
 import { useDialogFocusReturn } from '../../hooks/useDialogFocusReturn';
 import { SubmitButton } from '../../components/SubmitButton';
-import { REPICK_LABEL, plural } from './transferCopy';
+import { REPICK_LABEL } from './transferCopy';
+import { TransferResult } from './TransferResult';
 
 type Preview = Extract<ImportPreview, { token: string }>;
 interface Done {
@@ -77,7 +78,11 @@ export function ConnectionImportDialog({ onClose }: { onClose: () => void }) {
     <Modal opened onClose={busy ? () => {} : close} title="Import Connections" centered size="lg">
       <Stack gap="sm">
         {done ? (
-          <ImportResult done={done} />
+          <TransferResult
+            result={done.result}
+            planned={done.preview.entries.map((e) => ({ index: e.index, name: e.name, repick: e.repick }))}
+            verb="imported"
+          />
         ) : preview ? (
           <>
             <Table withTableBorder fz="xs" aria-label="Connections in the file">
@@ -182,63 +187,5 @@ export function ConnectionImportDialog({ onClose }: { onClose: () => void }) {
         </Group>
       </Stack>
     </Modal>
-  );
-}
-
-function ImportResult({ done: { result, preview } }: { done: Done }) {
-  const entryAt = new Map(preview.entries.map((e) => [e.index, e]));
-  // Keyed by file position, not by name: names are re-planned at commit and may differ from the preview.
-  const renamed = result.created.flatMap((c) => {
-    const original = entryAt.get(c.index)?.name;
-    return original !== undefined && original !== c.name ? [{ index: c.index, from: original, to: c.name }] : [];
-  });
-  const repicks = result.created.flatMap((c) => {
-    const files = entryAt.get(c.index)?.repick ?? [];
-    return files.length > 0 ? [{ index: c.index, name: c.name, files }] : [];
-  });
-  return (
-    <Stack gap="xs">
-      <Text size="sm" role="status">
-        {plural(result.created.length, 'Connection')} imported.
-      </Text>
-      {result.failed.length > 0 && (
-        <Alert color="red" variant="light" role="alert" title="Not imported">
-          <List size="xs" spacing={2} aria-label="Connections not imported">
-            {result.failed.map((f) => (
-              <List.Item key={f.index}>
-                {f.name}: {f.reason}
-              </List.Item>
-            ))}
-          </List>
-        </Alert>
-      )}
-      {renamed.length > 0 && (
-        <List size="xs" spacing={2} aria-label="Renamed Connections">
-          {renamed.map((r) => (
-            <List.Item key={r.index}>
-              {r.from} → {r.to}
-            </List.Item>
-          ))}
-        </List>
-      )}
-      {repicks.length > 0 && (
-        <List size="xs" spacing={2} aria-label="Files to pick again">
-          {repicks.map((r) => (
-            <List.Item key={r.index}>
-              {r.name}: {r.files.map((f) => REPICK_LABEL[f]).join(', ')}
-            </List.Item>
-          ))}
-        </List>
-      )}
-      {result.secretsNotStored.length > 0 && (
-        <List size="xs" spacing={2} aria-label="Secrets not stored">
-          {result.secretsNotStored.map((s) => (
-            <List.Item key={`${s.name}/${s.reason}`}>
-              {s.name}: {s.reason}
-            </List.Item>
-          ))}
-        </List>
-      )}
-    </Stack>
   );
 }

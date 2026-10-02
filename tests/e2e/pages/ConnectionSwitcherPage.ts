@@ -99,10 +99,12 @@ export class ConnectionSwitcherPage {
     await this.ensureOpen();
   }
 
-  /** Adding a Connection goes through the expanded table's "+ Add connection". */
+  /** The full form: the table's "+ Add connections", then its single-connection route (C13 §7). */
   async openNew() {
     await this.openExpandedTable();
-    await this.expandedTableDialog.getByRole('button', { name: '+ Add connection' }).click();
+    await this.expandedTableDialog.getByRole('button', { name: '+ Add connections' }).click();
+    const add = this.win.getByRole('dialog', { name: 'Add connections', exact: true });
+    await add.getByRole('button', { name: 'Single connection (full form)…' }).click();
     await expect(this.expandedTableDialog).toBeHidden();
   }
 
@@ -184,7 +186,9 @@ export class ConnectionSwitcherPage {
   }
 
   // the Switcher's expanded Connections table.
-  get expandedTableDialog() { return this.win.getByRole('dialog', { name: 'Connections' }); }
+  // Exact: Playwright matches names by substring, and dialogs stacked on the
+  // table ("Add connections", "Export Connections") would match too.
+  get expandedTableDialog() { return this.win.getByRole('dialog', { name: 'Connections', exact: true }); }
   get expandedTableSearch() {
     return this.expandedTableDialog.getByRole('textbox', { name: /search connections/i });
   }

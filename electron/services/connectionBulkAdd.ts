@@ -42,6 +42,7 @@ export function parseLine(uri: string): Line {
       warnings: warnings.map((w) => w.detail ?? w.code),
     };
   } catch (err) {
+    // Stryker disable next-line StringLiteral: unreachable in practice — parseConnectionUri wraps every failure in a ValidationError (its own throws, the ConnectionString constructor's, and the path decode), and hasParam re-reads a string that same constructor just accepted. Kept so a library change cannot surface a raw error message.
     return { ok: false, reason: err instanceof AppError ? err.message : 'Not a connection string' };
   }
 }
@@ -76,13 +77,9 @@ export function baseNames(lines: readonly Line[]): string[] {
 /** Final names: `baseNames`, then §4.2's clash rule against `existing` and the batch. */
 export function planLineNames(existing: Iterable<string>, lines: readonly Line[]): string[] {
   const bases = baseNames(lines);
-  const okIdx = lines.flatMap((l, i) => (l.ok ? [i] : []));
-  const planned = planNames(existing, okIdx.map((i) => bases[i]!));
-  const out = lines.map(() => '');
-  okIdx.forEach((i, k) => {
-    out[i] = planned[k]!;
-  });
-  return out;
+  const planned = planNames(existing, bases.filter((_, i) => lines[i]!.ok));
+  let k = 0;
+  return lines.map((l) => (l.ok ? planned[k++]! : ''));
 }
 
 /** X.509 authenticates with a certificate and AWS with its own keys: neither is asked for a password here. */

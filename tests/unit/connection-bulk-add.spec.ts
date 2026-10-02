@@ -45,6 +45,10 @@ describe('parseLine', () => {
     expect(ok('mongodb://h/?appName=x').explicitDirect).toBe(false);
   });
 
+  it('reads the params of a line with surrounding spaces, as the parser accepts it', () => {
+    expect(ok('  mongodb://h/?directConnection=true  ').explicitDirect).toBe(true);
+  });
+
   it('never reads params off an SRV line, even one with a port the parser strips', () => {
     expect(ok('mongodb+srv://c.example.net:27017/?directConnection=true').explicitDirect).toBe(false);
   });
