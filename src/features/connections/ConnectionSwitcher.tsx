@@ -5,7 +5,6 @@ import { I } from '../../icons';
 import { STATUS_PRESENTATION, matchesConnectionQuery } from './connectionStatus';
 import { useRovingHighlight } from '../../hooks/useRovingHighlight';
 import { RowActionIcon } from './RowActionIcon';
-import { useConnectionTransfer } from './ConnectionTransferProvider';
 import type { ConnectionSummary } from '@shared/types';
 
 /**
@@ -42,9 +41,9 @@ import type { ConnectionSummary } from '@shared/types';
  * element that can hold a caret, and taking its arrows is the point.
  *
  * Two more affordances joined later, both plain click/Tab targets rather than
- * extensions to the arrow-key contract above: "+ Add connection" (pinned
+ * extensions to the arrow-key contract above: "Manage connections…" (pinned
  * above the list, unaffected by search) and a per-row edit button that opens
- * the same Connection form as a modal, prefilled.
+ * the Connection form as a modal, prefilled.
  *
  * The remaining ADR 0001 actions — manage, disconnect, delete — joined as
  * the same kind of inline, highlighted-row-only icon buttons rather than the
@@ -54,12 +53,13 @@ import type { ConnectionSummary } from '@shared/types';
  * — which has no keyboard shortcut, deliberately, since it's destructive and
  * asks for confirmation regardless — its only path.
  *
- * `⌘E` — and an "Expand" button in the footer that does the same — covers
- * the case where the popover itself is too small: comparing two similarly-named
- * Connections, reading detail, or managing several in a row. Expanding
- * *closes* the popover rather than stacking on it (ADR 0001: only one list of
- * Connections is ever on screen), so this reuses `close()`, the same as
- * every other action here that leaves the Switcher.
+ * `⌘E` — and the "Manage connections…" button that does the same — opens the
+ * full Connections table: comparing two similarly-named Connections, reading
+ * detail, managing several in a row, and the list-wide actions (add, import,
+ * export) that would crowd this popover. It *closes* the popover rather than
+ * stacking on it (ADR 0001: only one list of Connections is ever on screen),
+ * so this reuses `close()`, the same as every other action here that leaves
+ * the Switcher.
  */
 export interface ConnectionSwitcherProps {
   connections: ConnectionSummary[];
@@ -76,8 +76,6 @@ export interface ConnectionSwitcherProps {
   onManage: (id: string) => void;
   /** ⌫ on an empty search. Deliberately leaves the popover open. */
   onDisconnect: (id: string) => void;
-  /** "+ Add connection". Opens the Connection form as a modal. Closes the popover. */
-  onAdd: () => void;
   /** A row's edit affordance. Opens the same form, prefilled. Closes the popover. */
   onEdit: (id: string) => void;
   /**
@@ -87,7 +85,7 @@ export interface ConnectionSwitcherProps {
    */
   onDelete: (id: string) => void;
   /**
-   * `⌘E` / the footer's "Expand" button. Opens the expanded
+   * `⌘E` / "Manage connections…". Opens the expanded
    * Connections table. Closes the popover — the two are never on screen
    * together (ADR 0001). Carries the typed search along: expanding to tell
    * "Prod — US East" and "Prod — EU West" apart is exactly the scenario a
@@ -320,7 +318,6 @@ export function ConnectionSwitcher({
   onSwitch,
   onManage,
   onDisconnect,
-  onAdd,
   onEdit,
   onDelete,
   onExpand,
@@ -332,7 +329,8 @@ export function ConnectionSwitcher({
   const baseId = React.useId();
   const listboxId = `${baseId}-listbox`;
   // with zero saved Connections there is nothing to search, so
-  // opening focuses "+ Add connection" instead of the search field (ADR
+  // opening focuses "Manage connections…" — the way to add one — instead of
+  // the search field (ADR
   // 0001's "add-mode when zero connections exist"). Read at open time via
   // `connections.length`, not a separate prop — the Switcher already knows
   // its own connection count, and this stays correct however it was opened
@@ -409,7 +407,7 @@ export function ConnectionSwitcher({
       // field, and the dropdown takes it down to <body> when its exit
       // transition unmounts it (`conn-switcher-keyboard.e2e.ts`).
       //
-      // A surface opened by the same gesture (the Edit and Expand modals) is
+      // A surface opened by the same gesture (the Edit modal, the table) is
       // left alone only because Mantine's `FocusTrap` claims focus on a 0ms
       // timer, ahead of this 10ms one. A surface that took focus later than
       // 10ms would lose it back to the trigger.
@@ -444,17 +442,6 @@ export function ConnectionSwitcher({
   const handleManage = (id: string) => {
     close();
     onManage(id);
-  };
-
-  const handleAdd = () => {
-    close();
-    onAdd();
-  };
-
-  const transfer = useConnectionTransfer();
-  const handleTransfer = (open: () => void) => {
-    close();
-    open();
   };
 
   const handleEdit = (id: string) => {
@@ -721,68 +708,36 @@ export function ConnectionSwitcher({
           />
         </div>
         {/*
-          "+ Add connection". Pinned above the listbox, not filtered by
+          "Manage connections…". Pinned above the listbox, not filtered by
           `query` and not part of the roving highlight: a search that matches
-          nothing must still offer a way to create the Connection being
-          searched for, and folding it into the arrow-key contract would mean
-          rewriting `handleKeyDown`'s wrap-at-both-ends math to special-case a
+          nothing must still lead somewhere a Connection can be created, and
+          folding it into the arrow-key contract would mean rewriting
+          `handleKeyDown`'s wrap-at-both-ends math to special-case a
           non-Connection row. A plain tab-reachable button costs neither.
           `onKeyDown` stopPropagation is load-bearing, not defensive: this
           button sits inside `Popover.Dropdown`, whose own `onKeyDown` is
           `handleKeyDown` below — without stopping it here, Tab-ing to this
           button and pressing Enter would hit `handleKeyDown`'s Enter case
           instead of this button's click, switching to whatever row is
-          highlighted (and closing its tabs) rather than opening the form.
+          highlighted (and closing its tabs) rather than opening the table.
         */}
-        <div style={{ borderBottom: `1px solid ${T.border}` }}>
         <Button
           variant="subtle"
           size="compact-xs"
           autoFocus={addMode}
-          onClick={handleAdd}
+          onClick={handleExpand}
           onKeyDown={(e) => e.stopPropagation()}
           leftSection={
             <span aria-hidden style={{ display: 'flex' }}>
-              {I.plus}
+              {I.expand}
             </span>
           }
           fullWidth
           justify="flex-start"
-          style={{ borderRadius: 0 }}
+          style={{ borderRadius: 0, borderBottom: `1px solid ${T.border}` }}
         >
-          Add connection
+          Manage connections…
         </Button>
-        {/*
-          Connection Export / Import. Same plain tab-reachable buttons as
-          "Add connection", with the same `stopPropagation`, for the same
-          reason: the dropdown's own handler would turn Enter into a switch.
-          Export is hidden with nothing to export.
-        */}
-        {connections.length > 0 && (
-          <Button
-            variant="subtle"
-            size="compact-xs"
-            onClick={() => handleTransfer(transfer.openExport)}
-            onKeyDown={(e) => e.stopPropagation()}
-            fullWidth
-            justify="flex-start"
-            style={{ borderRadius: 0 }}
-          >
-            Export connections…
-          </Button>
-        )}
-        <Button
-          variant="subtle"
-          size="compact-xs"
-          onClick={() => handleTransfer(transfer.openImport)}
-          onKeyDown={(e) => e.stopPropagation()}
-          fullWidth
-          justify="flex-start"
-          style={{ borderRadius: 0 }}
-        >
-          Import connections…
-        </Button>
-        </div>
         <div
           id={listboxId}
           role="listbox"
@@ -830,55 +785,23 @@ export function ConnectionSwitcher({
           a user who only ever clicks still reads it every time they open the
           Switcher. It stays in the accessibility tree — hiding keyboard help
           from the users most likely to want it would be backwards — but named,
-          so it reads as a shortcut legend rather than four loose strings
-          trailing the list. The Expand button sits alongside it rather
-          than inside — it is an action, not another hint.
+          so it reads as a shortcut legend rather than loose strings trailing
+          the list.
         */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            borderTop: `1px solid ${T.border}`,
-            background: T.surfaceRaised,
-          }}
+        {/* Three entries, not six: the rest are taught by the row action
+            tooltips and the expanded table, not by rote memorization here. */}
+        <Group
+          gap={8}
+          px={10}
+          py={7}
+          role="note"
+          aria-label="Keyboard shortcuts"
+          style={{ borderTop: `1px solid ${T.border}`, background: T.surfaceRaised }}
         >
-          {/* Three entries, not six: the rest are taught by the row
-              action tooltips and the expanded table, not by rote memorization
-              here (see the Decision block at the top of the file). */}
-          <Group gap={8} px={10} py={7} role="note" aria-label="Keyboard shortcuts" style={{ flex: 1 }}>
-            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↑↓</Kbd> navigate</Text>
-            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↵</Kbd> connect</Text>
-            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>⌘E</Kbd> expand</Text>
-          </Group>
-          {/*
-            The pointer path to the same expanded table `⌘E` opens.
-            `onKeyDown` stopPropagation is load-bearing here for the same
-            reason it is on "+ Add connection" above: without it, Tab-ing here
-            and pressing Enter would hit `handleKeyDown`'s Enter case instead
-            of this button's click.
-          */}
-          <Button
-            variant="subtle"
-            size="compact-xs"
-            aria-label="Expand connections table"
-            onClick={handleExpand}
-            onKeyDown={(e) => e.stopPropagation()}
-            leftSection={
-              <span aria-hidden style={{ display: 'flex' }}>
-                {I.expand}
-              </span>
-            }
-            style={{
-              flexShrink: 0,
-              alignSelf: 'stretch',
-              height: 'auto',
-              borderRadius: 0,
-              borderLeft: `1px solid ${T.border}`,
-            }}
-          >
-            Expand
-          </Button>
-        </div>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↑↓</Kbd> navigate</Text>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>↵</Kbd> connect</Text>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}><Kbd>⌘E</Kbd> all connections</Text>
+        </Group>
       </Popover.Dropdown>
     </Popover>
   );

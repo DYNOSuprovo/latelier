@@ -24,7 +24,7 @@ const ACTIONS_COLUMN_WIDTH = 190;
 
 export interface ConnectionExpandedTableProps {
   connections: ConnectionSummary[];
-  /** The Switcher's search text at the moment `⌘E` / Expand was pressed. */
+  /** The Switcher's search text at the moment `⌘E` / "Manage connections…" was pressed. */
   initialQuery: string;
   /**
    * The Switcher trigger that opened this table — the TitleBar's compact
@@ -47,8 +47,12 @@ export interface ConnectionExpandedTableProps {
   onManage: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  /** The empty state's escape hatch when there are no saved Connections at all. Closes the table. */
+  /** Opens the Connection form. Closes the table. */
   onAdd: () => void;
+  /** Opens the Connection Import dialog. Closes the table. */
+  onImport: () => void;
+  /** Opens the Connection Export dialog. Closes the table. */
+  onExport: () => void;
 }
 
 function formatConnectionType(t: ConnectionSummary['connectionType']): string {
@@ -200,12 +204,12 @@ function ConnectionDetailRow({
  * `ConnectionSwitcher` does it for the popover: without it, closing lands a
  * keyboard user at `<body>`, the top of the Data View's tab order. Mantine
  * `Modal`'s own `returnFocus` can't help — by the time this mounts, the
- * popover's "Expand" button that would have been its target is already gone
+ * popover's "Manage connections…" button that would have been its target is already gone
  * (closing the popover is what opened this, per ADR 0001).
  *
  * This is wired to `Modal`'s own `onClose`, not a plain unmount effect,
- * because several actions here (Manage/Edit/Delete on a row, "+ Add
- * connection" in the footer) also unmount this table — straight into another
+ * because several actions here (Manage/Edit/Delete on a row, the footer's
+ * Add / Import / Export) also unmount this table — straight into another
  * modal or a navigation, in the same commit. An unmount-keyed effect would
  * fire there too and race that other surface's own focus claim (its
  * `FocusTrap`, if it's a modal) for a coin-flip winner; `onClose` only ever
@@ -222,6 +226,8 @@ export function ConnectionExpandedTable({
   onEdit,
   onDelete,
   onAdd,
+  onImport,
+  onExport,
 }: ConnectionExpandedTableProps) {
   const T = themeVars;
   const baseId = React.useId();
@@ -527,6 +533,17 @@ export function ConnectionExpandedTable({
           <Button size="compact-xs" variant="subtle" onClick={onAdd}>
             + Add connection
           </Button>
+          <Group gap={4}>
+            <Button size="compact-xs" variant="subtle" onClick={onImport}>
+              Import…
+            </Button>
+            {/* Nothing to export from an empty list. */}
+            {connections.length > 0 && (
+              <Button size="compact-xs" variant="subtle" onClick={onExport}>
+                Export…
+              </Button>
+            )}
+          </Group>
         </div>
       </div>
     </Modal>

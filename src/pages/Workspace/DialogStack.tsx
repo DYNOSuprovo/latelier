@@ -295,6 +295,8 @@ export function DialogStack({
     editFromExpandedTable,
     deleteFromExpandedTable,
     addFromExpandedTable,
+    importFromExpandedTable,
+    exportFromExpandedTable,
     confirmDeleteConnection,
     handleConnectionSaved,
   } = connectionDialogs;
@@ -477,6 +479,8 @@ export function DialogStack({
           onConnect={connectFromExpandedTable}
           onManage={manageFromExpandedTable}
           onAdd={addFromExpandedTable}
+          onImport={importFromExpandedTable}
+          onExport={exportFromExpandedTable}
           onEdit={editFromExpandedTable}
           onDelete={deleteFromExpandedTable}
         />

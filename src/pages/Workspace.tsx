@@ -843,7 +843,6 @@ function WorkspaceInner() {
   });
   const {
     requestDisconnect,
-    openAddConnectionModal,
     openEditConnectionModal,
     openDeleteConnectionModal,
     openConnectionTable,
@@ -925,7 +924,6 @@ function WorkspaceInner() {
     onSwitch: openConnection,
     onManage: openConnectionScreen,
     onDisconnect: requestDisconnect,
-    onAdd: openAddConnectionModal,
     onEdit: openEditConnectionModal,
     onDelete: openDeleteConnectionModal,
     onExpand: openConnectionTable,

@@ -25,7 +25,7 @@ export class ConnectionSwitcherPage {
   // matches two buttons.
   get trigger() { return this.win.getByRole('banner').getByRole('button', { name: /^Connection:/ }); }
   get listbox() { return this.win.locator('[role="listbox"][aria-label="Connections"]'); }
-  get newButton() { return this.win.getByRole('button', { name: 'Add connection' }); }
+  get manageButton() { return this.win.getByRole('button', { name: 'Manage connections…' }); }
   // The search field renders role="combobox" (Mantine's Popover.Target
   // wrapper adds aria-haspopup="listbox"), not "textbox".
   get searchInput() { return this.win.getByRole('combobox', { name: 'Search connections' }); }
@@ -99,10 +99,11 @@ export class ConnectionSwitcherPage {
     await this.ensureOpen();
   }
 
+  /** Adding a Connection goes through the expanded table's "+ Add connection". */
   async openNew() {
-    await this.ensureOpen();
-    await this.newButton.click();
-    await this.waitClosed();
+    await this.openExpandedTable();
+    await this.expandedTableDialog.getByRole('button', { name: '+ Add connection' }).click();
+    await expect(this.expandedTableDialog).toBeHidden();
   }
 
   /** Selects (and connects) a Connection — closes the popover. */
@@ -183,7 +184,6 @@ export class ConnectionSwitcherPage {
   }
 
   // the Switcher's expanded Connections table.
-  private get expandButton() { return this.win.getByRole('button', { name: 'Expand connections table' }); }
   get expandedTableDialog() { return this.win.getByRole('dialog', { name: 'Connections' }); }
   get expandedTableSearch() {
     return this.expandedTableDialog.getByRole('textbox', { name: /search connections/i });
@@ -220,7 +220,7 @@ export class ConnectionSwitcherPage {
     }
     // Same 10s as `ensureOpen` — kept in sync deliberately, not a typo.
     await expect(this.listbox).toBeVisible({ timeout: 10_000 });
-    await this.expandButton.click();
+    await this.manageButton.click();
     await expect(this.expandedTableDialog).toBeVisible({ timeout: 8000 });
   }
 }

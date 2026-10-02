@@ -258,8 +258,9 @@ describe('The Focused Tab’s Connection', () => {
     const cta = emptyState.getByRole('button', { name: 'Select a connection' });
     await userEvent.click(cta);
 
-    const addButton = await screen.findByRole('button', { name: 'Add connection' });
-    await waitFor(() => expect(document.activeElement).toBe(addButton));
+    // Zero Connections: focus lands on the way to add one, not the empty search.
+    const manageButton = await screen.findByRole('button', { name: 'Manage connections…' });
+    await waitFor(() => expect(document.activeElement).toBe(manageButton));
   });
 
   it('treats a Focused Tab whose Connection no longer exists as unrestorable — the empty state, not a crash', async () => {

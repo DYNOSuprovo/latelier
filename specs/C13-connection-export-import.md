@@ -124,6 +124,7 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 
 - Command palette: "Export Connections…" and "Import Connections…".
 - The native File menu: the same two items.
+- The Connections table (the Switcher's "Manage connections…", or `⌘E`): "Import…" and "Export…" beside "+ Add connection". Not in the Switcher popover itself, which stays a list to pick from.
 - The empty first-launch screen, when no Connections exist: an "Import connections" button next to the add-connection action. This is where a user on a new machine arrives.
 
 ## Acceptance criteria

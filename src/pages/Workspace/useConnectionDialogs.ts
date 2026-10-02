@@ -3,6 +3,7 @@ import { api, isIpcError } from '../../api/atelier';
 import { notify } from '../../theme/notifications';
 import { disconnectConnection as disconnectWithNotify } from '../../features/connections/disconnectConnection';
 import { invalidateSampleSchemaCache } from '../../features/fieldSuggestions/sources/sampleSchemaSource';
+import { useConnectionTransfer } from '../../features/connections/ConnectionTransferProvider';
 import type { ConnectionSummary } from '@shared/types';
 import type { WorkspaceTabsState } from '../../state/workspaceTabs';
 
@@ -40,6 +41,8 @@ export function useConnectionDialogs(deps: {
   editFromExpandedTable: (id: string) => void;
   deleteFromExpandedTable: (id: string) => void;
   addFromExpandedTable: () => void;
+  importFromExpandedTable: () => void;
+  exportFromExpandedTable: () => void;
   confirmDeleteConnection: () => Promise<void>;
   handleConnectionSaved: (id: string) => Promise<void>;
 } {
@@ -172,6 +175,15 @@ export function useConnectionDialogs(deps: {
     () => closeTableThen(openAddConnectionModal)(),
     [closeTableThen, openAddConnectionModal],
   );
+  const { openImport, openExport } = useConnectionTransfer();
+  const importFromExpandedTable = React.useCallback(
+    () => closeTableThen(openImport)(),
+    [closeTableThen, openImport],
+  );
+  const exportFromExpandedTable = React.useCallback(
+    () => closeTableThen(openExport)(),
+    [closeTableThen, openExport],
+  );
 
   const confirmDeleteConnection = React.useCallback(async () => {
     if (!deleteConnectionTarget) return;
@@ -238,6 +250,8 @@ export function useConnectionDialogs(deps: {
     editFromExpandedTable,
     deleteFromExpandedTable,
     addFromExpandedTable,
+    importFromExpandedTable,
+    exportFromExpandedTable,
     confirmDeleteConnection,
     handleConnectionSaved,
   };
