@@ -1557,6 +1557,23 @@ describe('ConnectionSwitcher — expanded table', () => {
     expect(screen.getByRole('dialog', { name: 'Add connections' })).toBeTruthy();
   });
 
+  it('leaves Ctrl+E to a text field as end-of-line, while ⌘E there still opens the table', async () => {
+    mount();
+    await titleBar().findByRole('button', { name: /^Connection: / });
+    const field = document.createElement('input');
+    document.body.append(field);
+    try {
+      expect(fireEvent.keyDown(field, { key: 'e', ctrlKey: true })).toBe(true);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
+
+      expect(fireEvent.keyDown(field, { key: 'e', metaKey: true })).toBe(false);
+      expect(await screen.findByRole('dialog', { name: 'Connections' })).toBeTruthy();
+    } finally {
+      field.remove();
+    }
+  });
+
   it('keeps ⌘E as Explain on an Aggregation tab', async () => {
     mount({
       tabs: {

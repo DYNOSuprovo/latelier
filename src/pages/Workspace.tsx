@@ -920,13 +920,16 @@ function WorkspaceInner() {
   // ⌘E opens the Connections table from anywhere in the Data View, not only
   // from inside the Switcher (which handles its own ⌘E and stops it there).
   // Two places keep ⌘E: an open dialog, and an Aggregation tab, where it is
-  // Explain.
+  // Explain. Ctrl counts too, outside text fields.
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       if (e.key !== 'e' && e.key !== 'E') return;
       const origin = e.target instanceof HTMLElement ? e.target : null;
       if (origin?.closest('[role="dialog"], [role="alertdialog"]')) return;
+      // In a text field a bare Ctrl+E is macOS's end-of-line (CodeMirror's
+      // too); there only ⌘ opens the table.
+      if (!e.metaKey && origin?.closest('input, textarea, [contenteditable]')) return;
       if (activeCollectionRef.current?.state.activeView === 'aggregation') return;
       e.preventDefault();
       // Focus goes back to wherever the user was when the table closes.
