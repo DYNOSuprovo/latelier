@@ -108,6 +108,8 @@ export type ProbeErrorCode =
    */
   | 'TLS_HANDSHAKE'
   | 'UNAUTHORIZED'
+  /** The saved password exists but can't be decrypted on this install. */
+  | 'SECRET_UNREADABLE'
   | 'UNKNOWN';
 
 export interface ProbeResult {

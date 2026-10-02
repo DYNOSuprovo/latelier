@@ -10,6 +10,8 @@ export interface ConnectionFormModalProps {
   onClose: () => void;
   // Where to send focus on dismiss, when the opener's own trigger element may already be detached.
   returnFocusTo?: HTMLElement | null;
+  /** Open on the Auth tab with the password field focused (#396). */
+  initialFocus?: 'password';
 }
 
 export function ConnectionFormModal({
@@ -17,6 +19,7 @@ export function ConnectionFormModal({
   onSaved,
   onClose,
   returnFocusTo,
+  initialFocus,
 }: ConnectionFormModalProps) {
   const close = useDialogFocusReturn(onClose, returnFocusTo);
   const [dirty, setDirty] = React.useState(false);
@@ -36,6 +39,7 @@ export function ConnectionFormModal({
     onCancel: () => void requestClose(),
     onDirtyChange: setDirty,
     embedded: true,
+    initialFocus,
   };
 
   return (

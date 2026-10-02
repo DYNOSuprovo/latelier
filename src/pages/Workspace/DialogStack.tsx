@@ -444,6 +444,7 @@ export function DialogStack({
           onSaved={handleConnectionSaved}
           onClose={closeConnectionFormModal}
           returnFocusTo={tableReturnFocus}
+          initialFocus={connectionFormTarget === 'new' ? undefined : connectionFormTarget.focus}
         />
       )}
 

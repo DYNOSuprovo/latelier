@@ -156,6 +156,9 @@ export function classifyMongoOpError(
 }
 
 
+export const SECRET_UNREADABLE_MESSAGE =
+  "This connection's saved password can't be read on this install. Re-enter it.";
+
 /**
  * Classify a raw error thrown by the `mongodb` driver (or surrounding I/O)
  * into a coarse category useful for the renderer banner.
@@ -166,6 +169,11 @@ export function classifyMongoError(err: unknown): {
 } {
   if (err === null || err === undefined) {
     return { code: 'UNKNOWN', message: 'unknown error' };
+  }
+  // The vault threw before any client existed: the stored secret belongs to
+  // another install (or a reset keychain), which no retry can fix.
+  if (err instanceof AppError && err.code === 'SECRET_DECRYPT_FAILED') {
+    return { code: 'SECRET_UNREADABLE', message: SECRET_UNREADABLE_MESSAGE };
   }
   const e = err as {
     name?: string;

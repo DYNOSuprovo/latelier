@@ -15,7 +15,7 @@ export function useConnectionDialogs(deps: {
   openConnection: (id: string) => void;
   openConnectionScreen: (id: string) => void;
 }): {
-  connectionFormTarget: 'new' | { id: string } | null;
+  connectionFormTarget: 'new' | { id: string; focus?: 'password' } | null;
   deleteConnectionTarget: { id: string; name: string; tabCount: number } | null;
   disconnectTarget: { id: string; name: string; tabCount: number } | null;
   disconnectReturnFocus: HTMLElement | null;
@@ -25,7 +25,11 @@ export function useConnectionDialogs(deps: {
   closeDisconnectConnectionModal: () => void;
   confirmDisconnectConnection: () => void;
   openAddConnectionModal: () => void;
-  openEditConnectionModal: (id: string, returnFocusTo?: HTMLElement | null) => void;
+  openEditConnectionModal: (
+    id: string,
+    returnFocusTo?: HTMLElement | null,
+    opts?: { focus?: 'password' },
+  ) => void;
   closeConnectionFormModal: () => void;
   openDeleteConnectionModal: (id: string) => void;
   closeDeleteConnectionModal: () => void;
@@ -50,7 +54,7 @@ export function useConnectionDialogs(deps: {
   } = deps;
 
   const [connectionFormTarget, setConnectionFormTarget] = React.useState<
-    'new' | { id: string } | null
+    'new' | { id: string; focus?: 'password' } | null
   >(null);
   // Snapshots {id, name, tabCount} at open time so the dialog's copy stays
   // stable even if connections/tabs change while it's open.
@@ -105,9 +109,9 @@ export function useConnectionDialogs(deps: {
 
   const openAddConnectionModal = React.useCallback(() => setConnectionFormTarget('new'), []);
   const openEditConnectionModal = React.useCallback(
-    (id: string, returnFocusTo?: HTMLElement | null) => {
+    (id: string, returnFocusTo?: HTMLElement | null, opts?: { focus?: 'password' }) => {
       if (returnFocusTo) setTableReturnFocus(returnFocusTo);
-      setConnectionFormTarget({ id });
+      setConnectionFormTarget({ id, focus: opts?.focus });
     },
     [],
   );
