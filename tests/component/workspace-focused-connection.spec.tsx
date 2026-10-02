@@ -259,7 +259,7 @@ describe('The Focused Tab’s Connection', () => {
     await userEvent.click(cta);
 
     // Zero Connections: focus lands on the way to add one, not the empty search.
-    const manageButton = await screen.findByRole('button', { name: 'Manage connections…' });
+    const manageButton = await screen.findByRole('button', { name: 'Manage connections' });
     await waitFor(() => expect(document.activeElement).toBe(manageButton));
   });
 

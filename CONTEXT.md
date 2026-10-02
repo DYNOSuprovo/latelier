@@ -28,7 +28,7 @@ The tabbed, IDE-like screen where the user browses Databases/Collections and run
 _Avoid_: editor, explorer
 
 **Connection Switcher**:
-A lightweight popup, reachable from within the Data View, that lists saved Connections and opens the full Connections table ("Manage connections…"), where adding, importing and exporting live — the entry point that replaces bouncing out to a separate connections screen.
+A lightweight popup, reachable from within the Data View, that lists saved Connections and opens the full Connections table ("Manage connections"), where adding, importing and exporting live — the entry point that replaces bouncing out to a separate connections screen.
 _Avoid_: database picker
 
 **Open Connection**:

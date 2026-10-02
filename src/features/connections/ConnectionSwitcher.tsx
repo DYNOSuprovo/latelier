@@ -41,7 +41,7 @@ import type { ConnectionSummary } from '@shared/types';
  * element that can hold a caret, and taking its arrows is the point.
  *
  * Two more affordances joined later, both plain click/Tab targets rather than
- * extensions to the arrow-key contract above: "Manage connections…" (pinned
+ * extensions to the arrow-key contract above: "Manage connections" (pinned
  * above the list, unaffected by search) and a per-row edit button that opens
  * the Connection form as a modal, prefilled.
  *
@@ -53,7 +53,7 @@ import type { ConnectionSummary } from '@shared/types';
  * — which has no keyboard shortcut, deliberately, since it's destructive and
  * asks for confirmation regardless — its only path.
  *
- * `⌘E` — and the "Manage connections…" button that does the same — opens the
+ * `⌘E` — and the "Manage connections" button that does the same — opens the
  * full Connections table: comparing two similarly-named Connections, reading
  * detail, managing several in a row, and the list-wide actions (add, import,
  * export) that would crowd this popover. It *closes* the popover rather than
@@ -85,7 +85,7 @@ export interface ConnectionSwitcherProps {
    */
   onDelete: (id: string) => void;
   /**
-   * `⌘E` / "Manage connections…". Opens the expanded
+   * `⌘E` / "Manage connections". Opens the expanded
    * Connections table. Closes the popover — the two are never on screen
    * together (ADR 0001). Carries the typed search along: expanding to tell
    * "Prod — US East" and "Prod — EU West" apart is exactly the scenario a
@@ -333,7 +333,7 @@ export function ConnectionSwitcher({
   const baseId = React.useId();
   const listboxId = `${baseId}-listbox`;
   // with zero saved Connections there is nothing to search, so
-  // opening focuses "Manage connections…" — the way to add one — instead of
+  // opening focuses "Manage connections" — the way to add one — instead of
   // the search field (ADR
   // 0001's "add-mode when zero connections exist"). Read at open time via
   // `connections.length`, not a separate prop — the Switcher already knows
@@ -712,7 +712,7 @@ export function ConnectionSwitcher({
           />
         </div>
         {/*
-          "Manage connections…". Pinned above the listbox, not filtered by
+          "Manage connections". Pinned above the listbox, not filtered by
           `query` and not part of the roving highlight: a search that matches
           nothing must still lead somewhere a Connection can be created, and
           folding it into the arrow-key contract would mean rewriting
@@ -744,7 +744,7 @@ export function ConnectionSwitcher({
           justify="flex-start"
           style={{ borderRadius: 0, borderBottom: `1px solid ${T.border}` }}
         >
-          Manage connections…
+          Manage connections
         </Button>
         <div
           id={listboxId}

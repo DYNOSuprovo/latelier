@@ -99,7 +99,7 @@ test('add Connections from pasted strings, with typed credentials, then batch-de
     expect(typed).toEqual({ readOnly: true, status: 'connected' });
 
     await table.getByRole('checkbox', { name: 'Check all shown connections' }).check();
-    await table.getByRole('toolbar', { name: 'Checked connections' }).getByRole('button', { name: 'Delete…' }).click();
+    await table.getByRole('toolbar', { name: 'Checked connections' }).getByRole('button', { name: 'Delete' }).click();
     const confirm = win.getByRole('dialog', { name: 'Delete 2 connections?' });
     await confirm.getByRole('textbox', { name: 'Confirm deletion' }).fill('delete 2');
     await confirm.getByRole('button', { name: 'Delete', exact: true }).click();

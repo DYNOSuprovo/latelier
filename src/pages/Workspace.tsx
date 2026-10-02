@@ -917,6 +917,25 @@ function WorkspaceInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editConnectionId, connectionsLoading]);
 
+  // ⌘E opens the Connections table from anywhere in the Data View, not only
+  // from inside the Switcher (which handles its own ⌘E and stops it there).
+  // Two places keep ⌘E: an open dialog, and an Aggregation tab, where it is
+  // Explain.
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.key !== 'e' && e.key !== 'E') return;
+      const origin = e.target instanceof HTMLElement ? e.target : null;
+      if (origin?.closest('[role="dialog"], [role="alertdialog"]')) return;
+      if (activeCollectionRef.current?.state.activeView === 'aggregation') return;
+      e.preventDefault();
+      // Focus goes back to wherever the user was when the table closes.
+      openConnectionTable('', origin);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeCollectionRef, openConnectionTable]);
+
   // Shared by both ConnectionSwitcher instances so they can't drift apart.
   const switcherProps = {
     connections,

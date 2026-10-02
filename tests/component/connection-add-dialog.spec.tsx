@@ -101,9 +101,9 @@ describe('ConnectionAddDialog — paste and preview', () => {
 
   it('leaves for the file import or the full form', async () => {
     const { onImportFile, onSingleForm } = setup(() => []);
-    await userEvent.click(screen.getByRole('button', { name: 'Import from file…' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Import from file' }));
     expect(onImportFile).toHaveBeenCalledOnce();
-    await userEvent.click(screen.getByRole('button', { name: 'Single connection (full form)…' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Single connection (full form)' }));
     expect(onSingleForm).toHaveBeenCalledOnce();
   });
 });

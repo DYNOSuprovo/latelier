@@ -25,7 +25,7 @@ export class ConnectionSwitcherPage {
   // matches two buttons.
   get trigger() { return this.win.getByRole('banner').getByRole('button', { name: /^Connection:/ }); }
   get listbox() { return this.win.locator('[role="listbox"][aria-label="Connections"]'); }
-  get manageButton() { return this.win.getByRole('button', { name: 'Manage connections…' }); }
+  get manageButton() { return this.win.getByRole('button', { name: 'Manage connections' }); }
   // The search field renders role="combobox" (Mantine's Popover.Target
   // wrapper adds aria-haspopup="listbox"), not "textbox".
   get searchInput() { return this.win.getByRole('combobox', { name: 'Search connections' }); }
@@ -104,7 +104,7 @@ export class ConnectionSwitcherPage {
     await this.openExpandedTable();
     await this.expandedTableDialog.getByRole('button', { name: '+ Add connections' }).click();
     const add = this.win.getByRole('dialog', { name: 'Add connections', exact: true });
-    await add.getByRole('button', { name: 'Single connection (full form)…' }).click();
+    await add.getByRole('button', { name: 'Single connection (full form)' }).click();
     await expect(this.expandedTableDialog).toBeHidden();
   }
 

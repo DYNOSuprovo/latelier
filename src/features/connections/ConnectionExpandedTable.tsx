@@ -28,7 +28,7 @@ const CHECK_COLUMN_WIDTH = 32;
 
 export interface ConnectionExpandedTableProps {
   connections: ConnectionSummary[];
-  /** The Switcher's search text at the moment `⌘E` / "Manage connections…" was pressed. */
+  /** The Switcher's search text at the moment `⌘E` / "Manage connections" was pressed. */
   initialQuery: string;
   /**
    * The Switcher trigger that opened this table — the TitleBar's compact
@@ -213,7 +213,7 @@ function ConnectionDetailRow({
  * `ConnectionSwitcher` does it for the popover: without it, closing lands a
  * keyboard user at `<body>`, the top of the Data View's tab order. Mantine
  * `Modal`'s own `returnFocus` can't help — by the time this mounts, the
- * popover's "Manage connections…" button that would have been its target is already gone
+ * popover's "Manage connections" button that would have been its target is already gone
  * (closing the popover is what opened this, per ADR 0001).
  *
  * This is wired to `Modal`'s own `onClose`, not a plain unmount effect,
@@ -267,6 +267,7 @@ export function ConnectionExpandedTable({
   // search field), and a Connection deleted elsewhere simply drops out.
   const checkedIds = filtered.filter((c) => checked.has(c.id)).map((c) => c.id);
   const allChecked = filtered.length > 0 && checkedIds.length === filtered.length;
+  const none = checkedIds.length === 0;
   const toggleChecked = (id: string) =>
     setChecked((prev) => {
       const next = new Set(prev);
@@ -523,22 +524,26 @@ export function ConnectionExpandedTable({
           </Text>
         </div>
 
-        {checkedIds.length > 0 && (
-          <Group gap="xs" role="toolbar" aria-label="Checked connections">
-            <Text size="xs" c="dimmed">
-              {checkedIds.length} checked
-            </Text>
-            <Button size="compact-xs" variant="light" onClick={() => setStacked('export')}>
-              Export…
-            </Button>
-            <Button size="compact-xs" variant="light" color="red" onClick={requestDeleteChecked}>
-              Delete…
-            </Button>
-            <Button size="compact-xs" variant="subtle" onClick={() => setChecked(new Set())}>
-              Clear
-            </Button>
-          </Group>
-        )}
+        {/* Always there, so the actions are discoverable before anything is
+            checked; they stay disabled until something is. */}
+        <Group gap="xs" role="toolbar" aria-label="Checked connections">
+          <Button size="compact-xs" variant="light" disabled={none} onClick={() => setStacked('export')}>
+            Export
+          </Button>
+          <Button size="compact-xs" variant="light" color="red" disabled={none} onClick={requestDeleteChecked}>
+            Delete
+          </Button>
+          {!none && (
+            <>
+              <Text size="xs" c="dimmed">
+                {checkedIds.length} checked
+              </Text>
+              <Button size="compact-xs" variant="subtle" onClick={() => setChecked(new Set())}>
+                Clear
+              </Button>
+            </>
+          )}
+        </Group>
 
         <div style={{ maxHeight: '55vh', overflowY: 'auto' }}>
           <Table

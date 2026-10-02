@@ -154,7 +154,7 @@ describe('workspace connection dialogs (T3)', () => {
       const trigger = await titleBar().findByRole('button', { name: /^Connection: /i });
       await userEvent.click(trigger);
       await screen.findByRole('listbox', { name: 'Connections' });
-      await userEvent.click(screen.getByRole('button', { name: 'Manage connections…' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
       const table = await screen.findByRole('dialog', { name: 'Connections' });
 
       const row = within(table).getByText('Alpha').closest('tr');

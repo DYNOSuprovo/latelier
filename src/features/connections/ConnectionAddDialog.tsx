@@ -219,10 +219,10 @@ export function ConnectionAddDialog({
             {!result && step === 'paste' && (
               <>
                 <Button variant="subtle" size="compact-xs" onClick={onImportFile}>
-                  Import from file…
+                  Import from file
                 </Button>
                 <Button variant="subtle" size="compact-xs" onClick={onSingleForm}>
-                  Single connection (full form)…
+                  Single connection (full form)
                 </Button>
               </>
             )}

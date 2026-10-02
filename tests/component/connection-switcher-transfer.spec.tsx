@@ -38,13 +38,21 @@ function mount(connections: ConnectionSummary[]) {
 async function openTable() {
   const titleBar = within(await screen.findByRole('banner'));
   await userEvent.click(await titleBar.findByRole('button', { name: /^Connection: / }));
-  await userEvent.click(await screen.findByRole('button', { name: 'Manage connections…' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Manage connections' }));
   return screen.findByRole('dialog', { name: 'Connections' });
 }
 
 const check = (table: HTMLElement, name: string) =>
   userEvent.click(within(table).getByRole('checkbox', { name: `Check ${name}` }));
 const toolbar = () => screen.getByRole('toolbar', { name: 'Checked connections' });
+/** The bar is always there; with nothing checked its actions are disabled and it shows no count. */
+const expectNoneChecked = () => {
+  for (const name of ['Export', 'Delete']) {
+    expect((within(toolbar()).getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
+  }
+  expect(within(toolbar()).queryByText(/checked/)).toBeNull();
+  expect(within(toolbar()).queryByRole('button', { name: 'Clear' })).toBeNull();
+};
 
 afterEach(uninstallAtelierMock);
 
@@ -56,7 +64,7 @@ describe('Connections table: Add connections', () => {
     const add = await screen.findByRole('dialog', { name: 'Add connections' });
     expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
 
-    await userEvent.click(within(add).getByRole('button', { name: 'Import from file…' }));
+    await userEvent.click(within(add).getByRole('button', { name: 'Import from file' }));
 
     expect(await screen.findByRole('dialog', { name: 'Import Connections' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
@@ -80,17 +88,19 @@ describe('Connections table: Add connections', () => {
 });
 
 describe('Connections table: checked rows', () => {
-  it('shows the batch bar only while something is checked, and Clear empties it', async () => {
+  it('keeps Export and Delete in place but disabled until something is checked, and Clear empties it', async () => {
     mount(THREE);
     const table = await openTable();
-    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+    expectNoneChecked();
 
     await check(table, 'Prod');
     await check(table, 'Dev');
     expect(within(toolbar()).getByText('2 checked')).toBeTruthy();
+    expect((within(toolbar()).getByRole('button', { name: 'Export' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(toolbar()).getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false);
 
     await userEvent.click(within(toolbar()).getByRole('button', { name: 'Clear' }));
-    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+    expectNoneChecked();
   });
 
   it('checking a row does not open or close its detail', async () => {
@@ -115,7 +125,7 @@ describe('Connections table: checked rows', () => {
     expect(within(toolbar()).getByText('3 checked')).toBeTruthy();
 
     await userEvent.click(all);
-    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+    expectNoneChecked();
   });
 
   it('a search drops the checks on the rows it hides, so no batch action reaches them', async () => {
@@ -140,12 +150,12 @@ describe('Connections table: checked rows', () => {
     expect((within(table).getByRole('checkbox', { name: 'Check Prod' }) as HTMLInputElement).checked).toBe(false);
   });
 
-  it('Export… exports exactly the checked rows, with no second checklist, and the table stays', async () => {
+  it('Export exports exactly the checked rows, with no second checklist, and the table stays', async () => {
     const { exp } = mount(THREE);
     const table = await openTable();
     await check(table, 'Prod');
     await check(table, 'Dev');
-    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Export…' }));
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Export' }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Export Connections' });
     expect(within(dialog).getByText('2 checked Connections.')).toBeTruthy();
@@ -158,15 +168,15 @@ describe('Connections table: checked rows', () => {
     await userEvent.click(within(dialog).getByText('Close', { selector: 'button *' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export Connections' })).toBeNull());
     expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
-    await waitFor(() => expect(document.activeElement).toBe(within(toolbar()).getByRole('button', { name: 'Export…' })));
+    await waitFor(() => expect(document.activeElement).toBe(within(toolbar()).getByRole('button', { name: 'Export' })));
   });
 
-  it('Delete… confirms once by typing, deletes each checked row, and keeps the table open', async () => {
+  it('Delete confirms once by typing, deletes each checked row, and keeps the table open', async () => {
     const { del } = mount(THREE);
     const table = await openTable();
     await check(table, 'Prod');
     await check(table, 'Staging');
-    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete…' }));
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete' }));
 
     const confirm = await screen.findByRole('dialog', { name: 'Delete 2 connections?' });
     const go = within(confirm).getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
@@ -177,7 +187,7 @@ describe('Connections table: checked rows', () => {
     await waitFor(() => expect(del.mock.calls.map((c) => c[0])).toEqual(['c1', 'c2']));
     await waitFor(() => expect(within(table).queryByText('Prod')).toBeNull());
     expect(within(table).getByText('Dev')).toBeTruthy();
-    expect(screen.queryByRole('toolbar', { name: 'Checked connections' })).toBeNull();
+    expectNoneChecked();
     expect(screen.getByRole('dialog', { name: 'Connections' })).toBeTruthy();
   });
 
@@ -185,7 +195,7 @@ describe('Connections table: checked rows', () => {
     const { del } = mount(THREE);
     const table = await openTable();
     await check(table, 'Prod');
-    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete…' }));
+    await userEvent.click(within(toolbar()).getByRole('button', { name: 'Delete' }));
     // One checked row is an ordinary delete: its own name is the phrase.
     const confirm = await screen.findByRole('dialog', { name: 'Delete "Prod"?' });
     await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));

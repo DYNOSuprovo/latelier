@@ -49,12 +49,12 @@ test('renderer mounts the Data View with no console errors', async () => {
     const trigger = win.getByRole('button', { name: /^Connection:/ });
     await expect(trigger).toBeVisible({ timeout: 5000 });
 
-    // Opening it renders the popover's listbox and "Manage connections…" row —
+    // Opening it renders the popover's listbox and "Manage connections" row —
     // both always present, even with zero saved Connections.
     await trigger.click();
     const listbox = win.locator('[role="listbox"][aria-label="Connections"]');
     await expect(listbox).toBeVisible({ timeout: 5000 });
-    const manageButton = win.getByRole('button', { name: 'Manage connections…' });
+    const manageButton = win.getByRole('button', { name: 'Manage connections' });
     await expect(manageButton).toBeVisible();
 
     // React must actually have populated #root.

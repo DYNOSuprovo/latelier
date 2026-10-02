@@ -124,7 +124,7 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 
 - Command palette: "Export Connections…" and "Import Connections…".
 - The native File menu: the same two items.
-- The Connections table (the Switcher's "Manage connections…", or `⌘E`): "Import…" and "Export…" beside "+ Add connection". Not in the Switcher popover itself, which stays a list to pick from.
+- The Connections table (the Switcher's "Manage connections", or `⌘E` anywhere in the Data View but an Aggregation tab): Import through "+ Add connections" (§7), Export on checked rows (§8). Not in the Switcher popover itself, which stays a list to pick from.
 - The empty first-launch screen, when no Connections exist: an "Import connections" button next to the add-connection action. This is where a user on a new machine arrives.
 
 ## 7. Add connections (connection strings, file import, form)
@@ -132,8 +132,8 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 Import is a way of adding, so the Connections table has one **"+ Add connections"** entry with three routes:
 
 - **Paste connection strings**, one per line (the main route, §7.1).
-- **Import from file…**: the §4 flow, unchanged.
-- **Single connection (full form)…**: the existing form, still the only way to set up SSH or TLS certificate files.
+- **Import from file**: the §4 flow, unchanged.
+- **Single connection (full form)**: the existing form, still the only way to set up SSH or TLS certificate files.
 
 ### 7.1 Connection strings
 
@@ -156,10 +156,10 @@ Passwords never travel back to the renderer: the preview reports only whether a 
 
 The Connections table has a checkbox column, with a header checkbox that checks or clears every row the current search shows (indeterminate when only some are). **Checked** is a separate state from the row whose details are open ("selected"). A search drops checks from the rows it hides, so a batch action never touches a Connection the user cannot see.
 
-While any row is checked, a bar offers:
+A bar above the table always offers these, disabled until a row is checked:
 
-- **Export…**: the §3 export with the checked Connections fixed, so it shows only the passwords option and the passphrase, not a second checklist.
-- **Delete…**: one confirmation naming the count and the total open tabs, then the same delete as a single row for each, reporting any that fail.
+- **Export**: the §3 export with the checked Connections fixed, so it shows only the passwords option and the passphrase, not a second checklist.
+- **Delete**: one confirmation naming the count and the total open tabs, then the same delete as a single row for each, reporting any that fail.
 
 The table stays open through both, so more batch actions can join the bar later. A dialog stacked on the table takes Escape for itself; the table closes on Escape only when nothing is stacked on it.
 
