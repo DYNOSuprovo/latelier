@@ -545,7 +545,7 @@ export function ConnectionExpandedTable({
           )}
         </Group>
 
-        <div style={{ height: '65vh', overflowY: 'auto' }}>
+        <div style={{ maxHeight: '55vh', overflowY: 'auto' }}>
           <Table
             highlightOnHover
             // "Every Connection is comparable at a glance" only holds if the

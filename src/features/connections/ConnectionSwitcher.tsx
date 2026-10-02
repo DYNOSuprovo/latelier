@@ -730,6 +730,7 @@ export function ConnectionSwitcher({
         <Button
           variant="subtle"
           size="compact-xs"
+          h={36}
           autoFocus={addMode}
           onClick={handleExpand}
           onKeyDown={(e) => {
