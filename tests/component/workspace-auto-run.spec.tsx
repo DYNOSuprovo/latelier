@@ -142,7 +142,7 @@ describe('Workspace — auto-run on open', () => {
     expect(findSpy).not.toHaveBeenCalled();
   });
 
-  it('AC3: a tab restored from a previous session with prior results does not auto-run', async () => {
+  it('AC3: a tab that already holds results in memory does not auto-run', async () => {
     const findSpy = vi.fn<IpcApi['query']['find']>(async () => ({
       documents: [],
       durationMs: 0,
@@ -207,11 +207,15 @@ describe('Workspace — auto-run on open', () => {
       query: { find: findSpy, count: async () => ({ count: 0 }) },
     });
 
-    mountWorkspace();
+    const { container } = mountWorkspace();
 
     await screen.findByTestId('query-run-btn');
     await new Promise((r) => setTimeout(r, 50));
     expect(findSpy).not.toHaveBeenCalled();
+    // Results are never persisted, so a restored custom-query tab has not run
+    // yet: it must say so rather than claim the query matched nothing.
+    expect(container.textContent).toContain('Run the query to see results');
+    expect(container.textContent).not.toContain('No matching documents');
   });
 
   it('AC4b: editing a loaded non-default query down to default does not trigger a silent auto-run', async () => {

@@ -58,11 +58,12 @@ describe('migration 013 — recent field values', () => {
       !== undefined;
     expect(hasTable()).toBe(false);
 
-    runMigrations(db, all);
+    const upTo13 = all.filter((m) => m.version <= 13);
+    runMigrations(db, upTo13);
     expect(hasTable()).toBe(true);
     expect(version(db)).toBe(13);
 
-    expect(() => runMigrations(db!, all)).not.toThrow();
+    expect(() => runMigrations(db!, upTo13)).not.toThrow();
     expect(version(db)).toBe(13);
   });
 

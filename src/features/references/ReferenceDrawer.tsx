@@ -68,7 +68,7 @@ export function ReferenceDrawer({
       if (prev[topFrame.id]) return prev;
       return { ...prev, [topFrame.id]: { result: null, loading: true, error: null } };
     });
-    (async () => {
+    void (async () => {
       try {
         const result = await api.refs.resolve({
           ruleId: topFrame.rule.id,

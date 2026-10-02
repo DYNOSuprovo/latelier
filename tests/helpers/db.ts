@@ -8,7 +8,7 @@ import type { Migration } from '../../electron/db/migrationRunner';
 /**
  * Read migrations directly from disk so tests don't depend on Vite's glob.
  */
-function loadMigrationsFromDisk(): Migration[] {
+export function loadMigrationsFromDisk(): Migration[] {
   const dir = path.resolve(__dirname, '..', '..', 'electron', 'db', 'migrations');
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql'));
   return files

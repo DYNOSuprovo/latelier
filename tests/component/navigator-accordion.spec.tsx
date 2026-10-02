@@ -348,6 +348,60 @@ describe('DbCollectionNavigator — an accordion of Connection roots', () => {
     expect(screen.queryByTestId('nav-db-shop')).toBeNull();
   });
 
+  // Collection rows carry no tabIndex (the tree container owns focus via
+  // aria-activedescendant), so the keyboard path onto them is the only way a
+  // keyboard user opens a collection — it needs its own proof.
+  describe('keyboard: acting on a collection row', () => {
+    const ORDERS = { connectionId: 'c1', dbName: 'shop', collection: 'orders' };
+
+    async function focusOrders() {
+      mockTree();
+      const onOpenCollection = vi.fn();
+      const onOpenAggregation = vi.fn();
+      mount({
+        focusedConnectionId: 'c1',
+        activeDbName: 'shop',
+        activeCollection: 'orders',
+        onOpenCollection,
+        onOpenAggregation,
+      });
+      const rowEl = await screen.findByTestId('nav-coll-shop-orders');
+      await waitFor(() => expect(tree().getAttribute('aria-activedescendant')).toBe(rowEl.id));
+      return { onOpenCollection, onOpenAggregation };
+    }
+
+    it('Enter opens the collection, reusing an existing tab', async () => {
+      const { onOpenCollection, onOpenAggregation } = await focusOrders();
+      fireEvent.keyDown(tree(), { key: 'Enter' });
+      expect(onOpenCollection).toHaveBeenCalledWith(ORDERS, { reuseExisting: true });
+      expect(onOpenAggregation).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Ctrl', { ctrlKey: true }],
+      ['Cmd', { metaKey: true }],
+    ])('%s+Enter opens the collection in a new tab', async (_label, mods) => {
+      const { onOpenCollection } = await focusOrders();
+      fireEvent.keyDown(tree(), { key: 'Enter', ...mods });
+      expect(onOpenCollection).toHaveBeenCalledWith(ORDERS, { reuseExisting: false });
+    });
+
+    it('Alt+Enter opens the collection as an aggregation', async () => {
+      const { onOpenCollection, onOpenAggregation } = await focusOrders();
+      fireEvent.keyDown(tree(), { key: 'Enter', altKey: true });
+      expect(onOpenAggregation).toHaveBeenCalledWith(ORDERS);
+      expect(onOpenCollection).not.toHaveBeenCalled();
+    });
+
+    it('Left moves to the collection’s own database row', async () => {
+      await focusOrders();
+      fireEvent.keyDown(tree(), { key: 'ArrowLeft' });
+      expect(tree().getAttribute('aria-activedescendant')).toBe(
+        screen.getByTestId('nav-db-shop').id,
+      );
+    });
+  });
+
   // #55 — the shared ContextMenu had no keyboard open path. Shift+F10 and the
   // dedicated ContextMenu key are the platform conventions for "open the
   // context menu for the focused thing".

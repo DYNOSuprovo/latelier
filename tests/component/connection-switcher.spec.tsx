@@ -1552,6 +1552,21 @@ describe('ConnectionSwitcher — expanded table', () => {
     await waitFor(() => expect(within(dialog).queryByText(/Default DB/i)).toBeNull());
   });
 
+  it.each([
+    ['TLS off on a remote host', { tls: { enabled: false, verify: true } }, 'Disabled, plaintext to a remote host', true],
+    ['TLS on, certificate unverified', { tls: { enabled: true, verify: false } }, 'Enabled, unverified', true],
+    ['TLS off on localhost', { host: 'localhost', tls: { enabled: false, verify: true } }, 'Disabled', false],
+    ['TLS on and verified', { tls: { enabled: true, verify: true } }, 'Enabled, verified', false],
+  ])('detail row, %s: states the TLS posture in text and colours only weak ones', async (_n, patch, text, weak) => {
+    mount({ conn: { get: async () => ({ ...CANNED_STAGING, ...patch }) as Connection } });
+    const dialog = await openExpandedTable();
+    await userEvent.click(tableRow(dialog, 'Staging'));
+    const field = (await within(dialog).findByText('TLS')).parentElement!;
+    expect(field.textContent).toBe(`TLS · ${text}`);
+    const [, value] = Array.from(field.querySelectorAll('span'));
+    expect(value?.style.color ?? '').toBe(weak ? 'var(--atelier-red-text)' : '');
+  });
+
   it('caches a row’s detail across collapse/expand instead of refetching it', async () => {
     // The detail row unmounts on collapse, discarding its own state — without
     // a cache one level up (in the table itself, which stays mounted for the

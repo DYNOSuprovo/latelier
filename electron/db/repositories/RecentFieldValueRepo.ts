@@ -49,6 +49,7 @@ export class RecentFieldValueRepo {
   private evictStmt: Statement<[string, string, string, string, string, string, string, string, number]>;
   private deleteByConnectionStmt: Statement<[string]>;
   private clearAllStmt: Statement;
+  private deleteOlderThanStmt: Statement<[number]>;
 
   constructor(db: Database) {
     this.db = db;
@@ -83,6 +84,15 @@ export class RecentFieldValueRepo {
     `);
     this.deleteByConnectionStmt = db.prepare('DELETE FROM recent_field_values WHERE connection_id = ?');
     this.clearAllStmt = db.prepare('DELETE FROM recent_field_values');
+    // `last_used_at` is written as ISO-8601 (`new Date().toISOString()`) which has a
+    // `T` separator and `Z` suffix. SQLite's `datetime('now', '-N days')` emits
+    // `YYYY-MM-DD HH:MM:SS` (space separator, no suffix). A naive lexicographic
+    // `last_used_at < datetime(...)` compares `T` (0x54) against space (0x20), which
+    // never holds for production rows. Use `julianday(...)` so the comparison
+    // happens on numeric time values, not on textual representations.
+    this.deleteOlderThanStmt = db.prepare(
+      "DELETE FROM recent_field_values WHERE julianday(last_used_at) < julianday('now', '-' || ? || ' days')",
+    );
   }
 
   /** Runs `fn` inside a SQLite transaction, committing on return and rolling back on throw. */
@@ -126,6 +136,11 @@ export class RecentFieldValueRepo {
       q.field,
       q.keep,
     );
+  }
+
+  /** Delete recent-field-value rows older than `days` days. Returns the rows affected. */
+  deleteOlderThan(days: number): number {
+    return this.deleteOlderThanStmt.run(days).changes;
   }
 
   /** Mirrors other repos' cascade-parity helper — FK handles this too. */

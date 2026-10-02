@@ -8,6 +8,7 @@ import type { ConnectionService } from '../../electron/mongo/ConnectionService';
 import type { Envelope } from '../../shared/ipc';
 import type { Connection, ConnectionSummary, ProbeResult } from '@shared/types';
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
+import { createPickedCredentialPaths } from '../../electron/security/credentialPaths';
 
 type Handler = (evt: IpcMainInvokeEvent, payload: unknown) => unknown;
 
@@ -66,6 +67,7 @@ function stubSvc(overrides: Partial<ConnectionService> = {}): ConnectionService 
     update: async (id) => fakeConnection({ id }),
     delete: async () => undefined,
     touchUsed: () => undefined,
+    storedCredentialPaths: () => [],
     parseUri: () => ({ input: {}, warnings: [] }),
     test: async () => ({ ok: true, serverVersion: '7.0.0', topology: 'Single' }) as ProbeResult,
   };
@@ -89,7 +91,7 @@ describe('conn:* handlers via router', () => {
   function setupWith(overrides: Partial<ConnectionService> = {}) {
     svc = stubSvc(overrides);
     const router = createRouter(shim.ipcMain, testSenderCheck);
-    registerConnChannels(router, svc);
+    registerConnChannels(router, svc, createPickedCredentialPaths());
   }
 
   it('conn:list returns an envelope wrapping the service result', async () => {

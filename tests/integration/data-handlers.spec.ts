@@ -14,6 +14,7 @@ import { ImportService } from '../../electron/mongo/ImportService';
 import { importDigest } from '../../electron/mongo/undo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
 import { AuditService } from '../../electron/services/AuditService';
+import { UndoStore } from '../../electron/services/UndoStore';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
 import type { Logger } from '../../electron/log';
 import { IPC_CHANNELS, type Envelope } from '../../shared/ipc';
@@ -37,6 +38,7 @@ describe('data:import via the router', () => {
   let dir: string;
   let dbName: string;
   let auditRepo: AuditRepo;
+  let undoStore: UndoStore;
   // What the open dialog would have returned: `file()` adds each path it
   // writes, as picking it would.
   let picked: Set<string>;
@@ -85,7 +87,8 @@ describe('data:import via the router', () => {
     });
     const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     auditRepo = new AuditRepo(tmp.db);
-    const auditSvc = new AuditService(auditRepo, pool, log);
+    undoStore = new UndoStore();
+    const auditSvc = new AuditService(auditRepo, pool, undoStore, log);
     handlers.clear();
     const router = createRouter(
       { handle: (channel: string, fn: Handler) => void handlers.set(channel, fn) },
@@ -230,7 +233,7 @@ describe('data:import via the router', () => {
     // inside the progress event, before `data:import`'s own promise settles.
     const localHandlers = new Map<string, Handler>();
     const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+    const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, undoStore, log);
     const router = createRouter(
       { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
       testSenderCheck,
@@ -273,10 +276,22 @@ describe('data:import via the router', () => {
       expect(remaining).toEqual([{ _id: 2, edited: true }]);
     });
 
+    it('keeps the capture in memory only: the column stays NULL, and a restart makes the import not undoable', async () => {
+      const auditId = await importAuditId('mem.jsonl', '{"_id":1,"secret":"import-body-marker"}\n');
+      const row = tmp.db.prepare('SELECT reversible, undo_json FROM audit_log WHERE id = ?').get(auditId);
+      expect(row).toEqual({ reversible: 1, undo_json: null });
+      expect(undoStore.has(auditId)).toBe(true);
+
+      const restarted = new AuditService(auditRepo, pool, new UndoStore(), { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+      expect(restarted.list({ connectionId: 'c1' })[0]).toMatchObject({ id: auditId, reversible: false });
+      await expect(restarted.undo({ entryId: auditId })).rejects.toMatchObject({ code: 'AUDIT_UNDO_EXPIRED' });
+      expect(await invokeUndo(auditId)).toMatchObject({ ok: true, data: { restored: 1, skipped: 0 } });
+    });
+
     it('is not offered above the capture ceiling — reversible is false and there is no auditId to undo', async () => {
       const localHandlers = new Map<string, Handler>();
       const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, undoStore, log);
       const router = createRouter(
         { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
         testSenderCheck,
@@ -315,7 +330,7 @@ describe('data:import via the router', () => {
     it('stays undoable for the batches that fully landed when a later batch fails outright', async () => {
       const localHandlers = new Map<string, Handler>();
       const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, undoStore, log);
       const router = createRouter(
         { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
         testSenderCheck,
@@ -357,7 +372,7 @@ describe('data:import via the router', () => {
     it('is not undoable when an import fails before any batch landed', async () => {
       const localHandlers = new Map<string, Handler>();
       const log: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, log);
+      const auditSvc = new AuditService(new AuditRepo(tmp.db), pool, undoStore, log);
       const router = createRouter(
         { handle: (channel: string, fn: Handler) => void localHandlers.set(channel, fn) },
         testSenderCheck,
@@ -391,23 +406,21 @@ describe('data:import via the router', () => {
       // refused before ever landing anything to undo.
       const doc = { _id: 1 };
       await client.db(dbName).collection('people').insertOne(doc as never);
-      auditRepo.insert(
-        {
-          id: 'ro-import',
-          connection_id: 'c-ro',
-          db_name: dbName,
-          collection: 'people',
-          op: 'import',
-          summary_json: '{"op":"import","fileName":"ro.jsonl"}',
-          outcome: 'ok',
-          error_code: null,
-          ran_at: new Date().toISOString(),
-          duration_ms: 1,
-          reversible: 1,
-          undone_at: null,
-        },
-        JSON.stringify({ importedIds: [1], digests: [importDigest(doc)] }),
-      );
+      auditRepo.insert({
+        id: 'ro-import',
+        connection_id: 'c-ro',
+        db_name: dbName,
+        collection: 'people',
+        op: 'import',
+        summary_json: '{"op":"import","fileName":"ro.jsonl"}',
+        outcome: 'ok',
+        error_code: null,
+        ran_at: new Date().toISOString(),
+        duration_ms: 1,
+        reversible: 1,
+        undone_at: null,
+      });
+      undoStore.put('ro-import', 'c-ro', JSON.stringify({ importedIds: [1], digests: [importDigest(doc)] }));
 
       expect(await invokeUndo('ro-import')).toMatchObject({ ok: false, error: { code: 'READ_ONLY' } });
       expect(await client.db(dbName).collection('people').countDocuments()).toBe(1);

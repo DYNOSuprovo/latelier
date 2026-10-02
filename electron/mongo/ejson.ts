@@ -198,22 +198,31 @@ export class ByteCapExceededError extends SystemError {
  * If `maxBytes` is set and the cumulative encoded length exceeds it, throws
  * a SystemError instead of returning. Replaces an earlier `guardResultSize`
  * helper that did a separate full stringify just to measure size.
+ *
+ * The byte cap accounts for the opening '[', each separator ',', each encoded
+ * document, and the closing ']'. All measurements use UTF-8 byte length, not
+ * JavaScript UTF-16 code unit length.
  */
 export function ejsonEncodeArrayJson(
   docs: unknown[],
-  opts: { relaxed?: boolean; maxBytes?: number } = {},
+  opts: { relaxed?: boolean; maxBytes?: number; prepare?: (doc: unknown) => unknown } = {},
 ): string {
   const relaxed = opts.relaxed ?? false;
   const max = opts.maxBytes;
+  const prepare = opts.prepare;
   let out = '[';
-  let bytes = 1;
+  let bytes = 1; // opening '['
   for (let i = 0; i < docs.length; i++) {
-    const piece = JSON.stringify(ejsonEncode(docs[i], relaxed));
+    // `prepare` runs per element, here, so a cap breach still stops the work early.
+    const piece = JSON.stringify(ejsonEncode(prepare ? prepare(docs[i]) : docs[i], relaxed));
     const sep = i === 0 ? '' : ',';
-    bytes += sep.length + piece.length;
+    bytes += Buffer.byteLength(sep, 'utf8') + Buffer.byteLength(piece, 'utf8');
     if (max !== undefined && bytes > max) throw new ByteCapExceededError(max);
     out += sep + piece;
   }
+  // Check closing bracket before appending it
+  bytes += 1; // closing ']'
+  if (max !== undefined && bytes > max) throw new ByteCapExceededError(max);
   out += ']';
   return out;
 }

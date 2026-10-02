@@ -1,7 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { PassThrough } from 'node:stream';
-import * as repl from 'node:repl';
-import { inspect } from 'node:util';
 import type {
   ShellOutputEvent,
   ShellSessionInfo,
@@ -9,39 +6,57 @@ import type {
 import { NotFoundError, ValidationError } from '../errors.ts';
 import type { Logger } from '../log.ts';
 import type { MongoPool } from '../mongo/MongoPool.ts';
-import { makeDbProxy } from '../mongo/dbProxy.ts';
-import { ejsonStringifyRelaxed } from '../mongo/ejson.ts';
+import { createRpcHost } from '../script-runner/rpcHost.ts';
+import {
+  isShellMessage,
+  type ShellInput,
+  type ShellStartRequest,
+} from '../script-runner/shellProtocol.ts';
+import { isRunnerMessage } from '../script-runner/protocol.ts';
+import type { RunnerSpawner } from './runner/spawner.ts';
 
 type EmitFn = (event: ShellOutputEvent) => void;
 
 export interface ShellServiceOpts {
   pool: MongoPool;
+  spawner: RunnerSpawner;
   emit: EmitFn;
   log?: Logger;
 }
 
 interface Session {
   info: ShellSessionInfo;
-  stdin: PassThrough;
-  /** Triggers shutdown of the underlying REPL. Idempotent. */
-  shutdown: () => void;
-  /** Resolves when the REPL has actually emitted its `exit` event. */
+  /** Ends the session: kills the child, closes its host, emits `exit`. Idempotent. */
+  end: (reason?: string) => void;
+  /** Resolves once the session has ended. */
   exited: Promise<void>;
   isExited: boolean;
+  post: (message: ShellInput) => void;
 }
 
 /**
- * In-process Mongo shell. One Node `repl.REPLServer` per session, fed through
- * passthrough streams that fan out as `mshell:output-event`s. Reuses the
- * Connection's already-open `MongoClient` from the pool — no new auth, no
- * argv-borne password.
+ * Orchestrator for the W11 Mongo shell. The REPL itself runs in a runner child
+ * (`electron/script-runner/shellSession.ts`), one long-lived process per
+ * session, started through the same spawner and bundled entry the script
+ * editor uses. Main keeps what must stay out of it:
  *
- * The eval context exposes a `db` global that proxies into the live
- * `MongoClient`. Mongosh-style sugar (`use foo`, `show dbs`, `show
- * collections`) is rewritten before it reaches Node's parser.
+ *  - the connection: the child holds no client and no credentials, and its
+ *    `db` sends every call back as an RPC frame that this service answers
+ *    through an `rpcHost` over the pool's own client, with the read-only flag
+ *    read live from the connection;
+ *  - the input rewriting (`rewriteShellSugar`), applied before a line is
+ *    posted;
+ *  - the lifecycle: a session ends when it is stopped, when its connection
+ *    disconnects or goes read-only, or when the app quits, and ending it kills
+ *    the child and closes the host (which aborts in-flight work and closes its
+ *    cursors). A child that dies on its own ends the session with an error
+ *    event.
+ *
+ * Output reaches the renderer as `mshell:output-event`, unchanged.
  */
 export class ShellService {
   private readonly pool: MongoPool;
+  private readonly spawner: RunnerSpawner;
   private readonly emit: EmitFn;
   private readonly log?: Logger;
   private readonly sessions = new Map<string, Session>();
@@ -49,8 +64,22 @@ export class ShellService {
 
   constructor(opts: ShellServiceOpts) {
     this.pool = opts.pool;
+    this.spawner = opts.spawner;
     this.emit = opts.emit;
     this.log = opts.log;
+    // A session on a connection that has gone away must not outlive it. The
+    // 'disconnected' status also comes from MongoPool.markConnectionLost
+    // (fail-closed, like the script runs). And a session is unusable on a
+    // read-only connection (ADR 0005), so the flip ends it outright rather
+    // than leaving a REPL that only refuses.
+    this.pool.on('status', (runtime: { id: string; status: string }) => {
+      if (runtime.status === 'disconnected') {
+        this.endForConnection(runtime.id, 'the connection was disconnected');
+      }
+    });
+    this.pool.on('read-only-enabled', (id: string) =>
+      this.endForConnection(id, 'the connection was set to read-only'),
+    );
   }
 
   async start(input: { connectionId: string; dbName?: string }): Promise<ShellSessionInfo> {
@@ -62,9 +91,14 @@ export class ShellService {
     if (existing && !existing.isExited) return existing.info;
 
     // Force a connect — MongoPool.readClient throws SystemError if the
-    // connection can't be established. Do this before allocating the REPL so
+    // connection can't be established. Do this before spawning anything so
     // the renderer sees a clean error instead of a half-initialised session.
     const client = await this.pool.readClient(input.connectionId);
+
+    // The connect above yields, so a second start() for this connection may
+    // have registered its session meanwhile.
+    const raced = this.sessions.get(this.byConnection.get(input.connectionId) ?? '');
+    if (raced && !raced.isExited) return raced.info;
 
     const sessionId = randomUUID();
     const info: ShellSessionInfo = {
@@ -74,55 +108,17 @@ export class ShellService {
       startedAt: new Date().toISOString(),
     };
 
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    stdout.setEncoding('utf8');
-    stdout.on('data', (chunk: string) => {
-      this.emit({ sessionId, kind: 'stdout', data: chunk });
-    });
-
-    // Per-session mutable cursor — `use foo` swaps it without breaking the
-    // `db` Proxy identity.
-    const ctx = {
-      currentDb: input.dbName ?? 'test',
+    const handle = this.spawner.spawn();
+    // Its own controller: ending the session must stop driver work already
+    // started for it, after the cursors are closed.
+    const hostCtrl = new AbortController();
+    const host = createRpcHost({
       client,
-    };
-    const dbProxy = makeDbProxy(ctx);
-
-    const server = repl.start({
-      prompt: `${ctx.currentDb}> `,
-      input: stdin,
-      output: stdout,
-      terminal: false,
-      useColors: false,
-      ignoreUndefined: true,
-      writer: shellWriter,
+      isReadOnly: () => this.pool.isReadOnly(input.connectionId),
+      signal: hostCtrl.signal,
+      onCloseError: (err) =>
+        this.log?.warn('mshell', 'closing a shell cursor failed', { error: String(err) }),
     });
-    server.context.db = dbProxy;
-    server.context.use = (name: string) => {
-      ctx.currentDb = name;
-      server.setPrompt(`${name}> `);
-      return `switched to db ${name}`;
-    };
-    server.context.help = helpText;
-    // Mongosh-style `show ...` sugar. Returned values flow through the
-    // standard REPL writer so they get the same EJSON formatting as queries.
-    server.context.__shellShow = async (kind: 'dbs' | 'collections') => {
-      if (kind === 'dbs') {
-        // `authorizedDatabases: true` lets users with scoped roles (Atlas
-        // read-only, per-db users) see the dbs they have access to even when
-        // they lack the cluster-wide listDatabases privilege.
-        const r = (await ctx.client.db('admin').command({
-          listDatabases: 1,
-          authorizedDatabases: true,
-        })) as {
-          databases: Array<{ name: string; sizeOnDisk?: number }>;
-        };
-        return r.databases.map((d) => `${d.name}\t${d.sizeOnDisk ?? 0}`).join('\n');
-      }
-      const colls = await ctx.client.db(ctx.currentDb).listCollections().toArray();
-      return colls.map((c) => c.name).join('\n');
-    };
 
     let resolveExit!: () => void;
     const exited = new Promise<void>((r) => {
@@ -131,29 +127,51 @@ export class ShellService {
 
     const session: Session = {
       info,
-      stdin,
       isExited: false,
       exited,
-      shutdown: () => {
-        try {
-          server.close();
-        } catch {
-          // best-effort; the exit event still resolves us via the
-          // `exit` listener below.
+      post: (message) => handle.postMessage(message),
+      end: (reason) => {
+        if (session.isExited) return;
+        session.isExited = true;
+        handle.kill();
+        // Close first so the close commands go out before the abort reaches them.
+        void host.close().finally(() => hostCtrl.abort());
+        if (reason !== undefined) {
+          this.emit({ sessionId, kind: 'stderr', data: `shell session ended: ${reason}\n` });
         }
-        stdin.end();
+        this.emit({ sessionId, kind: 'exit', exitCode: reason === undefined ? 0 : 1, signal: null });
+        this.sessions.delete(sessionId);
+        if (this.byConnection.get(input.connectionId) === sessionId) {
+          this.byConnection.delete(input.connectionId);
+        }
+        resolveExit();
+        this.log?.info('mshell', 'exited', { sessionId, reason });
       },
     };
 
-    server.on('exit', () => {
-      session.isExited = true;
-      this.emit({ sessionId, kind: 'exit', exitCode: 0, signal: null });
-      this.sessions.delete(sessionId);
-      if (this.byConnection.get(input.connectionId) === sessionId) {
-        this.byConnection.delete(input.connectionId);
+    handle.onMessage((message) => {
+      if (session.isExited) return;
+      if (isShellMessage(message)) {
+        if (message.type === 'shell-out') this.emit({ sessionId, kind: 'stdout', data: message.data });
+        else session.end();
+      } else if (isRunnerMessage(message) && message.type === 'rpc') {
+        void host
+          .handle(message)
+          .then((reply) => {
+            // A reply for a session that already ended has nowhere to go.
+            if (!session.isExited) handle.postMessage(reply);
+          })
+          .catch((err: unknown) =>
+            session.end(`could not answer the shell process: ${String(err)}`),
+          );
+      } else {
+        session.end('the shell process sent a malformed message');
       }
-      resolveExit();
-      this.log?.info('mshell', 'exited', { sessionId });
+    });
+    handle.onExit((code) => {
+      // A kill from end() has already marked the session ended; this is the
+      // child dying on its own.
+      session.end(`the shell process exited unexpectedly (exit code ${code ?? 'none'})`);
     });
 
     this.sessions.set(sessionId, session);
@@ -163,12 +181,14 @@ export class ShellService {
       connectionId: input.connectionId,
     });
 
-    // Greet the user with a banner and a prompt. The repl writes its own
-    // prompt only after the first input arrives, so we nudge it here.
-    stdout.write(
-      `L'Atelier shell (in-process). Connected to ${input.connectionId}. ` +
-        `Type help() for hints.\n${ctx.currentDb}> `,
-    );
+    const request: ShellStartRequest = {
+      type: 'shell-start',
+      dbName: input.dbName ?? 'test',
+      banner:
+        `L'Atelier shell (isolated process). Connected to ${input.connectionId}. ` +
+        'Type help() for hints.',
+    };
+    handle.postMessage(request);
 
     return info;
   }
@@ -183,14 +203,13 @@ export class ShellService {
     // wholesale refusal: the whole session is unusable read-only, not just
     // its writes, since the REPL can't reliably tell reads from writes.
     this.pool.assertWritable(s.info.connectionId);
-    s.stdin.write(rewriteShellSugar(data));
+    s.post({ type: 'shell-in', data: rewriteShellSugar(data) });
   }
 
   async stop(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s || s.isExited) return;
-    s.shutdown();
-    // Wait for the actual `exit` event so list()/byConnection are coherent.
+    s.end();
     await s.exited;
   }
 
@@ -198,51 +217,20 @@ export class ShellService {
     return [...this.sessions.values()].map((s) => s.info);
   }
 
+  /** Ends every session and kills its child. Wired to `app.before-quit`. */
   async disposeAll(): Promise<void> {
-    await Promise.allSettled(
-      [...this.sessions.values()].map((s) => {
-        s.shutdown();
-        return s.exited;
-      }),
-    );
+    const all = [...this.sessions.values()];
+    for (const s of all) s.end();
+    await Promise.allSettled(all.map((s) => s.exited));
+  }
+
+  private endForConnection(connectionId: string, reason: string): void {
+    const id = this.byConnection.get(connectionId);
+    if (id !== undefined) this.sessions.get(id)?.end(reason);
   }
 }
 
-// ─── REPL plumbing ──────────────────────────────────────────────────────────
-
-function shellWriter(value: unknown): string {
-  if (value === undefined) return '';
-  if (typeof value === 'string') return value;
-  // EJSON returns undefined for values it can't serialize (e.g. plain
-  // functions, including our `db` Proxy). Fall through to util.inspect so
-  // typing `db` still produces something readable.
-  try {
-    const ejson = ejsonStringifyRelaxed(value, 2);
-    if (typeof ejson === 'string') return ejson;
-  } catch {
-    // fall through
-  }
-  return inspect(value, { depth: 4, colors: false });
-}
-
-function helpText(): string {
-  return [
-    "L'Atelier shell — in-process Node REPL with a Mongo driver context.",
-    '',
-    '  db                          — current database (use("name") to switch)',
-    '  db.<coll>.find(filter, opt) — returns a cursor (call .toArray())',
-    '  db.<coll>.findOne(filter)',
-    '  db.<coll>.insertOne(doc)',
-    '  db.<coll>.updateOne(filter, update)',
-    '  db.<coll>.deleteOne(filter)',
-    '  db.<coll>.countDocuments(filter)',
-    '  db.<coll>.aggregate(pipeline).toArray()',
-    '  db.runCommand({ ping: 1 })',
-    '  show dbs / show collections',
-    '',
-    'All async ops can be awaited at the top level.',
-  ].join('\n');
-}
+// ─── Input rewriting ────────────────────────────────────────────────────────
 
 /**
  * Rewrite mongosh-style sugar to JS that Node's default REPL evaluator can

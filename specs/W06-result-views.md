@@ -15,7 +15,7 @@ Render the current result set in one of three views. Tree shows collapsed rows w
 
 ## 1. Data source
 
-Stored on the active collection tab as `state.lastRun`:
+Held on the active collection tab as `state.lastRun`, in renderer memory only: main strips it before every `state_json` write (results can be production documents), so a restored tab has no `lastRun` until it runs — default-query tabs auto-run, custom-query tabs show "Run the query to see results":
 
 ```ts
 interface LastRun {

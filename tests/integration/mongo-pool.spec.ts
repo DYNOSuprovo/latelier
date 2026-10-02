@@ -895,6 +895,27 @@ describe('MongoPool', () => {
     expect(r.errorMessage).toMatch(/SSH tunnels/i);
   });
 
+  it('connect refuses a stored ssh_enabled=1 row and leaves no pool entry behind', async () => {
+    tmp = createTempDb();
+    vault = new SecretsVault(tmp.db, createSafeStorageMock());
+    const conn = makeConnection('c1', hp, {
+      ssh: { enabled: true, host: 'bastion', port: 22 },
+    });
+    const pool = new MongoPool({ repo: makeReader([conn]), vault });
+    const events: string[] = [];
+    pool.on('status', (r) => events.push(r.status));
+
+    await expect(pool.connect('c1')).rejects.toMatchObject({
+      code: 'VALIDATION',
+      message: expect.stringMatching(/SSH tunnels are not supported/i),
+    });
+    // Any route to a handle goes through connect(), so the read path is refused too.
+    await expect(pool.readClient('c1')).rejects.toMatchObject({ code: 'VALIDATION' });
+
+    expect(events).toEqual([]);
+    expect(pool.status('c1').status).toBe('disconnected');
+  });
+
   describe('diagnostic logging (#9)', () => {
     interface CapturedLog {
       level: 'debug' | 'info' | 'warn' | 'error';

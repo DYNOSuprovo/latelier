@@ -4,7 +4,10 @@ import { redactSecrets } from '../../electron/log';
 
 // Mirrors REDACTED_KEYS in electron/log.ts — kept in sync manually since the
 // source set isn't exported.
-const REDACTED_NAMES = ['password', 'pwd', 'sshpassword', 'sshpassphrase'];
+const REDACTED_NAMES = [
+  'password', 'pwd', 'sshpassword', 'sshpassphrase',
+  'passphrase', 'secret', 'token', 'apikey', 'authorization', 'ssh_password', 'ssh_passphrase',
+];
 
 // A redacted-key name in a random casing — case-insensitivity is part of the
 // contract under test.
@@ -19,6 +22,20 @@ const benignKey = fc
 const objectKey = fc.oneof({ arbitrary: benignKey, weight: 3 }, { arbitrary: redactedKey, weight: 1 });
 
 const leaf = fc.oneof(fc.string(), fc.integer(), fc.boolean(), fc.constant(null));
+
+// Non-empty userinfo free of the URI separators, so the expected masking is
+// unambiguous; '@' is allowed in the password on purpose.
+const userinfoChar = fc.string({ minLength: 1, maxLength: 12 }).filter((s) => !/[/\s]/.test(s));
+const uriWithCreds = fc
+  .tuple(
+    fc.constantFrom('mongodb', 'mongodb+srv', 'MONGODB', 'MongoDB+Srv'),
+    userinfoChar,
+    userinfoChar,
+    fc.constantFrom('host', 'h1:27017,h2:27017', 'cluster.example.net'),
+  )
+  // The fixed 'Zq9' prefix keeps the credentials from ever matching text that
+  // legitimately survives masking (scheme, host, port, path).
+  .map(([scheme, user, pass, host]) => ({ userinfo: `${user}:Zq9${pass}`, uri: `${scheme}://${user}:Zq9${pass}@${host}/db?x=1` }));
 
 // Three levels of object nesting, with arrays of objects at each level, so a
 // redacted-key field can land at the top, nested inside a plain object, or
@@ -101,6 +118,23 @@ describe('redactSecrets property: redaction invariant', () => {
         checkRedacted(rest, out);
         expect(out.self).toBe('[Circular]');
         expect(out.self).not.toBe(value);
+      }),
+    );
+  });
+});
+
+describe('redactSecrets property: URI userinfo in strings', () => {
+  // Wraps a URI string at a random depth: bare, in an object, in an array, nested.
+  const wrap = (uri: string, depth: number): unknown =>
+    depth === 0 ? uri : depth === 1 ? { k: uri } : depth === 2 ? [uri] : { a: [{ b: `see ${uri} end` }] };
+
+  it('never lets the userinfo through, at any depth or inside surrounding text', () => {
+    fc.assert(
+      fc.property(uriWithCreds, fc.integer({ min: 0, max: 3 }), ({ uri, userinfo }, depth) => {
+        const out = JSON.stringify(redactSecrets(wrap(uri, depth)));
+        expect(out).toContain('://***@');
+        // JSON.stringify escapes quotes and control characters, so compare escaped forms.
+        expect(out).not.toContain(JSON.stringify(userinfo).slice(1, -1));
       }),
     );
   });

@@ -421,3 +421,14 @@ test('deleteMany without a valid confirmToken throws VALIDATION', async () => {
     expect(err?.code).toBe('VALIDATION');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chromium profile isolation — userData path is redirected to throwaway dir
+// for test instances, keeping ~/.../L'Atelier clean.
+// ---------------------------------------------------------------------------
+test('test instance keeps Chromium profile in throwaway userData dir', async () => {
+  await withApp(async (app, userDataDir) => {
+    const pathFromApp = await app.evaluate(({ app }) => app.getPath('userData'));
+    expect(pathFromApp).toBe(userDataDir);
+  });
+});

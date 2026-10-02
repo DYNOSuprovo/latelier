@@ -27,6 +27,7 @@ const { registerCollectionAdminChannels } = await import(
 );
 const { registerUserChannels } = await import('../../electron/ipc/handlers/users');
 const { registerPrefsChannels } = await import('../../electron/ipc/handlers/prefs');
+const { registerSecretsChannels } = await import('../../electron/ipc/handlers/secrets');
 const { registerTabsChannels } = await import('../../electron/ipc/handlers/tabs');
 const { registerQueryChannels } = await import('../../electron/ipc/handlers/query');
 const { registerDocChannels } = await import('../../electron/ipc/handlers/doc');
@@ -40,6 +41,7 @@ const { registerMshellChannels } = await import('../../electron/ipc/handlers/msh
 const { registerScriptChannels } = await import('../../electron/ipc/handlers/script');
 const { registerRefsChannels } = await import('../../electron/ipc/handlers/refs');
 import { invokeEvent, testSenderCheck } from '../helpers/ipcSender';
+import { createPickedCredentialPaths } from '../../electron/security/credentialPaths';
 
 type Handler = (evt: IpcMainInvokeEvent, payload: unknown) => unknown;
 
@@ -103,12 +105,12 @@ describe('IPC channel registration — full router coverage', () => {
     shim = createShim();
     const router = createRouter(shim.ipcMain, testSenderCheck);
 
-    registerConnChannels(router, stubSvc<Parameters<typeof registerConnChannels>[1]>());
+    registerConnChannels(router, stubSvc<Parameters<typeof registerConnChannels>[1]>(), createPickedCredentialPaths());
     // appDiagnosticBundle's `diagnostic` param is left undefined on purpose:
     // it's optional, and the handler already treats "no diagnostic service"
     // as a controlled INTERNAL error — that still exercises registration +
     // the envelope path without needing a stub.
-    registerAppChannels(router, () => null, new Set());
+    registerAppChannels(router, () => null, new Set(), createPickedCredentialPaths());
     registerMongoChannels(
       router,
       stubSvc<Parameters<typeof registerMongoChannels>[1]>(),
@@ -125,6 +127,11 @@ describe('IPC channel registration — full router coverage', () => {
       router,
       stubSvc<Parameters<typeof registerPrefsChannels>[1]>(),
       () => null,
+    );
+    registerSecretsChannels(
+      router,
+      stubSvc<Parameters<typeof registerSecretsChannels>[1]>(),
+      async () => false,
     );
     registerTabsChannels(router, stubSvc<Parameters<typeof registerTabsChannels>[1]>());
     registerQueryChannels(

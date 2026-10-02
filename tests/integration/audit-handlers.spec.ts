@@ -18,11 +18,13 @@ import { QueryService } from '../../electron/mongo/QueryService';
 import { IndexService } from '../../electron/mongo/IndexService';
 import { UserService } from '../../electron/mongo/UserService';
 import { ScriptService } from '../../electron/services/ScriptService';
+import { createTestSpawner } from '../helpers/runnerSpawner';
 import { RecentQueryService } from '../../electron/services/RecentQueryService';
 import { RecentQueryRepo } from '../../electron/db/repositories/RecentQueryRepo';
 import { AuditRepo } from '../../electron/db/repositories/AuditRepo';
 import { ConnectionRepo } from '../../electron/db/repositories/ConnectionRepo';
 import { AuditService } from '../../electron/services/AuditService';
+import { UndoStore } from '../../electron/services/UndoStore';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
 import type { Logger } from '../../electron/log';
 import { IPC_CHANNELS, type Envelope } from '../../shared/ipc';
@@ -78,6 +80,7 @@ describe('audit log via the router', () => {
   let docSvc: DocumentService;
   let scriptSvc: ScriptService;
   let auditRepo: AuditRepo;
+  let undoStore: UndoStore;
   let logSpy: ReturnType<typeof silentLogger>;
   let shim: ReturnType<typeof createShim>;
   let dbName: string;
@@ -107,10 +110,11 @@ describe('audit log via the router', () => {
     });
     logSpy = silentLogger();
     docSvc = new DocumentService(pool, { log: logSpy.log });
-    scriptSvc = new ScriptService({ pool });
+    scriptSvc = new ScriptService({ pool, spawner: createTestSpawner() });
     auditRepo = new AuditRepo(tmp.db);
+    undoStore = new UndoStore();
     shim = createShim();
-    const auditSvc = new AuditService(auditRepo, pool, logSpy.log);
+    const auditSvc = new AuditService(auditRepo, pool, undoStore, logSpy.log);
     const router = createRouter(shim.ipcMain, testSenderCheck, logSpy.log, auditSvc);
     registerDocChannels(router, docSvc);
     registerCollectionAdminChannels(router, new CollectionAdminService(pool));
@@ -364,7 +368,8 @@ describe('audit log via the router', () => {
       seed('c', { ranAt: '2026-01-01T00:00:03.000Z', dbName: 'crm' });
       seed('d', { ranAt: '2026-01-01T00:00:04.000Z' });
       seed('other', { ranAt: '2026-01-01T00:00:05.000Z', connectionId: 'c2' });
-      tmp.db.prepare(`UPDATE audit_log SET undo_json = '{"preImage":1}', reversible = 1`).run();
+      tmp.db.prepare('UPDATE audit_log SET reversible = 1').run();
+      for (const id of ['a', 'b', 'c', 'd', 'other']) undoStore.put(id, id === 'other' ? 'c2' : 'c1', '{"preImage":1}');
     });
 
     it('lists one Connection newest-first', async () => {
@@ -529,17 +534,58 @@ describe('audit log via the router', () => {
       expect(await undoError(entry!.id)).toBe('AUDIT_NOT_REVERSIBLE');
     });
 
-    it('refuses to undo once the sweep has dropped the Pre-image', async () => {
+    it('refuses to undo after a restart, and lists the entry as no longer undoable', async () => {
       await orders().insertOne({ _id: 1 });
       const res = await ok<{ auditId?: string }>(IPC_CHANNELS.docDeleteOne, { ...target('orders'), filterJson: '{"_id":1}' });
-      tmp.db
-        .prepare('UPDATE audit_log SET ran_at = ? WHERE id = ?')
-        .run(new Date(Date.now() - 8 * 86_400_000).toISOString(), res.auditId);
-      expect(auditRepo.expirePreImages(7, 200)).toBe(1);
+      expect((await list())[0]!.reversible).toBe(true);
 
-      expect(await undoError(res.auditId!)).toBe('AUDIT_UNDO_EXPIRED');
+      // A restart: the same database, a service with nothing in memory.
+      const restarted = new AuditService(auditRepo, pool, new UndoStore(), logSpy.log);
+      const [entry] = restarted.list({ connectionId: 'c1' });
+      expect(entry).toMatchObject({ id: res.auditId, op: 'deleteOne', reversible: false });
+      await expect(restarted.undo({ entryId: res.auditId! })).rejects.toMatchObject({ code: 'AUDIT_UNDO_EXPIRED' });
       expect(await orders().countDocuments()).toBe(0);
-      expect((await list())[0]!.reversible).toBe(false);
+    });
+
+    it('never writes a Pre-image to disk, and still undoes in-session, for every reversible Operation', async () => {
+      const undoJsonRows = () =>
+        tmp.db.prepare('SELECT op, reversible, undo_json FROM audit_log ORDER BY rowid').all() as {
+          op: string;
+          reversible: number;
+          undo_json: string | null;
+        }[];
+      await orders().insertMany([{ _id: 1, v: BODY_MARKER }, { _id: 2, v: BODY_MARKER }, { _id: 3, v: BODY_MARKER }]);
+      const one = await updateOne(1, { v: `${BODY_MARKER}-edited` });
+      const many = await confirmedUpdateMany('{"_id":{"$gte":2}}', `{"$set":{"v":"${BODY_MARKER}-many"}}`);
+      const ins = await ok<{ auditId?: string }>(IPC_CHANNELS.docInsertMany, {
+        ...target('orders'),
+        docsJson: JSON.stringify([{ _id: 10, v: BODY_MARKER }]),
+      });
+      const del = await ok<{ auditId?: string }>(IPC_CHANNELS.docDeleteOne, { ...target('orders'), filterJson: '{"_id":10}' });
+      const bulk = await deleteManyAll();
+
+      const rows = undoJsonRows();
+      expect(rows.map((r) => r.op)).toEqual(['updateOne', 'updateMany', 'insertMany', 'deleteOne', 'deleteMany']);
+      expect(rows.every((r) => r.reversible === 1)).toBe(true);
+      expect(rows.every((r) => r.undo_json === null)).toBe(true);
+      // The capture exists only in memory, and Undo still runs from it.
+      for (const id of [one.auditId, many.auditId, ins.auditId, del.auditId, bulk.auditId]) {
+        expect(id).toEqual(expect.any(String));
+        expect(undoStore.has(id!)).toBe(true);
+      }
+      expect(await undo(bulk.auditId!)).toMatchObject({ ok: true });
+      expect(await undo(del.auditId!)).toMatchObject({ ok: true });
+      expect(await undo(ins.auditId!)).toMatchObject({ ok: true });
+      expect(await undo(many.auditId!)).toMatchObject({ ok: true });
+      expect(await undo(one.auditId!)).toMatchObject({ ok: true });
+      expect(await orders().find().sort({ _id: 1 }).toArray()).toEqual([
+        { _id: 1, v: BODY_MARKER },
+        { _id: 2, v: BODY_MARKER },
+        { _id: 3, v: BODY_MARKER },
+      ]);
+      expect(undoJsonRows().every((r) => r.undo_json === null)).toBe(true);
+      // A spent Pre-image is released from memory too.
+      expect(undoStore.has(one.auditId!)).toBe(false);
     });
 
     it('surfaces CONFLICT when the deleted _id exists again', async () => {
@@ -553,23 +599,21 @@ describe('audit log via the router', () => {
     });
 
     it('refuses on a Connection that is read-only now', async () => {
-      auditRepo.insert(
-        {
-          id: 'ro-entry',
-          connection_id: 'c-ro',
-          db_name: dbName,
-          collection: 'orders',
-          op: 'deleteOne',
-          summary_json: '{"op":"deleteOne","filter":"{}"}',
-          outcome: 'ok',
-          error_code: null,
-          ran_at: new Date().toISOString(),
-          duration_ms: 1,
-          reversible: 1,
-          undone_at: null,
-        },
-        '{"preImage":{"_id":1}}',
-      );
+      auditRepo.insert({
+        id: 'ro-entry',
+        connection_id: 'c-ro',
+        db_name: dbName,
+        collection: 'orders',
+        op: 'deleteOne',
+        summary_json: '{"op":"deleteOne","filter":"{}"}',
+        outcome: 'ok',
+        error_code: null,
+        ran_at: new Date().toISOString(),
+        duration_ms: 1,
+        reversible: 1,
+        undone_at: null,
+      });
+      undoStore.put('ro-entry', 'c-ro', '{"preImage":{"_id":1}}');
 
       expect(await undoError('ro-entry')).toBe('READ_ONLY');
       expect(await orders().countDocuments()).toBe(0);

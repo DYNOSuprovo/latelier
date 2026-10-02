@@ -39,7 +39,7 @@ function shellReducer(_: StartState, action: ShellAction): StartState {
 }
 
 /**
- * Bottom pane hosting an in-process JavaScript REPL with a Mongo driver
+ * Bottom pane hosting a JavaScript REPL (run in a runner child) with a Mongo driver
  * context. Streams stdout into a rolling buffer; forwards each entered line
  * to the session's stdin.
  */
