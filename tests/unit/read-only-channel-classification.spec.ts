@@ -77,6 +77,10 @@ const NON_MONGO_CHANNELS = new Set<string>([
   IPC_CHANNELS.connList,
   IPC_CHANNELS.connGet,
   IPC_CHANNELS.connCreate,
+  // Connection Export / Import touch SQLite and files only, never a MongoDB deployment.
+  IPC_CHANNELS.connExport,
+  IPC_CHANNELS.connImportPreview,
+  IPC_CHANNELS.connImportCommit,
   IPC_CHANNELS.connUpdate,
   IPC_CHANNELS.connDelete,
   IPC_CHANNELS.connTouchUsed,
