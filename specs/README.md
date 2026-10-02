@@ -45,6 +45,7 @@ The project started as **MongoLab**. Iteration 1 — F01–F06, C01–C08, W01�
 | [C10](./C10-users-tab.md) | Users tab (real listing + create / update / drop) — *post-iteration-1* | main + renderer |
 | [C11](./C11-troubleshooting.md) | Connection troubleshooting drawer + inline explainers + docs — *post-iteration-1* | renderer + docs |
 | [C12](./C12-auto-remediation.md) | Auto-remediation buttons in the troubleshooting drawer — *post-iteration-1* | renderer |
+| [C13](./C13-connection-export-import.md) | Connection Export / Import — chosen Connections to a file, secrets passphrase-encrypted — *post-iteration-1* | main + renderer |
 
 ### Workspace (W)
 

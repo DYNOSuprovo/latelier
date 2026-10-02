@@ -47,6 +47,14 @@ _Avoid_: active tab, selected tab
 A Connection with a persisted flag that blocks every MongoDB write reachable through it — document writes, collection/database/index/user admin operations, `$out`/`$merge` aggregation stages, and script/shell-pane writes. Enforced in the main process, never only hidden in the renderer, because the shell pane is unsandboxed (see [ADR 0005](docs/adr/0005-read-only-connection-enforcement.md)). A whole-connection property, not scoped to individual Databases within it. Unrelated to the pre-existing `readOnly` prop on components like `ScriptEditor`/`BuilderPane`, which is renderer-only editor/view state and enforces nothing against MongoDB.
 _Avoid_: read-only mode (ambiguous with the unrelated UI-state prop of the same name)
 
+**Connection Export**:
+A file holding one or more Connections, written by **Export** and read by **Import**. Carries Connections only — never their saved queries, tabs or Audit Log — and never credential file paths. Importing one always adds new Connections; it never changes an existing one.
+_Avoid_: backup (implies the whole app state), config, profile
+
+**Export Passphrase**:
+The passphrase that protects the secrets inside a Connection Export. A Connection Export without secrets has none.
+_Avoid_: password (that word belongs to the Connection's own credentials)
+
 ### Query language and surfaces
 
 **Shell Syntax**:

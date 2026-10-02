@@ -1,6 +1,6 @@
 # X09 — Namespace rename (MongoLab → L'Atelier)
 
-> **Status: Phase 1 + Phase 2 applied · Phase 3 deferred.** The display name in the menu bar / Finder, the IPC bridge identifier (`window.atelier`), the env var (`ATELIER_USER_DATA_DIR`), and renderer file paths now use the L'Atelier name. **`appId` remains `dev.mongolab.app`** so existing user data at `~/Library/Application Support/mongolab/` (and equivalents) keeps loading. Phase 3 — userData migration + `appId` change — is its own ticket.
+> **Status: Phase 1 + Phase 2 applied · Phase 3 deferred.** The display name in the menu bar / Finder, the IPC bridge identifier (`window.atelier`), the env var (`ATELIER_USER_DATA_DIR`), and renderer file paths now use the L'Atelier name. `appId` is still `dev.mongolab.app`. Phase 3 — the `appId` change, the remaining `mongolab` filenames, and recovering data from the old userData directory — is its own ticket.
 
 ## Purpose
 
@@ -21,12 +21,14 @@ Finish the L'Atelier rebrand in code, after [X08](./X08-brand-identity.md) shipp
 - TypeScript module-augmentation (`declare global { interface Window { atelier: … } }`)
 
 ### Phase 3 — userData identity (out — separate ticket)
-- `appId: dev.mongolab.app` → `dev.atelier.app`
-- One-shot migration on first launch with the new appId: detect existing userData at the old path on each platform; move (or copy + symlink) to the new path. Platforms:
+- `appId: dev.mongolab.app` → `io.github.anonhym.latelier`. The project is hosted on GitHub with no domain of its own, so the ID uses the reverse of `anonhym.github.io`, the form Flathub requires for such projects.
+- **`appId` does not decide the userData path.** Electron derives it from `app.name`, which `app.setName("L'Atelier")` in `electron/main.ts` sets. Changing `appId` leaves the directory where it is. What it does change on macOS is the bundle identity that, together with the code signature, governs access to the "L'Atelier Safe Storage" keychain item. The `appId` switch therefore has to land before the first Developer-ID-signed release, and the app must handle a secret it can no longer decrypt (a specific re-enter-password path, not a generic error) before either change ships.
+- Recovering data orphaned by Phase 1: `app.setName` already moved userData from the `mongolab` directory to `L'Atelier`, so an install that predates it has its data at the old path. One-shot migration on first launch: if the old directory exists and the new one has no database, move (or copy) it across. Platforms:
   - macOS: `~/Library/Application Support/mongolab/` → `~/Library/Application Support/L'Atelier/`
   - Windows: `%APPDATA%/mongolab/` → `%APPDATA%/L'Atelier/`
   - Linux: `~/.config/mongolab/` → `~/.config/L'Atelier/`
 - E2E coverage: launch with old userData dir present → assert data preserved post-migration.
+- Moving Connections between machines or installs is not part of this phase; that is [C13](./C13-connection-export-import.md).
 
 ### Out (also deferred)
 - Spec body rewrites in `specs/F*`, `specs/C*`, `specs/W*`, `specs/A*`, `specs/X*` that reference "MongoLab" in prose. These are historical design docs; updating them is documentation hygiene, not blocking.
@@ -41,11 +43,11 @@ Finish the L'Atelier rebrand in code, after [X08](./X08-brand-identity.md) shipp
 | Package name | `mongo-lab` | `latelier` | lowercase, no apostrophe (npm name rules) |
 | IPC bridge global | `window.mongolab` | `window.atelier` | renderer-side; not user-facing |
 | Env var | `MONGOLAB_USER_DATA_DIR` | `ATELIER_USER_DATA_DIR` | E2E + dev override |
-| appId (Phase 3) | `dev.mongolab.app` | `dev.atelier.app` | reverse-DNS; controls userData path |
+| appId (Phase 3) | `dev.mongolab.app` | `io.github.anonhym.latelier` | reverse-DNS; bundle identity, not the userData path |
 
 ## Why not all-at-once
 
-Changing `appId` orphans every existing user's settings, secrets, and saved connections. That requires a tested migration path — and the migration itself is its own design (do we move? copy + symlink? leave the old dir for rollback?). Coupling that to the cosmetic rename is the kind of thing that ships a P0 bug: a user updates and "all their connections are gone."
+Renaming the userData directory orphans every existing user's settings, secrets, and saved connections, and changing `appId` together with code signing can cut off access to their saved secrets. Both need a tested path — and the migration itself is its own design (do we move? copy + symlink? leave the old dir for rollback?). Coupling that to the cosmetic rename is the kind of thing that ships a P0 bug: a user updates and "all their connections are gone."
 
 The split lets the visible rename ship safely now; the under-the-hood rename ships once migration is implemented and tested.
 
@@ -59,8 +61,8 @@ The split lets the visible rename ship safely now; the under-the-hood rename shi
 
 ## Acceptance criteria — Phase 3 (deferred)
 
-- [ ] `appId: dev.atelier.app` set in `electron-builder.yml`.
-- [ ] On first launch with the new appId, existing userData migrates to the new path on macOS, Windows, and Linux.
+- [ ] `appId: io.github.anonhym.latelier` set in `electron-builder.yml`, before the first Developer-ID-signed release.
+- [ ] On first launch, userData left at the old `mongolab` path migrates to the `L'Atelier` path on macOS, Windows, and Linux.
 - [ ] E2E test: launch with simulated old userData; assert connections + secrets persist post-migration.
 
 ## See also
