@@ -82,6 +82,52 @@ export interface ConnectionInput
   sshPassphrase?: string;
 }
 
+// Connection Export / Import (C13). Plaintext secrets and the derived key never
+// appear in any of these: main reads and writes the file itself.
+
+/** A credential file the user must pick again after an import (§4.3). */
+export type RepickFile = 'tlsCa' | 'tlsClientCert' | 'sshKey';
+
+export type ExportSecretField = 'password' | 'sshPassword' | 'sshPassphrase';
+
+export interface ConnectionExportInput {
+  ids: string[];
+  includeSecrets: boolean;
+  /** Export Passphrase; required with `includeSecrets`. */
+  passphrase?: string;
+}
+
+export type ConnectionExportResult =
+  | { written: number; omittedSecrets: { name: string; field: ExportSecretField }[] }
+  | { cancelled: true };
+
+export type ImportPreview =
+  | {
+      /** Single-use handle to the parsed file held in main. */
+      token: string;
+      hasSecrets: boolean;
+      entries: {
+        index: number;
+        name: string;
+        savedAs: string;
+        repick: RepickFile[];
+        hasSecrets: boolean;
+      }[];
+    }
+  | { cancelled: true };
+
+export interface ImportCommitInput {
+  token: string;
+  indices: number[];
+  passphrase?: string;
+  withoutSecrets?: boolean;
+}
+
+export interface ImportCommitResult {
+  created: { id: string; name: string }[];
+  secretsNotStored: { name: string; reason: string }[];
+}
+
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ConnectionRuntime {

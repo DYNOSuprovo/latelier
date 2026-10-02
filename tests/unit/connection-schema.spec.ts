@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
+import { z } from 'zod';
 import type { ConnectionInput } from '@shared/types';
 import {
+  applyCrossFieldRules,
   ConnectionInputSchema,
   ConnectionTestInputSchema,
   ConnectionUpdateSchema,
@@ -752,5 +754,44 @@ describe('ConnectionTestInputSchema — exact issue shape', () => {
     expect(() =>
       ConnectionTestInputSchema.parse(mk({ authMech: 'scram256' })),
     ).not.toThrow();
+  });
+});
+
+// C13: a Connection Export carries no secrets and no credential paths, and it
+// stores each row as it was exported, so the 'import' mode drops exactly the
+// rules those omissions would trip — and nothing else.
+describe("applyCrossFieldRules — 'import' mode", () => {
+  const importSchema = z
+    .any()
+    .superRefine((data, ctx) => applyCrossFieldRules(data, ctx, { mode: 'import' }));
+  const importIssues = (input: Partial<ConnectionInput>) =>
+    parseIssues(() => importSchema.parse(input));
+
+  it.each(['scram256', 'scram1', 'default', 'awsiam'] as const)(
+    'does not require a password for authMech=%s',
+    (authMech) => {
+      expect(importIssues(mk({ authMech, authUsername: 'alice' }))).toEqual([]);
+    },
+  );
+
+  it('does not require a client certificate path for x509, but still requires TLS', () => {
+    expect(importIssues(mk({ authMech: 'x509', tls: { enabled: true, verify: true } }))).toEqual([]);
+    const issue = findIssue(
+      importIssues(mk({ authMech: 'x509', tls: { enabled: false, verify: true } })),
+      ['tls', 'enabled'],
+    );
+    expect(issue?.message).toBe('X.509 authentication requires TLS');
+  });
+
+  it('accepts ssh.enabled: true instead of rejecting the whole file', () => {
+    expect(importIssues(mk({ ssh: { enabled: true, host: 'h', username: 'u' } }))).toEqual([]);
+  });
+
+  it('still enforces the username rules and authMech none', () => {
+    expect(findIssue(importIssues(mk({ authMech: 'scram256' })), ['authUsername'])).toBeDefined();
+    expect(findIssue(importIssues(mk({ authMech: 'awsiam' })), ['authUsername'])).toBeDefined();
+    expect(
+      findIssue(importIssues(mk({ authMech: 'none', authUsername: 'alice' })), ['authUsername']),
+    ).toBeDefined();
   });
 });

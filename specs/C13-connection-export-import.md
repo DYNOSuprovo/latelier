@@ -35,7 +35,9 @@ A Connection Export is UTF-8 JSON. Suggested filename: `latelier-connections-YYY
     {
       "name": "Prod",
       // every other ConnectionInput field except password, sshPassword,
-      // sshPassphrase and the three credential paths (§4.3)
+      // sshPassphrase and the three credential paths (§4.3). The paths are
+      // the nested `tls.caPath`, `tls.clientCertPath` and `ssh.privateKeyPath`.
+      "repick": ["tlsCa"],       // which credential files were set; names only, never a path
       "secrets": {               // present only when this Connection's secrets were exported
         "password": { "iv": "<b64>", "ct": "<b64>", "tag": "<b64>" }
       }
@@ -45,6 +47,7 @@ A Connection Export is UTF-8 JSON. Suggested filename: `latelier-connections-YYY
 ```
 
 - `format` and `version` are checked first. A file with a different `format` is not a Connection Export. A file with a `version` higher than this build supports is refused with *"This file was made by a newer version of L'Atelier. Update to import it."* Lower versions always import.
+- `repick` is written by Export from whichever of the three paths were set: `'tlsCa' | 'tlsClientCert' | 'sshKey'`. It is how §4.1 and §4.3 know which files to ask for again, because a flag like `tls.enabled` cannot say whether a CA file was in use (Atlas-style TLS uses none). It carries no path.
 - Within a supported version the schema is strict. An unknown field is an error, not something silently ignored: a field we don't understand could be a security setting that should not be lost.
 - Every non-secret field is plain, readable JSON, so a user can inspect a file before importing it or sending it.
 - No Connection `id`s and no timestamps are written. Import always creates new Connections (§4.2).
@@ -61,6 +64,7 @@ Only the three secret fields (`password`, `sshPassword`, `sshPassphrase`) are ev
 ```
 
 - The key is derived once per file from the Export Passphrase with Node's `crypto.scrypt`, using a random salt for each file. The parameters are recorded in the file so they can be raised later without a format change. At the default N, `maxmem` has to be raised above Node's default.
+- The parameters in a file are bounded before they are used, because a crafted file would otherwise choose how much memory and time scrypt takes on the importer's machine. `N` must be a power of 2 with `2^10 ≤ N`, `N × r ≤ 2^21`, `1 ≤ r ≤ 32` and `1 ≤ p ≤ 4`. A file outside these bounds is invalid and nothing is imported. The default (`N = 2^17`, `r = 8`) is half the cap, which leaves room to raise it.
 - Each secret is encrypted with AES-256-GCM under its own random 12-byte IV.
 - A wrong passphrase shows up as a GCM authentication failure on the first secret decrypted. There is no separate check value.
 - All of this runs in the main process. Plaintext secrets never reach the renderer, and the renderer never sees the derived key.
@@ -71,7 +75,7 @@ Only the three secret fields (`password`, `sshPassword`, `sshPassphrase`) are ev
 
 1. The user opens Export. A checklist lists every Connection, all ticked.
 2. An "Include passwords" option, off by default. Turning it on reveals the two passphrase fields, and the action stays disabled until they match and satisfy §2.
-3. On confirm, main reads the chosen Connections, builds the file and shows the save dialog. The file is written with mode `0600`, the same way `app:diagnosticBundle` writes.
+3. On confirm, main reads the chosen Connections, builds the file and shows the save dialog. The file is written with mode `0600`, the same way `app:diagnosticBundle` writes, and an existing file the user chose to overwrite is tightened to `0600` as well.
 4. If a chosen Connection's saved secret cannot be decrypted (`SECRET_DECRYPT_FAILED`), that Connection is still exported, without that secret. The result lists it: *"Prod: password not included, it couldn't be read."* One broken secret never blocks the export.
 5. The result reports how many Connections were written and which secrets were omitted. Cancelling the save dialog writes nothing and reports nothing.
 
@@ -95,7 +99,7 @@ Only the three secret fields (`password`, `sshPassword`, `sshPassphrase`) are ev
 
 ### 4.3 Credential file paths are never imported
 
-`tlsCaPath`, `tlsClientCertPath` and `sshPrivateKeyPath` are neither written by Export nor accepted by Import. A file from someone else could otherwise point the TLS client-certificate field at `~/.ssh/id_rsa` and have the driver send that key to their server. That is exactly what `credentialPaths.ts` prevents. A Connection that had TLS or SSH enabled is imported with those features still enabled and their path fields empty. The preview and the result both list "re-pick CA file" (and the other files) for that Connection.
+`tls.caPath`, `tls.clientCertPath` and `ssh.privateKeyPath` are neither written by Export nor accepted by Import. A file from someone else could otherwise point the TLS client-certificate field at `~/.ssh/id_rsa` and have the driver send that key to their server. That is exactly what `credentialPaths.ts` prevents. A Connection that had TLS or SSH enabled is imported with those features still enabled and their path fields empty. The preview and the result both list "re-pick CA file" (and the other files) for that Connection, from its `repick` marker. A Connection that needs a client certificate (X.509) is imported without one, so it cannot connect until the file is picked again; the import's own validation does not require the certificate or the secrets that Create would. Import also keeps `ssh.enabled` as exported rather than rejecting the file: connecting with SSH on is refused by the connect path with its own message, and rejecting the file would lose the other Connections in it.
 
 ### 4.4 Secrets on an install that can't store them securely
 
@@ -144,5 +148,5 @@ Export and import run in main, following the `app:diagnosticBundle` model: main 
 - **Unit:** the clash renamer: `Prod` → `Prod (2)`; with `Prod (2)` taken → `Prod (3)`; clashes inside one file.
 - **Unit:** schema validation: newer `version` refused, unknown field rejected, a file with a different `format` rejected.
 - **Integration:** export with one undecryptable secret still writes the file and reports the omission; import with the plaintext fallback off and the keychain unavailable creates the Connections without secrets.
-- **Integration:** a file that sets `tlsClientCertPath` is rejected by the strict schema, so a crafted path never reaches `credentialPaths`.
+- **Integration:** a file that sets `tls.clientCertPath` is rejected by the strict schema, so a crafted path never reaches `credentialPaths`.
 - **E2E:** export two of three Connections with passwords, wipe userData, import with the passphrase, connect to the in-memory server without re-entering the password.
