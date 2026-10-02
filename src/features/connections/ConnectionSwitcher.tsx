@@ -5,6 +5,7 @@ import { I } from '../../icons';
 import { STATUS_PRESENTATION, matchesConnectionQuery } from './connectionStatus';
 import { useRovingHighlight } from '../../hooks/useRovingHighlight';
 import { RowActionIcon } from './RowActionIcon';
+import { useConnectionTransfer } from './ConnectionTransferProvider';
 import type { ConnectionSummary } from '@shared/types';
 
 /**
@@ -450,6 +451,12 @@ export function ConnectionSwitcher({
     onAdd();
   };
 
+  const transfer = useConnectionTransfer();
+  const handleTransfer = (open: () => void) => {
+    close();
+    open();
+  };
+
   const handleEdit = (id: string) => {
     close();
     onEdit(id);
@@ -727,6 +734,7 @@ export function ConnectionSwitcher({
           instead of this button's click, switching to whatever row is
           highlighted (and closing its tabs) rather than opening the form.
         */}
+        <div style={{ borderBottom: `1px solid ${T.border}` }}>
         <Button
           variant="subtle"
           size="compact-xs"
@@ -740,10 +748,41 @@ export function ConnectionSwitcher({
           }
           fullWidth
           justify="flex-start"
-          style={{ borderRadius: 0, borderBottom: `1px solid ${T.border}` }}
+          style={{ borderRadius: 0 }}
         >
           Add connection
         </Button>
+        {/*
+          Connection Export / Import. Same plain tab-reachable buttons as
+          "Add connection", with the same `stopPropagation`, for the same
+          reason: the dropdown's own handler would turn Enter into a switch.
+          Export is hidden with nothing to export.
+        */}
+        {connections.length > 0 && (
+          <Button
+            variant="subtle"
+            size="compact-xs"
+            onClick={() => handleTransfer(transfer.openExport)}
+            onKeyDown={(e) => e.stopPropagation()}
+            fullWidth
+            justify="flex-start"
+            style={{ borderRadius: 0 }}
+          >
+            Export connections…
+          </Button>
+        )}
+        <Button
+          variant="subtle"
+          size="compact-xs"
+          onClick={() => handleTransfer(transfer.openImport)}
+          onKeyDown={(e) => e.stopPropagation()}
+          fullWidth
+          justify="flex-start"
+          style={{ borderRadius: 0 }}
+        >
+          Import connections…
+        </Button>
+        </div>
         <div
           id={listboxId}
           role="listbox"

@@ -678,10 +678,12 @@ describe('ConnectionSwitcher — add/edit', () => {
     await openSwitcher();
     await userEvent.keyboard('{ArrowDown}{ArrowDown}');
     expect(highlightedName()).toBe('Staging');
-    // search field → "+ Add connection" → manage → the highlighted row's edit
-    // button. Staging has never been tried this session, so the disconnect
+    // search field → "+ Add connection" → Export → Import → manage → the
+    // highlighted row's edit button. Staging has never been tried this session, so the disconnect
     // button doesn't sit between manage and edit here — see the "only for a
     // connected Connection" case elsewhere for that row's tab order.
+    await userEvent.tab();
+    await userEvent.tab();
     await userEvent.tab();
     await userEvent.tab();
     await userEvent.tab();
@@ -1303,8 +1305,10 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
 
     await openSwitcher();
     // c1 ("Prod — US East") is highlighted on open and connected, so all four
-    // actions render: search field → Add connection → manage → disconnect →
-    // edit → delete.
+    // actions render: search field → Add connection → Export → Import →
+    // manage → disconnect → edit → delete.
+    await userEvent.tab();
+    await userEvent.tab();
     await userEvent.tab();
     await userEvent.tab();
     await userEvent.tab();
