@@ -64,7 +64,7 @@ Only the three secret fields (`password`, `sshPassword`, `sshPassphrase`) are ev
 ```
 
 - The key is derived once per file from the Export Passphrase with Node's `crypto.scrypt`, using a random salt for each file. The parameters are recorded in the file so they can be raised later without a format change. At the default N, `maxmem` has to be raised above Node's default.
-- The parameters in a file are bounded before they are used, because a crafted file would otherwise choose how much memory and time scrypt takes on the importer's machine. `N` must be a power of 2 with `2^10 ≤ N`, `N × r ≤ 2^21`, `1 ≤ r ≤ 32` and `1 ≤ p ≤ 4`. A file outside these bounds is invalid and nothing is imported. The default (`N = 2^17`, `r = 8`) is half the cap, which leaves room to raise it.
+- The parameters in a file are bounded before they are used, because a crafted file would otherwise choose how much memory and time scrypt takes on the importer's machine. `N` must be a power of 2 with `2^10 ≤ N`, `N × r ≤ 2^21`, `N < 2^(16 × r)` (OpenSSL's own limit), `1 ≤ r ≤ 32` and `1 ≤ p ≤ 4`. A file outside these bounds is invalid and nothing is imported. The default (`N = 2^17`, `r = 8`) is half the cap, which leaves room to raise it.
 - Each secret is encrypted with AES-256-GCM under its own random 12-byte IV.
 - A wrong passphrase shows up as a GCM authentication failure on the first secret decrypted. There is no separate check value.
 - All of this runs in the main process. Plaintext secrets never reach the renderer, and the renderer never sees the derived key.

@@ -11,7 +11,7 @@ import {
   type ConnectionExportDialogs,
 } from '../../electron/services/ConnectionExportService';
 import { MAX_FILE_BYTES } from '../../electron/services/connectionExportFormat';
-import type { AppError } from '../../electron/errors';
+import { ConflictError, type AppError } from '../../electron/errors';
 import type { ConnectionInput, ImportPreview } from '@shared/types';
 import { createTempDb, type TempDb } from '../helpers/db';
 import { createSafeStorageMock } from '../helpers/safeStorageMock';
@@ -523,6 +523,75 @@ describe('ConnectionExportService', () => {
     it('an unknown token is VALIDATION', async () => {
       const a = install();
       await expectCode(a.service.importCommit({ token: 'nope', indices: [0] }), 'VALIDATION');
+    });
+
+    it('names are planned over the whole file, so unticking an entry cannot move another one\'s name', async () => {
+      const a = install();
+      const first = await a.conns.create(input({ name: 'Prod', host: 'a.example.com' }));
+      const second = await a.conns.create(
+        input({ name: 'Prod 2', host: 'b.example.com', tls: { enabled: true, verify: true, caPath: '/ca.pem' } }),
+      );
+      await a.service.export({ ids: [first.id, second.id], includeSecrets: false });
+      // Both entries are called "Prod" in the file.
+      const crafted = JSON.parse(fs.readFileSync(file, 'utf8'));
+      crafted.connections[1].name = 'Prod';
+      fs.writeFileSync(file, JSON.stringify(crafted));
+      const b = install();
+      await b.conns.create(input({ name: 'Prod' }));
+      const preview = await previewOf(b);
+      expect(preview.entries.map((e) => e.savedAs)).toEqual(['Prod (2)', 'Prod (3)']);
+
+      const result = await b.service.importCommit({ token: preview.token, indices: [1] });
+
+      expect(result.created).toEqual([expect.objectContaining({ index: 1, name: 'Prod (3)' })]);
+      expect(preview.entries[result.created[0]!.index]!.repick).toEqual(['tlsCa']);
+      expect(b.conns.get(result.created[0]!.id).host).toBe('b.example.com');
+    });
+
+    it('keeps going when one entry cannot be created, and reports which', async () => {
+      const a = install();
+      await exportTwoOfThree(a);
+      const b = install();
+      const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const service = new ConnectionExportService({ conns: b.conns, vault: b.vault, dialogs, scrypt: FAST, log });
+      const preview = (await service.importPreview()) as Exclude<ImportPreview, { cancelled: true }>;
+      const create = b.conns.create.bind(b.conns);
+      vi.spyOn(b.conns, 'create').mockImplementationOnce(async () => {
+        throw new ConflictError("connection name 'One' already exists");
+      }).mockImplementation(create);
+
+      const result = await service.importCommit({ token: preview.token, indices: [0, 1], passphrase: PASS });
+
+      expect(result.failed).toEqual([{ index: 0, name: 'One', reason: "connection name 'One' already exists" }]);
+      expect(result.created.map((c) => [c.index, c.name])).toEqual([[1, 'Three']]);
+      expect(b.conns.list().map((c) => c.name)).toEqual(['Three']);
+      expect(log.error).toHaveBeenCalledWith('conn-import', expect.any(String), expect.objectContaining({ index: 0 }));
+    });
+
+    it('reports a secret the vault failed to store, and keeps the connection', async () => {
+      const a = install();
+      await exportTwoOfThree(a);
+      const b = install();
+      const preview = await previewOf(b);
+      vi.spyOn(b.vault, 'set').mockImplementation(() => {
+        throw new Error('disk on fire');
+      });
+      const result = await b.service.importCommit({ token: preview.token, indices: [0], passphrase: PASS });
+      expect(result.created).toHaveLength(1);
+      expect(result.secretsNotStored).toEqual([{ name: 'One', reason: 'The password could not be stored.' }]);
+    });
+
+    it('a token is single-use even for two commits racing on it', async () => {
+      const a = install();
+      await exportTwoOfThree(a);
+      const b = install();
+      const preview = await previewOf(b);
+      const attempt = () => b.service.importCommit({ token: preview.token, indices: [0], passphrase: PASS });
+
+      const outcomes = await Promise.allSettled([attempt(), attempt()]);
+
+      expect(outcomes.map((o) => o.status).sort()).toEqual(['fulfilled', 'rejected']);
+      expect(b.conns.list()).toHaveLength(1);
     });
 
     it('two previews hold independent tokens', async () => {

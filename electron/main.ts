@@ -529,7 +529,9 @@ app.whenReady().then(() => {
   if (app.isPackaged) {
     Menu.setApplicationMenu(
       Menu.buildFromTemplate(buildAppMenuTemplate(process.platform === 'darwin', app.name, (command) =>
-        win?.webContents.send(IPC_CHANNELS.appMenuCommandEvent, command),
+        win && !win.isDestroyed() && !win.webContents.isDestroyed()
+          ? win.webContents.send(IPC_CHANNELS.appMenuCommandEvent, command)
+          : undefined,
       )),
     );
   }
@@ -594,6 +596,7 @@ app.whenReady().then(() => {
   connExportSvc = new ConnectionExportService({
     conns: connSvc,
     vault,
+    log: log ?? undefined,
     dialogs: {
       savePath: async (defaultName) => {
         const options = { defaultPath: defaultName, filters: jsonFilters };

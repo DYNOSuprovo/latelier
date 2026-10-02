@@ -446,6 +446,7 @@ export const IPC_CHANNELS = {
   connImportCommit:  'conn:importCommit',  // SECRET_INPUT
 
   // App-level utilities -----------------------------------------
+  appMenuCommandEvent: 'app:menu-command-event',
   appPickFile:     'app:pickFile',
   appOpenExternal: 'app:openExternal',
   appSaveFile:     'app:saveFile',
@@ -492,7 +493,6 @@ export const IPC_CHANNELS = {
   prefsGetTheme:  'prefs:getTheme',
   prefsSetTheme:  'prefs:setTheme',
   prefsThemeEvent: 'prefs:theme-event',
-  appMenuCommandEvent: 'app:menu-command-event',
 
   // Secrets settings (main-confirmed) -----------------------------
   secretsSetPlaintextFallback: 'secrets:set-plaintext-fallback',

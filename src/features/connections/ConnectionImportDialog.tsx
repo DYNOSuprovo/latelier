@@ -61,7 +61,11 @@ export function ConnectionImportDialog({ onClose }: { onClose: () => void }) {
     } catch (e) {
       // A wrong passphrase keeps the file's token in main, so the form stays editable for a retry.
       if (isIpcError(e) && e.code === 'BAD_PASSPHRASE') setPassphraseError('Wrong Export Passphrase.');
-      else setError(getErrorMessage(e, 'Import failed'));
+      else {
+        setError(getErrorMessage(e, 'Import failed'));
+        // Rows may have been created before the failure; the list must not stay stale.
+        notifyConnectionsChanged();
+      }
     } finally {
       setBusy(false);
     }
@@ -182,24 +186,37 @@ export function ConnectionImportDialog({ onClose }: { onClose: () => void }) {
 }
 
 function ImportResult({ done: { result, preview } }: { done: Done }) {
-  const byName = new Map(preview.entries.map((e) => [e.savedAs, e]));
-  const renamed = preview.entries.filter(
-    (e) => e.savedAs !== e.name && result.created.some((c) => c.name === e.savedAs),
-  );
+  const entryAt = new Map(preview.entries.map((e) => [e.index, e]));
+  // Keyed by file position, not by name: names are re-planned at commit and may differ from the preview.
+  const renamed = result.created.flatMap((c) => {
+    const original = entryAt.get(c.index)?.name;
+    return original !== undefined && original !== c.name ? [{ index: c.index, from: original, to: c.name }] : [];
+  });
   const repicks = result.created.flatMap((c) => {
-    const files = byName.get(c.name)?.repick ?? [];
-    return files.length > 0 ? [{ name: c.name, files }] : [];
+    const files = entryAt.get(c.index)?.repick ?? [];
+    return files.length > 0 ? [{ index: c.index, name: c.name, files }] : [];
   });
   return (
     <Stack gap="xs">
       <Text size="sm" role="status">
         {plural(result.created.length, 'Connection')} imported.
       </Text>
+      {result.failed.length > 0 && (
+        <Alert color="red" variant="light" role="alert" title="Not imported">
+          <List size="xs" spacing={2} aria-label="Connections not imported">
+            {result.failed.map((f) => (
+              <List.Item key={f.index}>
+                {f.name}: {f.reason}
+              </List.Item>
+            ))}
+          </List>
+        </Alert>
+      )}
       {renamed.length > 0 && (
         <List size="xs" spacing={2} aria-label="Renamed Connections">
-          {renamed.map((e) => (
-            <List.Item key={e.index}>
-              {e.name} → {e.savedAs}
+          {renamed.map((r) => (
+            <List.Item key={r.index}>
+              {r.from} → {r.to}
             </List.Item>
           ))}
         </List>
@@ -207,7 +224,7 @@ function ImportResult({ done: { result, preview } }: { done: Done }) {
       {repicks.length > 0 && (
         <List size="xs" spacing={2} aria-label="Files to pick again">
           {repicks.map((r) => (
-            <List.Item key={r.name}>
+            <List.Item key={r.index}>
               {r.name}: {r.files.map((f) => REPICK_LABEL[f]).join(', ')}
             </List.Item>
           ))}

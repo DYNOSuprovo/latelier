@@ -370,10 +370,25 @@ describe('parseConnectionExport', () => {
     await expectCode(() => parseConnectionExport(text), 'VALIDATION');
   });
 
-  it('accepts the cap exactly (N × r = 2^21) and the minimum', async () => {
-    for (const patch of [{ N: 2 ** 16, r: 32 }, { N: 2 ** 20, r: 2 }, { N: 1024, r: 1, p: 4 }, { N: 2 ** 21, r: 1 }]) {
+  it('accepts parameters at the bounds, and each one really derives a key', async () => {
+    // A bound the parser accepts but OpenSSL refuses would be a file nobody can open.
+    for (const params of [{ N: 2 ** 15, r: 1, p: 1 }, { N: 2 ** 16, r: 2, p: 4 }, { N: 2 ** 20, r: 2, p: 1 }, { N: 1024, r: 1, p: 1 }]) {
+      const text = await build([{ entry: entry(), secrets: { password: 'pw' } }], PASS, params);
+      const file = parseConnectionExport(text);
+      expect((await decryptSelected(file, PASS, [0])).get(0)).toEqual({ password: 'pw' });
+    }
+  });
+
+  it('rejects N >= 2^(16 r), which OpenSSL cannot run, with its own message', async () => {
+    for (const patch of [{ N: 2 ** 16, r: 1 }, { N: 2 ** 17, r: 1 }, { N: 2 ** 21, r: 1 }]) {
       const text = edit(await sealed(), (f) => Object.assign(f.encryption, patch));
-      expect(() => parseConnectionExport(text)).not.toThrow();
+      let message = '';
+      try {
+        parseConnectionExport(text);
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toContain('N must be below 2^(16 × r)');
     }
   });
 

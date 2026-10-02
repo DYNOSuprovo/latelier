@@ -11,6 +11,7 @@ import type {
 } from '@shared/types';
 import { AppError, SystemError, ValidationError } from '../errors.ts';
 import type { ConnectionService } from '../mongo/ConnectionService.ts';
+import type { Logger } from '../log.ts';
 import type { SecretsVault } from '../secrets/SecretsVault.ts';
 import {
   buildConnectionExport,
@@ -55,6 +56,7 @@ export class ConnectionExportService {
   private readonly dialogs: ConnectionExportDialogs;
   private readonly now: () => Date;
   private readonly scrypt?: ScryptParams;
+  private readonly log?: Logger;
   private readonly pending = new Map<string, ParsedExport>();
 
   constructor(opts: {
@@ -64,12 +66,14 @@ export class ConnectionExportService {
     now?: () => Date;
     /** Test hook: a cheaper scrypt cost than the default. */
     scrypt?: ScryptParams;
+    log?: Logger;
   }) {
     this.conns = opts.conns;
     this.vault = opts.vault;
     this.dialogs = opts.dialogs;
     this.now = opts.now ?? (() => new Date());
     this.scrypt = opts.scrypt;
+    this.log = opts.log;
   }
 
   /** Called when the window closes: a token does not outlive it. */
@@ -173,27 +177,49 @@ export class ConnectionExportService {
       throw new ValidationError('The selection includes a connection that is not in the file.');
     }
 
-    // Everything that can fail on the user's side (a wrong passphrase) happens
-    // before the first write, and keeps the token so they can retry.
-    const secrets = input.withoutSecrets
-      ? new Map<number, SecretValues>()
-      : await decryptSelected(file, input.passphrase, indices);
+    // Single-use even under concurrent commits: take the file out before the
+    // first await. A failed decrypt (wrong passphrase, damaged file, missing
+    // passphrase) puts it back, so a retry or "without passwords" still works.
     this.pending.delete(input.token);
+    let secrets: Map<number, SecretValues>;
+    try {
+      secrets = input.withoutSecrets
+        ? new Map<number, SecretValues>()
+        : await decryptSelected(file, input.passphrase, indices);
+    } catch (err) {
+      this.pending.set(input.token, file);
+      throw err;
+    }
 
     // The preview was a forecast; clashes are resolved against what exists now.
+    // Planned over every entry in the file, as the preview did, so unticking an
+    // entry cannot move another one's name.
     const names = planNames(
       this.conns.list().map((c) => c.name),
-      indices.map((i) => file.connections[i]!.name),
+      file.connections.map((c) => c.name),
     );
-    const result: ImportCommitResult = { created: [], secretsNotStored: [] };
-    for (const [n, i] of indices.entries()) {
-      // Secrets never go through create(): it deletes the row again when the
-      // vault refuses them, and §4.4 wants the Connection kept.
-      const created = await this.conns.create({
-        ...entryToConnectionInput(file.connections[i]!),
-        name: names[n]!,
-      });
-      result.created.push({ id: created.id, name: created.name });
+    const result: ImportCommitResult = { created: [], failed: [], secretsNotStored: [] };
+    for (const i of indices) {
+      const entry = file.connections[i]!;
+      let created;
+      try {
+        // Secrets never go through create(): it deletes the row again when the
+        // vault refuses them, and §4.4 wants the Connection kept.
+        created = await this.conns.create({ ...entryToConnectionInput(entry), name: names[i]! });
+      } catch (err) {
+        // Carry on: the rows already created stay, so the result must say which did not.
+        this.log?.error('conn-import', 'could not create an imported connection', {
+          index: i,
+          cause: err instanceof Error ? err.message : String(err),
+        });
+        result.failed.push({
+          index: i,
+          name: entry.name,
+          reason: err instanceof AppError ? err.message : 'Unexpected error',
+        });
+        continue;
+      }
+      result.created.push({ index: i, id: created.id, name: created.name });
       this.storeSecrets(created.id, created.name, secrets.get(i), result);
     }
     return result;
@@ -212,8 +238,14 @@ export class ConnectionExportService {
       try {
         this.vault.set(id, VAULT_FIELD[field], value);
       } catch (err) {
-        if (!(err instanceof AppError) || err.code !== 'SECRETS_UNAVAILABLE') throw err;
-        result.secretsNotStored.push({ name, reason: NO_SECURE_STORAGE_REASON });
+        if (err instanceof AppError && err.code === 'SECRETS_UNAVAILABLE') {
+          result.secretsNotStored.push({ name, reason: NO_SECURE_STORAGE_REASON });
+        } else {
+          this.log?.error('conn-import', 'could not store an imported secret', {
+            cause: err instanceof Error ? err.message : String(err),
+          });
+          result.secretsNotStored.push({ name, reason: 'The password could not be stored.' });
+        }
         // Every remaining secret of this Connection fails the same way; say it once.
         return;
       }

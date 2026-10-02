@@ -19,10 +19,11 @@ const PREVIEW: Preview = {
 };
 const COMMIT: ImportCommitResult = {
   created: [
-    { id: 'n1', name: 'Prod (2)' },
-    { id: 'n2', name: 'Staging' },
-    { id: 'n3', name: 'Dev' },
+    { index: 0, id: 'n1', name: 'Prod (2)' },
+    { index: 1, id: 'n2', name: 'Staging' },
+    { index: 2, id: 'n3', name: 'Dev' },
   ],
+  failed: [],
   secretsNotStored: [{ name: 'Prod (2)', reason: 'secure storage is unavailable' }],
 };
 
@@ -159,7 +160,7 @@ describe('ConnectionImportDialog', () => {
   });
 
   it('does not list a rename or re-pick for an entry that was not imported', async () => {
-    setup({ commit: async () => ({ created: [{ id: 'n3', name: 'Dev' }], secretsNotStored: [] }) });
+    setup({ commit: async () => ({ created: [{ index: 2, id: 'n3', name: 'Dev' }], failed: [], secretsNotStored: [] }) });
     await choose();
     await userEvent.click(await screen.findByRole('checkbox', { name: 'Import Prod' }));
     await userEvent.click(screen.getByRole('checkbox', { name: 'Import Staging' }));
@@ -180,5 +181,47 @@ describe('ConnectionImportDialog', () => {
 
     await userEvent.type(screen.getByLabelText('Export Passphrase'), 'right one{Enter}');
     await waitFor(() => expect(importCommit).toHaveBeenCalledTimes(1));
+  });
+
+  it('lists entries that could not be created next to the ones that were', async () => {
+    setup({
+      commit: async () => ({
+        created: [{ index: 2, id: 'n3', name: 'Dev' }],
+        failed: [{ index: 1, name: 'Staging', reason: "connection name 'Staging' already exists" }],
+        secretsNotStored: [],
+      }),
+    });
+    await choose();
+    await userEvent.click(await screen.findByRole('button', { name: 'Import without passwords' }));
+    const failed = within(await screen.findByLabelText('Connections not imported'));
+    expect(failed.getByText("Staging: connection name 'Staging' already exists")).toBeTruthy();
+    expect((await screen.findByRole('status')).textContent).toBe('1 Connection imported.');
+  });
+
+  it('matches renames and re-picks by file position, not by the previewed name', async () => {
+    // The preview forecast 'Prod (2)' for entry 0, but another Prod appeared and it landed as 'Prod (3)'.
+    setup({
+      commit: async () => ({
+        created: [{ index: 0, id: 'n1', name: 'Prod (3)' }],
+        failed: [],
+        secretsNotStored: [],
+      }),
+    });
+    await choose();
+    await userEvent.click(await screen.findByRole('button', { name: 'Import without passwords' }));
+    await screen.findByRole('status');
+    expect(within(screen.getByLabelText('Renamed Connections')).getByText('Prod → Prod (3)')).toBeTruthy();
+    expect(
+      within(screen.getByLabelText('Files to pick again')).getByText('Prod (3): re-pick CA file, re-pick client certificate'),
+    ).toBeTruthy();
+  });
+
+  it('refreshes the connection list when the commit itself throws', async () => {
+    const changed = vi.spyOn(connectionsState, 'notifyConnectionsChanged');
+    setup({ commit: async () => { throw Object.assign(new Error('disk full'), { code: 'INTERNAL' }); } });
+    await choose();
+    await userEvent.click(await screen.findByRole('button', { name: 'Import without passwords' }));
+    await screen.findByRole('alert');
+    expect(changed).toHaveBeenCalledTimes(1);
   });
 });

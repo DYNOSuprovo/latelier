@@ -124,7 +124,10 @@ export interface ImportCommitInput {
 }
 
 export interface ImportCommitResult {
-  created: { id: string; name: string }[];
+  /** `index` is the entry's position in the file, which is what the preview listed. */
+  created: { index: number; id: string; name: string }[];
+  /** Entries that could not be created; the others were still imported. */
+  failed: { index: number; name: string; reason: string }[];
   secretsNotStored: { name: string; reason: string }[];
 }
 

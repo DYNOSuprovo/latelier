@@ -74,7 +74,9 @@ const EncryptionSchema = z
     p: z.number().int().min(1).max(4),
     cipher: z.literal('aes-256-gcm'),
   })
-  .refine((e) => e.N * e.r <= MAX_N_TIMES_R, 'scrypt cost (N × r) is too high');
+  .refine((e) => e.N * e.r <= MAX_N_TIMES_R, 'scrypt cost (N × r) is too high')
+  // OpenSSL refuses N >= 2^(16r), so such a file could never be decrypted.
+  .refine((e) => e.N < 2 ** (16 * e.r), 'N must be below 2^(16 × r)');
 
 const EntrySchema = z
   .strictObject(BaseInputShape)
