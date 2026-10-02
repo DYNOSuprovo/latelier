@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, type Envelope, type IpcApi } from '@shared/ipc';
+import { IPC_CHANNELS, type Envelope, type IpcApi, type MenuCommand } from '@shared/ipc';
 import type {
   AggResult,
   AggResultWire,
@@ -57,6 +57,11 @@ const api: IpcApi = {
     openExternal: (url) => call(IPC_CHANNELS.appOpenExternal, url),
     saveFile: (input) => call(IPC_CHANNELS.appSaveFile, input),
     diagnosticBundle: () => call(IPC_CHANNELS.appDiagnosticBundle, {}),
+    onMenuCommand: (cb) => {
+      const listener = (_evt: unknown, command: unknown) => cb(command as MenuCommand);
+      ipcRenderer.on(IPC_CHANNELS.appMenuCommandEvent, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.appMenuCommandEvent, listener);
+    },
   },
 
   shell: {

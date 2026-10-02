@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, AppShell, Button } from '@mantine/core';
+import { Alert, AppShell, Button, Group } from '@mantine/core';
 import {
   Group as PanelGroup,
   Panel,
@@ -44,6 +44,7 @@ import {
   type CollectionWorkspaceActions,
   type CollectionWorkspaceMeta,
 } from './context';
+import { useConnectionTransfer } from '../../features/connections/ConnectionTransferProvider';
 import { useWorkspacePanelPrefs } from './useWorkspacePanelPrefs';
 import { useCollectionTabActions } from './useCollectionTabActions';
 import { useDocumentDialogs } from './useDocumentDialogs';
@@ -201,6 +202,7 @@ export function PanelBody({
   onStructureInitialCreateConsumed,
 }: PanelBodyProps) {
   const T = themeVars;
+  const { openImport } = useConnectionTransfer();
   const {
     prefsReady,
     refDrawerWidth, setRefDrawerWidth, commitRefDrawerWidth,
@@ -290,7 +292,14 @@ export function PanelBody({
                   Open a collection
                 </Button>
               ) : (
-                <ConnectionSwitcher {...switcherProps} variant="cta" />
+                <Group gap="xs" justify="center">
+                  <ConnectionSwitcher {...switcherProps} variant="cta" />
+                  {switcherProps.connections.length === 0 && (
+                    <Button variant="default" size="xs" onClick={openImport}>
+                      Import connections
+                    </Button>
+                  )}
+                </Group>
               )}
             </div>
           </CenteredPane>

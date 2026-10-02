@@ -528,7 +528,9 @@ app.whenReady().then(() => {
   // keeps it; a packaged build gets a role-based menu without a View menu.
   if (app.isPackaged) {
     Menu.setApplicationMenu(
-      Menu.buildFromTemplate(buildAppMenuTemplate(process.platform === 'darwin', app.name)),
+      Menu.buildFromTemplate(buildAppMenuTemplate(process.platform === 'darwin', app.name, (command) =>
+        win?.webContents.send(IPC_CHANNELS.appMenuCommandEvent, command),
+      )),
     );
   }
 

@@ -215,6 +215,20 @@ describe('The Focused Tab’s Connection', () => {
     expect(titleBar().getByText('Prod')).toBeTruthy();
   });
 
+  it.each([
+    { saved: 0, rows: [] as ConnectionSummary[], offered: true },
+    { saved: 1, rows: [conn({ status: 'unknown' })], offered: false },
+  ])('Import connections on the empty screen with $saved saved: shown=$offered', async ({ rows, offered }) => {
+    installAtelierMock({ tabs: { list: async () => [] }, conn: { list: async () => rows } });
+    render(
+      <MemoryRouter initialEntries={['/workspace']}>
+        <Workspace />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/No connection is open/i)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Import connections' }) !== null).toBe(offered);
+  });
+
   it('shows the empty state when zero Connections are saved, and the Switcher opens in add-mode', async () => {
     // Acceptance criteria: zero saved Connections yields the empty
     // state, and the Switcher opens in add-mode — here, focusing "+ Add

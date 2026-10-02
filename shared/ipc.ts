@@ -67,6 +67,9 @@ import type {
   WorkspaceTab,
 } from './types.ts';
 
+/** A native menu item that opens a renderer dialog. */
+export type MenuCommand = 'connections.export' | 'connections.import';
+
 export type IpcErrorCode =
   | 'VALIDATION'
   | 'NOT_FOUND'
@@ -184,6 +187,8 @@ export interface IpcApi {
      * location. Returns the chosen path, or `null` on user cancel.
      */
     diagnosticBundle: () => Promise<{ path: string | null }>;
+    /** Native File-menu commands pushed from main; returns the unsubscribe. */
+    onMenuCommand: (cb: (command: MenuCommand) => void) => () => void;
   };
 
   /** Refuses any URL that does not start with https://www.mongodb.com/docs/. */
@@ -487,6 +492,7 @@ export const IPC_CHANNELS = {
   prefsGetTheme:  'prefs:getTheme',
   prefsSetTheme:  'prefs:setTheme',
   prefsThemeEvent: 'prefs:theme-event',
+  appMenuCommandEvent: 'app:menu-command-event',
 
   // Secrets settings (main-confirmed) -----------------------------
   secretsSetPlaintextFallback: 'secrets:set-plaintext-fallback',

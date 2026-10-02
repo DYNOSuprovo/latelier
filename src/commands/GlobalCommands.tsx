@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTheme } from '../ThemeContext';
 import { useSettings } from '../pages/SettingsContext';
+import { useConnectionTransfer } from '../features/connections/ConnectionTransferProvider';
 import { AuditLogModal } from '../pages/AuditLogModal';
 import { useRegisterCommands } from './useRegisterCommands';
 
@@ -15,6 +16,7 @@ export function GlobalCommands() {
   const navigate = useNavigate();
   const [, toggleTheme] = useTheme();
   const settings = useSettings();
+  const transfer = useConnectionTransfer();
   const [audit, setAudit] = useState<{ connectionId: string | null } | null>(null);
 
   useRegisterCommands(
@@ -61,6 +63,20 @@ export function GlobalCommands() {
         perform: () => navigate('/connections/new'),
       },
       {
+        id: 'connection.export',
+        title: 'Export Connections…',
+        group: 'connection',
+        keywords: ['backup', 'file', 'transfer', 'save'],
+        perform: () => transfer.openExport(),
+      },
+      {
+        id: 'connection.import',
+        title: 'Import Connections…',
+        group: 'connection',
+        keywords: ['restore', 'file', 'transfer', 'load'],
+        perform: () => transfer.openImport(),
+      },
+      {
         id: 'connection.edit',
         title: 'Edit selected connection',
         group: 'connection',
@@ -78,7 +94,7 @@ export function GlobalCommands() {
         },
       },
     ],
-    [navigate, toggleTheme, settings],
+    [navigate, toggleTheme, settings, transfer],
   );
 
   return audit ? (

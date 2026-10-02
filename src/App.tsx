@@ -8,6 +8,7 @@ import NewConnection from './pages/NewConnection';
 import Workspace from './pages/Workspace';
 import { HintsProvider } from './hints/HintsProvider';
 import { SettingsProvider } from './pages/SettingsContext';
+import { ConnectionTransferProvider } from './features/connections/ConnectionTransferProvider';
 import { CommandPaletteRoot } from './commands/CommandPalette';
 import { PaletteContextProvider } from './commands/PaletteContext';
 import { GlobalCommands } from './commands/GlobalCommands';
@@ -48,6 +49,7 @@ export default function App() {
           <HashRouter>
             <PaletteContextProvider>
               <SettingsProvider>
+                <ConnectionTransferProvider>
                 <CommandPaletteRoot>
                   <TroubleshootingProvider>
                     <GlobalCommands />
@@ -71,6 +73,7 @@ export default function App() {
                     </ErrorBoundary>
                   </TroubleshootingProvider>
                 </CommandPaletteRoot>
+                </ConnectionTransferProvider>
               </SettingsProvider>
             </PaletteContextProvider>
           </HashRouter>
