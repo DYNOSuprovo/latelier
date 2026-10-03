@@ -47,32 +47,32 @@ afterEach(() => {
 describe('PreSigningNotice', () => {
   it('tells a macOS user with saved Connections to export them before the signed update', async () => {
     mount();
-    const notice = await screen.findByRole('dialog', { name: 'Export your connections before updating' });
+    const notice = await screen.findByRole('dialog', { name: 'Export your connections before the next update' });
     expect(within(notice).getByText(/won't be able to read the passwords saved by this one/)).toBeTruthy();
     expect(within(notice).getByText(/signed by Apple .* and updates itself/)).toBeTruthy();
   });
 
   it('Export opens the export with passwords included, and stops the reminder', async () => {
     const { set } = mount();
-    const notice = await screen.findByRole('dialog', { name: 'Export your connections before updating' });
+    const notice = await screen.findByRole('dialog', { name: 'Export your connections before the next update' });
     await userEvent.click(within(notice).getByRole('button', { name: 'Export connections' }));
 
     const exp = await screen.findByRole('dialog', { name: 'Export Connections' });
     expect((within(exp).getByRole('checkbox', { name: 'Include passwords' }) as HTMLInputElement).checked).toBe(true);
     expect(set).toHaveBeenCalledWith('ui.notices.preSigningDismissed', true);
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export your connections before updating' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export your connections before the next update' })).toBeNull());
   });
 
   it('"Don\'t show again" stops the reminder; closing only defers it', async () => {
     const first = mount();
-    await screen.findByRole('dialog', { name: 'Export your connections before updating' });
+    await screen.findByRole('dialog', { name: 'Export your connections before the next update' });
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export your connections before updating' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Export your connections before the next update' })).toBeNull());
     expect(first.set).not.toHaveBeenCalled();
     uninstallAtelierMock();
 
     const second = mount();
-    const notice = await screen.findByRole('dialog', { name: 'Export your connections before updating' });
+    const notice = await screen.findByRole('dialog', { name: 'Export your connections before the next update' });
     await userEvent.click(within(notice).getByRole('button', { name: "Don't show again" }));
     expect(second.set).toHaveBeenCalledWith('ui.notices.preSigningDismissed', true);
     expect(screen.queryByRole('dialog', { name: 'Export Connections' })).toBeNull();
@@ -84,13 +84,13 @@ describe('PreSigningNotice', () => {
   ])('stays away %s', async (_label, opts) => {
     mount(opts);
     await settle();
-    expect(screen.queryByRole('dialog', { name: 'Export your connections before updating' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Export your connections before the next update' })).toBeNull();
   });
 
   it('stays away off macOS, where the update changes nothing about saved passwords', async () => {
     userAgent.mockReturnValue(WINDOWS);
     mount();
     await settle();
-    expect(screen.queryByRole('dialog', { name: 'Export your connections before updating' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Export your connections before the next update' })).toBeNull();
   });
 });

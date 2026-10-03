@@ -4,7 +4,7 @@ import { api } from '../../api/atelier';
 import { useConnectionTransfer } from './ConnectionTransferProvider';
 
 const DISMISSED_KEY = 'ui.notices.preSigningDismissed';
-const TITLE = 'Export your connections before updating';
+const TITLE = 'Export your connections before the next update';
 
 /**
  * X09 Phase 3 — the last unsigned release tells macOS users what the next
