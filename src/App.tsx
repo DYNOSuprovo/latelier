@@ -9,6 +9,7 @@ import Workspace from './pages/Workspace';
 import { HintsProvider } from './hints/HintsProvider';
 import { SettingsProvider } from './pages/SettingsContext';
 import { ConnectionTransferProvider } from './features/connections/ConnectionTransferProvider';
+import { PreSigningNotice } from './features/connections/PreSigningNotice';
 import { CommandPaletteRoot } from './commands/CommandPalette';
 import { PaletteContextProvider } from './commands/PaletteContext';
 import { GlobalCommands } from './commands/GlobalCommands';
@@ -50,6 +51,8 @@ export default function App() {
             <PaletteContextProvider>
               <SettingsProvider>
                 <ConnectionTransferProvider>
+                {/* After the splash, and never under the e2e harness, where a launch dialog would sit on every test. */}
+                {!splashVisible && !isTestEnv && <PreSigningNotice />}
                 <CommandPaletteRoot>
                   <TroubleshootingProvider>
                     <GlobalCommands />

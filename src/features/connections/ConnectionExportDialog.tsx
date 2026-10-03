@@ -22,11 +22,16 @@ const FIELD_LABEL: Record<ExportSecretField, string> = {
  * With `ids` the set is already chosen (the Connections table's checked rows,
  * C13 §8), so there is no second checklist, only the passwords option.
  */
-export function ConnectionExportDialog({ onClose, ids }: { onClose: () => void; ids?: string[] }) {
+export function ConnectionExportDialog({ onClose, ids, withSecrets = false }: {
+  onClose: () => void;
+  ids?: string[];
+  /** Starts with passwords included, for a caller whose point is keeping them. */
+  withSecrets?: boolean;
+}) {
   const close = useDialogFocusReturn(onClose);
   const [connections, setConnections] = React.useState<ConnectionSummary[] | null>(null);
   const [ticked, setTicked] = React.useState<Set<string>>(() => new Set(ids));
-  const [includeSecrets, setIncludeSecrets] = React.useState(false);
+  const [includeSecrets, setIncludeSecrets] = React.useState(withSecrets);
   const [passphrase, setPassphrase] = React.useState('');
   const [confirm, setConfirm] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);

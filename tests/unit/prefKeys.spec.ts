@@ -16,6 +16,7 @@ const VALID: Record<string, unknown> = {
   'ui.workspace.sidebarCollapsed': false,
   'ui.workspace.builderCollapsed': true,
   'ui.workspace.documentEditorSize': { width: 600, height: 400 },
+  'ui.notices.preSigningDismissed': true,
   [CONN_KEY]: true,
 };
 

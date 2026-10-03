@@ -12,7 +12,7 @@ function Triggers() {
   const t = useConnectionTransfer();
   return (
     <>
-      <button onClick={t.openExport}>open export</button>
+      <button onClick={() => t.openExport()}>open export</button>
       <button onClick={t.openImport}>open import</button>
     </>
   );
