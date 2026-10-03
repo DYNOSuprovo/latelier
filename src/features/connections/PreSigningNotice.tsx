@@ -9,8 +9,8 @@ const TITLE = 'Export your connections before updating';
 /**
  * X09 Phase 3 — the last unsigned release tells macOS users what the next
  * one changes. The signed build has a new app identity, and macOS ties the
- * saved passwords' keychain item to it, so they may not be readable after
- * the update: exporting with passwords now is the way to keep them.
+ * saved passwords' keychain item to it, so they are not readable after the
+ * update: exporting with passwords now is the way to keep them.
  *
  * Shown once per launch until exported or dismissed for good; closing it
  * only defers it. Only with saved Connections, since otherwise there is
@@ -41,8 +41,8 @@ export function PreSigningNotice() {
     <Modal opened={open} onClose={() => setOpen(false)} title={TITLE} centered size="md">
       <Stack gap="md">
         <Text size="sm">
-          The next version may not be able to read the passwords saved by this one. Export your connections
-          with their passwords now, and import the file if any go missing.
+          The next version won&apos;t be able to read the passwords saved by this one. Export your
+          connections with their passwords now, and import the file after updating.
         </Text>
         <Text size="xs" c="dimmed">
           Also coming: the app is signed by Apple (no more security warning) and updates itself.

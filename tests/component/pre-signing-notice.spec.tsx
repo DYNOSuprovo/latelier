@@ -48,7 +48,7 @@ describe('PreSigningNotice', () => {
   it('tells a macOS user with saved Connections to export them before the signed update', async () => {
     mount();
     const notice = await screen.findByRole('dialog', { name: 'Export your connections before updating' });
-    expect(within(notice).getByText(/may not be able to read the passwords saved by this one/)).toBeTruthy();
+    expect(within(notice).getByText(/won't be able to read the passwords saved by this one/)).toBeTruthy();
     expect(within(notice).getByText(/signed by Apple .* and updates itself/)).toBeTruthy();
   });
 
