@@ -146,9 +146,12 @@ describe('export → import round trip', () => {
         ]) {
           expect(keys.has(forbidden)).toBe(false);
         }
-        for (const value of Object.values(present(item.secrets))) {
-          // A short secret can occur inside unrelated JSON by chance.
-          if ((value as string).length >= 8) expect(out).not.toContain(value as string);
+        // A short secret can occur inside unrelated JSON by chance, and a secret
+        // equal to one of the entry's own fields (password "toString", host
+        // "toString") is that field in the file, not a leak.
+        const fields = JSON.stringify(item.entry);
+        for (const value of Object.values(present(item.secrets)) as string[]) {
+          if (value.length >= 8 && !fields.includes(value)) expect(out).not.toContain(value);
         }
       }),
       { numRuns: 30 },
