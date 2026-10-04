@@ -54,8 +54,9 @@ export function ConnectionAddDialog({ onClose }: { onClose: () => void }) {
     { key: '', entries: [], error: null },
   );
   const [step, setStep] = React.useState<'paste' | 'credentials'>('paste');
-  // Keyed by the connection string, not its line number: going Back and
-  // deleting or reordering lines must never move a password onto another host.
+  // Keyed by the connection string and which copy of it this is, not by line
+  // number: going Back and deleting or reordering lines must never move a
+  // password onto another host, and two identical lines still get one each.
   const [creds, setCreds] = React.useState<Record<string, Creds>>({});
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -102,7 +103,11 @@ export function ConnectionAddDialog({ onClose }: { onClose: () => void }) {
   const previewError = current ? preview.error : null;
   const good = current ? entries.filter((e): e is OkEntry => e.ok) : [];
   const asking = good.filter((e) => e.needsCredentials);
-  const credsKey = (e: OkEntry) => lines[e.index]!;
+  const credsKey = (e: OkEntry) => {
+    const line = lines[e.index]!;
+    // A line holds no newline, so this cannot collide with another line's key.
+    return `${line}\n${lines.slice(0, e.index).filter((l) => l === line).length}`;
+  };
   const credsFor = (e: OkEntry): Creds => creds[credsKey(e)] ?? { username: e.authUsername ?? '', password: '' };
   const orphanPassword = (e: OkEntry) => {
     const c = credsFor(e);
@@ -121,11 +126,9 @@ export function ConnectionAddDialog({ onClose }: { onClose: () => void }) {
         credentials: asking.flatMap((e) => {
           const c = creds[credsKey(e)];
           if (!c) return [];
-          return [{
-            index: e.index,
-            ...(c.username.trim() ? { username: c.username.trim() } : {}),
-            ...(c.password ? { password: c.password } : {}),
-          }];
+          // The username always goes when the row was touched: blank is the
+          // user saying "no authentication", not "keep the string's".
+          return [{ index: e.index, username: c.username.trim(), ...(c.password ? { password: c.password } : {}) }];
         }),
       });
       setResult(res);

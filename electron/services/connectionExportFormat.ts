@@ -337,10 +337,12 @@ export async function decryptSelected(
 
 /** `name`, or `name (2)`, `name (3)`… (cut so the result stays within the name limit). */
 export function uniqueName(name: string, taken: ReadonlySet<string>): string {
-  if (!taken.has(name)) return name;
+  // A name can come from a hostname, which may run to 253 characters.
+  const base = name.slice(0, MAX_NAME_LENGTH).trimEnd();
+  if (!taken.has(base)) return base;
   for (let n = 2; ; n++) {
     const suffix = ` (${n})`;
-    const candidate = name.slice(0, MAX_NAME_LENGTH - suffix.length).trimEnd() + suffix;
+    const candidate = base.slice(0, MAX_NAME_LENGTH - suffix.length).trimEnd() + suffix;
     if (!taken.has(candidate)) return candidate;
   }
 }

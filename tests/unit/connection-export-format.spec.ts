@@ -550,6 +550,12 @@ describe('name planning', () => {
     expect(uniqueName('Prod', new Set(['Dev']))).toBe('Prod');
   });
 
+  it('clamps a name past the limit, then resolves a clash on the clamped name', () => {
+    const long = `${'a'.repeat(63)} b${'c'.repeat(20)}`;
+    expect(uniqueName(long, new Set())).toBe('a'.repeat(63));
+    expect(uniqueName(long, new Set(['a'.repeat(63)]))).toBe(`${'a'.repeat(60)} (2)`);
+  });
+
   it('Prod → Prod (2); with Prod (2) taken → Prod (3)', () => {
     expect(uniqueName('Prod', new Set(['Prod']))).toBe('Prod (2)');
     expect(uniqueName('Prod', new Set(['Prod', 'Prod (2)']))).toBe('Prod (3)');

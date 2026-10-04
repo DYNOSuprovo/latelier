@@ -184,6 +184,25 @@ describe('ConnectionAddDialog — adding', () => {
     await waitFor(() => expect(createFromUris.mock.calls[0]![0].credentials).toEqual([]));
   });
 
+  it('gives two identical lines their own credentials', async () => {
+    const { createFromUris } = setup((lines) =>
+      lines.map((_, i) => ok(i, { savedAs: i === 0 ? 'localhost' : 'localhost (2)', needsCredentials: true, hasPassword: false })),
+    );
+    paste('mongodb://localhost:27017\nmongodb://localhost:27017');
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Username for localhost' }), 'alice');
+    await userEvent.type(screen.getByLabelText('Password for localhost'), 'pwA');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Username for localhost (2)' }), 'bob');
+    await userEvent.type(screen.getByLabelText('Password for localhost (2)'), 'pwB');
+    await userEvent.click(screen.getByRole('button', { name: 'Add 2 connections' }));
+    await waitFor(() =>
+      expect(createFromUris.mock.calls[0]![0].credentials).toEqual([
+        { index: 0, username: 'alice', password: 'pwA' },
+        { index: 1, username: 'bob', password: 'pwB' },
+      ]),
+    );
+  });
+
   it('keeps typed credentials with their line when another line is removed', async () => {
     const { createFromUris } = setup((lines) =>
       lines.map((l, i) => ok(i, { savedAs: l.replace('mongodb://', ''), needsCredentials: true, hasPassword: false })),
@@ -235,7 +254,8 @@ describe('ConnectionAddDialog — adding', () => {
     expect((screen.getByRole('textbox', { name: 'Username for host0' }) as HTMLInputElement).value).toBe('u');
     await userEvent.clear(screen.getByRole('textbox', { name: 'Username for host0' }));
     await userEvent.click(screen.getByRole('button', { name: 'Add 1 connection' }));
-    await waitFor(() => expect(createFromUris.mock.calls[0]![0].credentials).toEqual([{ index: 0 }]));
+    // Cleared, so sent as blank: the user is saying "no authentication".
+    await waitFor(() => expect(createFromUris.mock.calls[0]![0].credentials).toEqual([{ index: 0, username: '' }]));
   });
 
   it('reports what failed and what was renamed, then closes on Done', async () => {

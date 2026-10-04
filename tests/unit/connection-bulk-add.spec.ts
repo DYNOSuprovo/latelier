@@ -208,9 +208,22 @@ describe('lineToInput', () => {
     expect(over).toMatchObject({ authUsername: 'v', password: 'q' });
   });
 
-  it("falls back to the string's credentials for whatever was left blank", () => {
-    const c = lineToInput(ok('mongodb://u@h'), 'h', DEFAULTS, { index: 0, username: '', password: 'pw' });
+  it("falls back to the string's username when only a password was typed", () => {
+    const c = lineToInput(ok('mongodb://u@h'), 'h', DEFAULTS, { index: 0, password: 'pw' });
     expect(c).toMatchObject({ authUsername: 'u', password: 'pw', authMech: 'default' });
+  });
+
+  it("a username cleared in the second step saves without authentication, dropping the string's", () => {
+    const c = lineToInput(ok('mongodb://u:pw@h/?authMechanism=SCRAM-SHA-256'), 'h', DEFAULTS, { index: 0, username: '' });
+    expect(c.authMech).toBe('none');
+    expect(c).not.toHaveProperty('authUsername');
+    expect(c).not.toHaveProperty('password');
+    expect(lineInputProblem(c)).toBeNull();
+  });
+
+  it('a cleared username leaves a mechanism that needs none, such as AWS, alone', () => {
+    const c = lineToInput(ok('mongodb://h/?authMechanism=MONGODB-AWS'), 'h', DEFAULTS, { index: 0, username: '' });
+    expect(c.authMech).toBe('awsiam');
   });
 
   it('keeps an explicit mechanism when a username is typed', () => {
@@ -241,5 +254,25 @@ describe('lineInputProblem', () => {
     expect(lineInputProblem(build('mongodb://h/?authMechanism=SCRAM-SHA-256'))).toBe(
       'Username is required for password authentication',
     );
+  });
+});
+
+describe('planLineNames: long hostnames', () => {
+  // A valid hostname runs to 253 characters; a Connection name stops at 64.
+  const host = 'production-documentdb-cluster.cluster-abcdefghijkl.us-east-1.docdb.amazonaws.com';
+
+  it('clamps the name, keeps the full host, and still saves', () => {
+    const line = ok(`mongodb://${host}:27017`);
+    const [name] = planLineNames([], [line]);
+    expect(name).toBe(host.slice(0, 64));
+    const input = lineToInput(line, name!, DEFAULTS, undefined);
+    expect(input.host).toBe(host);
+    expect(lineInputProblem(input)).toBeNull();
+  });
+
+  it('two such lines still get distinct names within the limit', () => {
+    const names = planLineNames([], [ok(`mongodb://${host}:1`), ok(`mongodb://${host}:1`)]);
+    expect(names[0]).not.toBe(names[1]);
+    for (const n of names) expect(n.length).toBeLessThanOrEqual(64);
   });
 });

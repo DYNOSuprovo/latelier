@@ -110,9 +110,13 @@ export function previewEntry(line: Line, index: number, savedAs: string): UriPre
   };
 }
 
+/** The mechanisms that authenticate with a username and password. */
+const PASSWORD_MECHS = new Set(['default', 'scram256', 'scram1', 'none']);
+
 /**
  * The Connection a line creates. Credentials typed in the second step win
- * over the string's; a username with no mechanism negotiates (`default`).
+ * over the string's, and a username cleared there means no authentication;
+ * a username with no mechanism negotiates (`default`).
  */
 export function lineToInput(
   line: ParsedLine,
@@ -121,11 +125,11 @@ export function lineToInput(
   creds: UriCredentials | undefined,
 ): ConnectionInput {
   const parsed = line.input;
-  const username = creds?.username || parsed.authUsername;
-  const password = creds?.password || parsed.password;
+  const cleared = creds?.username === '' && PASSWORD_MECHS.has(parsed.authMech!);
+  const username = cleared ? undefined : creds?.username || parsed.authUsername;
+  const password = cleared ? undefined : creds?.password || parsed.password;
   const srv = parsed.connectionType === 'srv';
-  const authMech =
-    parsed.authMech === 'none' && username ? 'default' : parsed.authMech!;
+  const authMech = cleared ? 'none' : parsed.authMech === 'none' && username ? 'default' : parsed.authMech!;
   return {
     name,
     color: DEFAULT_COLOR,

@@ -143,6 +143,7 @@ export interface UriBatchDefaults {
 /** What the user typed for one line in the credentials step. */
 export interface UriCredentials {
   index: number;
+  /** Typed in the second step; `''` means the user cleared it: no authentication. */
   username?: string;
   password?: string;
 }
