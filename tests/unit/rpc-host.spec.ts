@@ -626,6 +626,30 @@ describe('rpcHost — cursors', () => {
     expect(value(await send({ target: 'cursor', method: 'toArray', cursorId: second }))).toHaveLength(2);
   });
 
+  it('answers the 257th only once the evicted cursor has closed, so the server never holds more than the cap', async () => {
+    for (let i = 0; i < 256; i++) cursorIdOf(await send({ method: 'find' }));
+    let finishClose!: () => void;
+    closeBehaviour = () => new Promise<void>((resolve) => (finishClose = resolve));
+    let answered = false;
+    const reply = send({ method: 'find' }).then((r) => ((answered = true), r));
+    await until(() => calls.some((c) => c.what === 'cursor.close'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(answered).toBe(false);
+    finishClose();
+    expect(cursorIdOf(await reply)).toBeTruthy();
+  });
+
+  it('two finds past the cap at once each evict one, never both the same', async () => {
+    const first = cursorIdOf(await send({ method: 'find' }));
+    const second = cursorIdOf(await send({ method: 'find' }));
+    for (let i = 0; i < 254; i++) cursorIdOf(await send({ method: 'find' }));
+    await Promise.all([send({ method: 'find' }), send({ method: 'find' })]);
+    expect(calls.filter((c) => c.what === 'cursor.close')).toHaveLength(2);
+    for (const id of [first, second]) {
+      expect(errorOf(await send({ target: 'cursor', method: 'toArray', cursorId: id })).message).toMatch(/unknown cursor/);
+    }
+  });
+
   it('reports an evicted cursor that will not close, and still hands out the new one', async () => {
     closeBehaviour = () => Promise.reject(new Error('evict close failed'));
     for (let i = 0; i < 256; i++) cursorIdOf(await send({ method: 'find' }));

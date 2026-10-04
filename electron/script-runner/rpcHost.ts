@@ -98,15 +98,18 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
     }
   }
 
-  function keepCursor(cursor: unknown): string {
-    if (cursors.size >= MAX_OPEN_CURSORS) {
+  async function keepCursor(cursor: unknown): Promise<string> {
+    // Registered and the oldest evicted in one synchronous step, so concurrent
+    // calls never take the map past the cap; the close is then awaited, so the
+    // server is back under the cap before the script hears of its new cursor.
+    const cursorId = randomUUID();
+    cursors.set(cursorId, cursor as Bag);
+    if (cursors.size > MAX_OPEN_CURSORS) {
       // A Map iterates in insertion order, so the first entry is the oldest.
       const [oldestId, oldest] = cursors.entries().next().value as [string, Bag];
       cursors.delete(oldestId);
-      void closeCursor(oldest);
+      await closeCursor(oldest);
     }
-    const cursorId = randomUUID();
-    cursors.set(cursorId, cursor as Bag);
     return cursorId;
   }
 
@@ -121,7 +124,7 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
         const args = parseArgs(frame.argsEjson);
         const fn = member(proxyFor(requireString(frame.dbName, 'dbName')), method);
         const out = fn(...args);
-        if (DB_CURSOR_METHODS.has(method)) return { type: 'rpc-result', id, cursorId: keepCursor(out) };
+        if (DB_CURSOR_METHODS.has(method)) return { type: 'rpc-result', id, cursorId: await keepCursor(out) };
         if (DB_ACK_METHODS.has(method)) {
           await out;
           return ok(id, { ok: 1 });
@@ -144,7 +147,7 @@ export function createRpcHost(opts: RpcHostOpts): RpcHost {
         // or `admin` must not resolve to the Db method of that name.
         const coll = member(proxyFor(dbName), 'collection')(collName) as Bag;
         const out = member(coll, method)(...args);
-        if (COLLECTION_CURSOR_METHODS.has(method)) return { type: 'rpc-result', id, cursorId: keepCursor(out) };
+        if (COLLECTION_CURSOR_METHODS.has(method)) return { type: 'rpc-result', id, cursorId: await keepCursor(out) };
         if (COLLECTION_ACK_METHODS.has(method)) {
           await out;
           return ok(id, { ok: 1 });
