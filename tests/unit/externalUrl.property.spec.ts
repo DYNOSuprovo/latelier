@@ -45,9 +45,11 @@ describe('parseAllowedExternalUrl properties', () => {
     );
   });
 
+  // Seeded: an unseeded 200-sample accepts nothing about 1 run in 200, which
+  // failed CI on main.
   it('accepts some generated URLs, so the invariant is not vacuous', () => {
     const accepted = fc
-      .sample(urlish, 200)
+      .sample(urlish, { numRuns: 200, seed: 1 })
       .filter((raw) => tryParse(raw) !== null);
     expect(accepted.length).toBeGreaterThan(0);
   });
