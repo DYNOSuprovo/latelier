@@ -41,6 +41,10 @@ passwords, before you update.**
   the file, lets you retry a wrong passphrase, and can always proceed without
   passwords. Reachable from the command palette, the File menu, and the empty
   first-launch screen.
+- **A Connections manager** lists every saved connection, with multi-select
+  export and delete. **Paste URIs** adds several connections at once from
+  pasted connection strings, asking for any missing credentials per row, and
+  the Add connection dialog is reworked around it.
 - **A saved password that can't be decrypted says so.** Connecting fails with
   "This connection's saved password can't be read on this install. Re-enter
   it." instead of an unknown error, and the navigator offers **Re-enter
