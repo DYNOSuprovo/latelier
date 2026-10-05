@@ -22,6 +22,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-05
+
+This is the last unsigned release. The next one is signed by Apple and has a
+new app identity, so on macOS it cannot read passwords saved by this one. A
+startup notice explains this. **Export your connections, including their
+passwords, before you update.**
+
+### Added
+
+- **Connection export and import (C13).** Export a checklist of connections to
+  a readable JSON file written owner-only. Passwords are optional; when
+  included they are encrypted with scrypt + AES-256-GCM under an export
+  passphrase of at least 12 characters. Import shows a preview first: the name
+  each connection will be saved under (clashes become `Prod (2)`), which
+  credential files need re-picking, and whether it carries passwords. Import
+  only ever creates new connections, never accepts credential file paths from
+  the file, lets you retry a wrong passphrase, and can always proceed without
+  passwords. Reachable from the command palette, the File menu, and the empty
+  first-launch screen.
+- **A Connections manager** lists every saved connection, with multi-select
+  export and delete. **Paste URIs** adds several connections at once from
+  pasted connection strings, asking for any missing credentials per row, and
+  the Add connection dialog is reworked around it.
+- **A saved password that can't be decrypted says so.** Connecting fails with
+  "This connection's saved password can't be read on this install. Re-enter
+  it." instead of an unknown error, and the navigator offers **Re-enter
+  password**.
+- **Document Editor.** One modal for inserting, editing and duplicating
+  documents, replacing the edit drawer. Fields are typed rows, with nested
+  objects and arrays as child rows, a type selector, add and remove field, and
+  a JSON view on the code editor with a field filter. Save sends only the
+  fields you changed, and if the document changed since you opened it you get
+  a conflict prompt instead of a silent overwrite. Quick Edit now covers
+  numbers and booleans, and pasting a JSON array inserts many documents.
+- **Data export:** export the current page or every matching document as
+  JSON, JSONL or CSV.
+- **Data import:** import a JSON array, JSONL or CSV file into a collection.
+  CSV columns go through a per-column type mapping. Import shows progress, can
+  be cancelled, can be undone, and is offered on an empty collection.
+- **Update all matching documents** from the new **Documents** menu.
+- **Operation log and undo (X13).** Writes are recorded in an operation log,
+  and a single-document edit or delete, a bulk write, an import, and a rename
+  can be undone. Confirm dialogs say whether a change can be undone.
+- **Structure view.** The collection tab's Schema view becomes Structure: the
+  collection's indexes sit above its schema, so indexes are reachable from the
+  collection you're querying. An explain plan that shows a collection scan
+  offers to create the index that fixes it.
+- **Filter value suggestions** from the last run's results and from values you
+  have recently filtered on.
+- **Cancel a running find** from the Run button.
+- **⌘↵ runs the query from anywhere in the Documents view,** not only from the
+  query bar. A refused run says why under the query bar (for example `Not run:
+  Invalid sort`). Run now sits beside the builder: `Save · History · Run ▾`.
+- **One Fields control** in Table, Tree and JSON replaces Preview fields,
+  Columns and the projection. Tree and JSON hide the fields it hides.
+- **Visible Edit, Delete and More actions on every row,** and a plain click
+  makes a row active in every result view; selection is explicit.
+- **The Saved tab lists finds, aggregations and scripts,** each opening in its
+  own kind of tab, behind a single Save button in the toolbar.
+- First-run guidance in the Documents view points a new user at Run.
+
+### Security
+
+- **Scripts and the shell run in a separate child process,** killed on
+  timeout, and reach the database over an RPC bridge. Read-only is enforced in
+  the main process, and the child never holds connection credentials.
+- **Electron hardening:** fuses flipped on the packaged app and verified in the
+  release build; permissions denied by default; every webContents guarded; no
+  DevTools in a packaged build; external links limited to an https allowlist.
+- **Data at rest:** the user-data directory, database and logs are owner-only
+  (0700/0600), as are exports and the diagnostic bundle. Deleted data is erased
+  on disk (`secure_delete`, WAL truncation, a one-time `VACUUM` after upgrade).
+  Query, aggregation and script results are no longer saved with tab state.
+  Undo pre-images stay in memory only, and recent filter values expire after
+  30 days.
+- **Connections:** a warning when TLS verification is off or a remote host is
+  reached without TLS. TLS and SSH key paths are accepted only from the file
+  picker. SSH tunnels are rejected until they exist.
+- **Preferences:** the renderer can read and write only allow-listed
+  preference keys, and turning on plaintext secret storage asks for
+  confirmation in a native dialog owned by the main process.
+- **Logging** scrubs credentials inside URI strings and covers more secret
+  field names, and a failure to write the log is reported.
+- The byte cap on find, aggregate and undo output counts every byte of the
+  serialized array in UTF-8, so an output over the cap no longer slips through.
+- On Linux, the `basic_text` keyring backend is treated as no keychain.
+- The security model is documented in `SECURITY.md`.
+
+### Fixed
+
+- The suggestion popover no longer treats ⌘/Ctrl+Enter as a pick, which used
+  to pick a value and run the query at the same time.
+- Result rows no longer toggle selection or expand on ⌘↵.
+- Shell output no longer force-scrolls to the bottom while a command streams.
+- Collection document and index counts refresh after a write.
+- A script syntax error names the line it is on.
+- The Query Builder's operator box offers only field operators, and a
+  half-typed operator is a draft until you finish it, so rows no longer shift
+  or flag an error mid-keystroke.
+- Keyboard navigation in a long result list no longer leaves the active row
+  off-screen while row heights are still being measured.
+- A dropped connection during a write or import reports a network error
+  instead of a generic MongoDB error.
+- A failed aggregation output download is reported instead of silently
+  ignored, and its download button has an accessible name.
+- Connection-form controls are named by their visible labels for assistive
+  technology.
+
+### Changed
+
+- The collection header shows only the breadcrumb and counts, and the bare
+  overflow menu became the **Documents** menu, holding "Delete all matching…".
+- Destructive actions follow one rule, set by what they destroy. Deleting a
+  saved connection now asks you to type its name, like dropping a collection.
+  Removing an aggregation stage is instant, with an Undo toast.
+- Labels follow the glossary: **Query Builder**, **References (n)**, and
+  **docs in collection** for the header count.
+- Dependency updates: `@codemirror/search` 6.7.2, `react-window` 2.3.3,
+  `react-resizable-panels` 4.14.1.
+
+### Removed
+
+- The Preview fields and Columns controls, replaced by the Fields control.
+- The Schema view, replaced by Structure. A saved tab on Schema opens on
+  Structure.
+- The edit drawer, replaced by the Document Editor.
+- The Connection Manager's separate Indexes tab, now part of Structure.
+
 ## [0.15.0] — 2026-09-23
 
 ### Added

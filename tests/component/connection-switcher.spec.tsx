@@ -5,7 +5,7 @@ import { itReturnsFocusToPopoverTrigger } from '../helpers/popoverFocusReturn';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import Workspace from '../../src/pages/Workspace';
-import { installAtelierMock, multiConnectionMock, uninstallAtelierMock } from '../helpers/atelierMock';
+import { collectionTabFixture, installAtelierMock, multiConnectionMock, uninstallAtelierMock } from '../helpers/atelierMock';
 import type { Connection, ConnectionRuntime, ConnectionSummary, WorkspaceTab, CollectionTab } from '@shared/types';
 
 const now = '2026-07-26T12:00:00.000Z';
@@ -617,11 +617,10 @@ describe('ConnectionSwitcher', () => {
 // Switcher. Payoff for the earlier form extraction: the same `ConnectionForm`, a
 // second host.
 describe('ConnectionSwitcher — add/edit', () => {
-  it('"+ Add connection" opens the Connection form as a modal over the Data View, and closes the popover', async () => {
+  it('the full form, reached from the table, opens as a modal over the Data View', async () => {
     mount();
 
-    await openSwitcher();
-    await userEvent.click(screen.getByRole('button', { name: 'Add connection' }));
+    await openAddForm();
 
     const dialog = await screen.findByRole('dialog', { name: 'New Connection' });
     expect(within(dialog).getByPlaceholderText(/My MongoDB Server/i)).toBeTruthy();
@@ -630,25 +629,48 @@ describe('ConnectionSwitcher — add/edit', () => {
     expect(screen.getByTestId('pathname').textContent).toBe('/workspace');
   });
 
-  it('"+ Add connection" is guarded against Enter falling through to the roving-highlight contract', async () => {
+  it('"Manage connections" is guarded against Enter falling through to the roving-highlight contract', async () => {
     // Regression: the button lives inside `Popover.Dropdown`, whose own
     // `onKeyDown` is `handleKeyDown` — its Enter case unconditionally acts on
     // the *highlighted row*. Without a `stopPropagation` guard on the button
-    // itself, Tab-ing to "+ Add connection" and pressing Enter would switch
-    // to the highlighted Connection (and close its tabs) instead of opening
-    // the form — the button's click handler never even running, since
+    // itself, Tab-ing to it and pressing Enter would switch to the
+    // highlighted Connection (and close its tabs) instead of opening the
+    // table — the button's click handler never even running, since
     // `handleKeyDown`'s Enter case also calls `preventDefault`.
     const connect = vi.fn(async (id: string) => ({ id, status: 'connecting' as const }));
     mount({ mongo: { connect } });
 
     await openSwitcher();
-    await userEvent.tab(); // search field → "+ Add connection", the first tab stop
-    expect(screen.getByRole('button', { name: 'Add connection' })).toBe(document.activeElement);
+    await userEvent.tab(); // search field → "Manage connections", the first tab stop
+    expect(screen.getByRole('button', { name: 'Manage connections' })).toBe(document.activeElement);
 
     await userEvent.keyboard('{Enter}');
 
-    await screen.findByRole('dialog', { name: 'New Connection' });
+    await screen.findByRole('dialog', { name: 'Connections' });
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('⌘E still opens the table while "Manage connections" holds focus', async () => {
+    // With zero Connections this button is where focus lands on open; its
+    // Enter guard must not swallow the shortcut the legend advertises.
+    mount({ connections: [] });
+    await userEvent.click(await titleBar().findByRole('button', { name: /Connection: none selected/i }));
+    const manage = await screen.findByRole('button', { name: 'Manage connections' });
+    await waitFor(() => expect(document.activeElement).toBe(manage));
+
+    fireEvent.keyDown(manage, { key: 'e', metaKey: true });
+
+    await screen.findByRole('dialog', { name: 'Connections' });
+    expect(screen.queryByRole('listbox', { name: 'Connections' })).toBeNull();
+  });
+
+  it('offers no Add, Import or Export of its own — those live in the table', async () => {
+    mount();
+    const listbox = await openSwitcher();
+    const dropdown = listbox.parentElement!;
+    expect(within(dropdown).queryByRole('button', { name: /add connection/i })).toBeNull();
+    expect(within(dropdown).queryByRole('button', { name: /import/i })).toBeNull();
+    expect(within(dropdown).queryByRole('button', { name: /export/i })).toBeNull();
   });
 
   it('a row’s edit button opens the same form as a modal, prefilled from that Connection, without switching to it', async () => {
@@ -678,8 +700,8 @@ describe('ConnectionSwitcher — add/edit', () => {
     await openSwitcher();
     await userEvent.keyboard('{ArrowDown}{ArrowDown}');
     expect(highlightedName()).toBe('Staging');
-    // search field → "+ Add connection" → manage → the highlighted row's edit
-    // button. Staging has never been tried this session, so the disconnect
+    // search field → "Manage connections" → manage → the highlighted row's
+    // edit button. Staging has never been tried this session, so the disconnect
     // button doesn't sit between manage and edit here — see the "only for a
     // connected Connection" case elsewhere for that row's tab order.
     await userEvent.tab();
@@ -706,8 +728,7 @@ describe('ConnectionSwitcher — add/edit', () => {
     const connect = vi.fn(async (id: string) => ({ id, status: 'connecting' as const }));
     mount({ connections: backing, mongo: { connect }, conn: { create: createSpy as never } });
 
-    await openSwitcher();
-    await userEvent.click(screen.getByRole('button', { name: 'Add connection' }));
+    await openAddForm();
     await screen.findByRole('dialog', { name: 'New Connection' });
 
     await userEvent.type(screen.getByPlaceholderText(/My MongoDB Server/i), 'Fresh');
@@ -814,8 +835,7 @@ describe('ConnectionSwitcher — add/edit', () => {
     const createSpy = vi.fn();
     mount({ conn: { create: createSpy as never } , focusedConnectionId: 'c1' });
 
-    await openSwitcher();
-    await userEvent.click(screen.getByRole('button', { name: 'Add connection' }));
+    await openAddForm();
     const dialog = await screen.findByRole('dialog', { name: 'New Connection' });
 
     // Scoped to the dialog: the navigator behind it can be showing a
@@ -1303,8 +1323,8 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
 
     await openSwitcher();
     // c1 ("Prod — US East") is highlighted on open and connected, so all four
-    // actions render: search field → Add connection → manage → disconnect →
-    // edit → delete.
+    // actions render: search field → Manage connections → manage →
+    // disconnect → edit → delete.
     await userEvent.tab();
     await userEvent.tab();
     await userEvent.tab();
@@ -1361,7 +1381,7 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
 
 /**
  * the expanded surface the ADR 0001 prototype findings added. `⌘E` and
- * the footer's "Expand" button both open it; opening it always closes the
+ * the popover's "Manage connections" button both open it; opening it always closes the
  * popover (ADR 0001: the two are never on screen together), and its footer
  * actions are deliberately routed through the same handlers the popover uses
  * for manage/edit/delete/switch, which the "closes the table" assertions
@@ -1370,10 +1390,15 @@ describe('ConnectionSwitcher — manage/disconnect/delete row actions', () => {
  */
 async function openExpandedTable() {
   await openSwitcher();
-  // The "Expand" button lives in the popover's footer, a sibling of the
-  // listbox — not inside it.
-  await userEvent.click(screen.getByRole('button', { name: 'Expand connections table' }));
+  // Pinned above the listbox, a sibling of it — not inside it.
+  await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
   return screen.findByRole('dialog', { name: 'Connections' });
+}
+
+/** The full form: the table's "+ New" (C13 §7). */
+async function openAddForm() {
+  const dialog = await openExpandedTable();
+  await userEvent.click(within(dialog).getByRole('button', { name: '+ New' }));
 }
 
 /** The `<tr>` for a given Connection's row, found via its visible name cell. */
@@ -1384,7 +1409,7 @@ function tableRow(dialog: HTMLElement, name: string): HTMLElement {
 }
 
 describe('ConnectionSwitcher — expanded table', () => {
-  it('the footer Expand button opens the expanded table and closes the popover', async () => {
+  it('"Manage connections" opens the expanded table and closes the popover', async () => {
     mount();
     const dialog = await openExpandedTable();
 
@@ -1418,7 +1443,7 @@ describe('ConnectionSwitcher — expanded table', () => {
     await userEvent.type(searchField(), 'prod');
     expect(within(listbox).queryByRole('option', { name: 'Staging' })).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Expand connections table' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connections' });
 
     expect(
@@ -1434,7 +1459,7 @@ describe('ConnectionSwitcher — expanded table', () => {
     // `wasOpenRef` effect) for the same reason: without it, closing drops a
     // keyboard user at `<body>`, the top of the Data View's tab order.
     // Mantine `Modal`'s own `returnFocus` can't do this on its own — by the
-    // time the table mounts, the popover's "Expand" button it would have
+    // time the table mounts, the popover's "Manage connections" button it would have
     // captured as "previous focus" is already unmounted.
     mount({ focusedConnectionId: 'c1' });
     const trigger = await screen.findByRole('button', { name: /Connection: Prod — US East/i });
@@ -1458,7 +1483,7 @@ describe('ConnectionSwitcher — expanded table', () => {
 
     await userEvent.click(ctaTrigger);
     await screen.findByRole('listbox', { name: 'Connections' });
-    await userEvent.click(screen.getByRole('button', { name: 'Expand connections table' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
     await screen.findByRole('dialog', { name: 'Connections' });
 
     await userEvent.keyboard('{Escape}');
@@ -1467,22 +1492,21 @@ describe('ConnectionSwitcher — expanded table', () => {
     await waitFor(() => expect(document.activeElement).toBe(ctaTrigger));
   });
 
-  it('offers "+ Add connection" instead of a dead end when there are no saved Connections', async () => {
+  it('offers "+ New" instead of a dead end when there are no saved Connections', async () => {
     // With zero Connections there is nothing to select, so no row action ever
     // renders — without this, a first-run `⌘E` could only be escaped, never
-    // acted on. This button is now a permanent footer fixture (not
-    // only shown in the empty-state cell), matching the popover's own
-    // always-pinned "+ Add connection".
+    // acted on. This button is a permanent footer fixture (not only shown
+    // in the empty-state cell), and the only place a Connection is added.
     mount({ connections: [] });
     // Scoped to the TitleBar — with zero Connections the Main pane's empty
     // state renders its own `variant="cta"` trigger with the same accessible
     // name, so an unscoped query would find two.
     await userEvent.click(await titleBar().findByRole('button', { name: /Connection: none selected/i }));
     await screen.findByRole('listbox', { name: 'Connections' });
-    await userEvent.click(screen.getByRole('button', { name: 'Expand connections table' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connections' });
 
-    await userEvent.click(within(dialog).getByRole('button', { name: '+ Add connection' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: '+ New' }));
 
     expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
     await screen.findByRole('dialog', { name: 'New Connection' });
@@ -1496,6 +1520,71 @@ describe('ConnectionSwitcher — expanded table', () => {
 
     await waitFor(() => expect(screen.queryByRole('listbox', { name: 'Connections' })).toBeNull());
     expect(await screen.findByRole('dialog', { name: 'Connections' })).toBeTruthy();
+  });
+
+  it('⌘E opens the table from the Data View with the Switcher closed, every time', async () => {
+    // Regression: ⌘E used to work only inside the open Switcher, so after
+    // the table closed (and with it the popover) the shortcut did nothing.
+    mount();
+    await titleBar().findByRole('button', { name: /^Connection: / });
+    for (let i = 0; i < 2; i++) {
+      fireEvent.keyDown(document.body, { key: 'e', metaKey: true });
+      expect(await screen.findByRole('dialog', { name: 'Connections' })).toBeTruthy();
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull());
+    }
+  });
+
+  it('leaves ⌘E alone inside an open dialog, and with Shift or Alt held', async () => {
+    mount();
+    await titleBar().findByRole('button', { name: /^Connection: / });
+    fireEvent.keyDown(document.body, { key: 'e', metaKey: true, shiftKey: true });
+    fireEvent.keyDown(document.body, { key: 'e', ctrlKey: true, altKey: true });
+    fireEvent.keyDown(document.body, { key: 'e' });
+    expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
+
+    fireEvent.keyDown(document.body, { key: 'E', ctrlKey: true });
+    const table = await screen.findByRole('dialog', { name: 'Connections' });
+    await userEvent.click(within(table).getByRole('button', { name: 'Paste URIs' }));
+    const add = await screen.findByRole('dialog', { name: 'Paste URIs' });
+    fireEvent.keyDown(within(add).getByRole('textbox', { name: 'Connection strings' }), { key: 'e', metaKey: true });
+    // Still exactly one table, and the paste dialog is still on top of it.
+    expect(screen.getAllByRole('dialog', { name: 'Connections' })).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Paste URIs' })).toBeTruthy();
+  });
+
+  it('leaves Ctrl+E to a text field as end-of-line, while ⌘E there still opens the table', async () => {
+    mount();
+    await titleBar().findByRole('button', { name: /^Connection: / });
+    const field = document.createElement('input');
+    document.body.append(field);
+    try {
+      expect(fireEvent.keyDown(field, { key: 'e', ctrlKey: true })).toBe(true);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
+
+      expect(fireEvent.keyDown(field, { key: 'e', metaKey: true })).toBe(false);
+      expect(await screen.findByRole('dialog', { name: 'Connections' })).toBeTruthy();
+    } finally {
+      field.remove();
+    }
+  });
+
+  it('keeps ⌘E as Explain on an Aggregation tab', async () => {
+    mount({
+      tabs: {
+        list: async () => [
+          collectionTabFixture({
+            isActive: true,
+            state: { ...collectionTabFixture().state, activeView: 'aggregation' },
+          }),
+        ],
+      },
+    });
+    await titleBar().findByRole('button', { name: /^Connection: Prod/ });
+    fireEvent.keyDown(document.body, { key: 'e', metaKey: true });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('dialog', { name: 'Connections' })).toBeNull();
   });
 
   it('a bare "e" with no modifier types into the search field instead of expanding', async () => {
@@ -2044,8 +2133,9 @@ describe('ConnectionSwitcher keyboard contract', () => {
     expect(text).toContain('↵');
     expect(text).toContain('connect');
     expect(text).toContain('⌘E');
-    expect(text).toContain('expand');
-    expect(text).not.toContain('manage');
+    // "manage" here is ⌘E's "Manage connections", not the per-row ⌘↵.
+    expect(text).toContain('manage');
+    expect(text).not.toContain('⌘↵');
     expect(text).not.toContain('disconnect');
     expect(text).not.toContain('esc close');
   });

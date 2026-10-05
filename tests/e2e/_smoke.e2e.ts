@@ -30,7 +30,7 @@ test('scaffolding boots, seeds a connection, and reflects it in the list', async
     await expectConsoleClean(win, async () => {
       const switcher = new WorkspacePage(win).switcher;
       await switcher.waitVisible();
-      await expect(switcher.newButton).toBeVisible();
+      await expect(switcher.manageButton).toBeVisible();
 
       const seeded = await seedConnection(win, {
         ...baseConnInput(host, port),

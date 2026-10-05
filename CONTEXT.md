@@ -28,7 +28,7 @@ The tabbed, IDE-like screen where the user browses Databases/Collections and run
 _Avoid_: editor, explorer
 
 **Connection Switcher**:
-A lightweight popup, reachable from within the Data View, that lists saved Connections and offers an "add connection" action — the entry point that replaces bouncing out to a separate connections screen.
+A lightweight popup, reachable from within the Data View, that lists saved Connections and opens the full Connections table ("Manage connections"), where adding, importing and exporting live — the entry point that replaces bouncing out to a separate connections screen.
 _Avoid_: database picker
 
 **Open Connection**:
@@ -50,6 +50,10 @@ _Avoid_: read-only mode (ambiguous with the unrelated UI-state prop of the same 
 **Connection Export**:
 A file holding one or more Connections, written by **Export** and read by **Import**. Carries Connections only — never their saved queries, tabs or Audit Log — and never credential file paths. Importing one always adds new Connections; it never changes an existing one.
 _Avoid_: backup (implies the whole app state), config, profile
+
+**Checked Connection**:
+A row ticked in the Connections table for a batch action — export or delete. Not the same as the *selected* row, whose details are open. A search unchecks the rows it hides, so a batch never reaches a Connection the user cannot see.
+_Avoid_: selected (that is the open row), marked
 
 **Export Passphrase**:
 The passphrase that protects the secrets inside a Connection Export. A Connection Export without secrets has none.

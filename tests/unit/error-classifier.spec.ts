@@ -1,7 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { classifyMongoError } from '../../electron/mongo/errors';
+import { classifyMongoError, SECRET_UNREADABLE_MESSAGE } from '../../electron/mongo/errors';
+import { SystemError, ValidationError } from '../../electron/errors';
 
 describe('classifyMongoError', () => {
+  it('an unreadable vault secret → SECRET_UNREADABLE with the re-enter message (#396)', () => {
+    expect(classifyMongoError(new SystemError('SECRET_DECRYPT_FAILED', 'decrypt failed'))).toEqual({
+      code: 'SECRET_UNREADABLE',
+      message: "This connection's saved password can't be read on this install. Re-enter it.",
+    });
+    expect(SECRET_UNREADABLE_MESSAGE).toContain('Re-enter it.');
+  });
+
+  it('only the vault error code maps to SECRET_UNREADABLE, not its text or another AppError', () => {
+    expect(classifyMongoError(new Error('SECRET_DECRYPT_FAILED')).code).not.toBe('SECRET_UNREADABLE');
+    expect(classifyMongoError(new ValidationError('bad')).code).not.toBe('SECRET_UNREADABLE');
+  });
+
   it('AuthenticationFailed → AUTH', () => {
     expect(
       classifyMongoError({ code: 18, codeName: 'AuthenticationFailed', message: 'Authentication failed' }).code,

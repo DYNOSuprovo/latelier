@@ -20,7 +20,7 @@ const ReadPrefSchema = z.enum([
 ]);
 const SshAuthSchema = z.enum(['key', 'password']);
 
-const TlsSchema = z.object({
+export const TlsSchema = z.object({
   enabled: z.boolean(),
   verify: z.boolean(),
   caPath: z.string().optional(),
@@ -29,18 +29,19 @@ const TlsSchema = z.object({
 
 const SSH_UNSUPPORTED_MESSAGE = 'SSH tunnels are not supported yet';
 
-const SshSchema = z
-  .object({
-    enabled: z.boolean(),
-    host: z.string().optional(),
-    port: Port.optional(),
-    username: z.string().optional(),
-    authMethod: SshAuthSchema.optional(),
-    privateKeyPath: z.string().optional(),
-  })
-  .optional();
+/** The SSH object itself, un-wrapped, so the export file can reuse its validators. */
+export const SshObjectSchema = z.object({
+  enabled: z.boolean(),
+  host: z.string().optional(),
+  port: Port.optional(),
+  username: z.string().optional(),
+  authMethod: SshAuthSchema.optional(),
+  privateKeyPath: z.string().optional(),
+});
 
-const AdvancedSchema = z.object({
+const SshSchema = SshObjectSchema.optional();
+
+export const AdvancedSchema = z.object({
   connectTimeoutMs: z.number().int().min(1000).max(600_000),
   socketTimeoutMs: z.number().int().min(1000).max(600_000),
   serverSelectionTimeoutMs: z.number().int().min(1000).max(600_000),
@@ -50,7 +51,7 @@ const AdvancedSchema = z.object({
   appName: z.string().max(128).optional(),
 });
 
-const BaseInputShape = {
+export const BaseInputShape = {
   name: z.string().min(1).max(64),
   color: HexColor,
   connectionType: ConnTypeSchema,
@@ -73,10 +74,10 @@ const BaseInputShape = {
  * Cross-field validation. Attaches errors with the specific field path so the
  * UI can highlight the right input.
  */
-function applyCrossFieldRules(
+export function applyCrossFieldRules(
   data: Partial<ConnectionInput>,
   ctx: z.RefinementCtx,
-  opts: { mode: 'create' | 'update'; existingPasswordStored?: boolean },
+  opts: { mode: 'create' | 'update' | 'import'; existingPasswordStored?: boolean },
 ): void {
   // 1. SCRAM (and 'default', which negotiates SCRAM) require a username and
   //    (on create) a password.
@@ -110,7 +111,8 @@ function applyCrossFieldRules(
         message: 'X.509 authentication requires TLS',
       });
     }
-    if (!data.tls?.clientCertPath) {
+    // An import never carries a certificate path (it is re-picked afterwards).
+    if (opts.mode !== 'import' && !data.tls?.clientCertPath) {
       ctx.addIssue({
         code: 'custom',
         path: ['tls', 'clientCertPath'],
@@ -171,7 +173,9 @@ function applyCrossFieldRules(
 
   // 6. SSH tunnels are not implemented: an enabled flag would be stored and then
   // silently connect directly, so reject it until a tunnel exists.
-  if (data.ssh?.enabled) {
+  // An import stores the row as it was exported: connect refuses SSH with its
+  // own message, and rejecting the file would lose the other Connections in it.
+  if (opts.mode !== 'import' && data.ssh?.enabled) {
     ctx.addIssue({
       code: 'custom',
       path: ['ssh', 'enabled'],

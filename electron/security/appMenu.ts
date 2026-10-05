@@ -1,4 +1,5 @@
 import type { MenuItemConstructorOptions } from 'electron';
+import type { MenuCommand } from '@shared/ipc';
 
 /**
  * The packaged app's menu: role-based App (macOS only), Edit, a trimmed View
@@ -11,9 +12,17 @@ import type { MenuItemConstructorOptions } from 'electron';
 export function buildAppMenuTemplate(
   isMac: boolean,
   appName: string,
+  onCommand: (command: MenuCommand) => void,
 ): MenuItemConstructorOptions[] {
   return [
     ...(isMac ? [{ label: appName, role: 'appMenu' } as MenuItemConstructorOptions] : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Export Connections…', click: () => onCommand('connections.export') },
+        { label: 'Import Connections…', click: () => onCommand('connections.import') },
+      ],
+    },
     { role: 'editMenu' },
     {
       label: 'View',

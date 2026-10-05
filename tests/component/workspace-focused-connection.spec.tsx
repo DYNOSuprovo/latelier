@@ -215,6 +215,20 @@ describe('The Focused Tab’s Connection', () => {
     expect(titleBar().getByText('Prod')).toBeTruthy();
   });
 
+  it.each([
+    { saved: 0, rows: [] as ConnectionSummary[], offered: true },
+    { saved: 1, rows: [conn({ status: 'unknown' })], offered: false },
+  ])('Import connections on the empty screen with $saved saved: shown=$offered', async ({ rows, offered }) => {
+    installAtelierMock({ tabs: { list: async () => [] }, conn: { list: async () => rows } });
+    render(
+      <MemoryRouter initialEntries={['/workspace']}>
+        <Workspace />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/No connection is open/i)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Import connections' }) !== null).toBe(offered);
+  });
+
   it('shows the empty state when zero Connections are saved, and the Switcher opens in add-mode', async () => {
     // Acceptance criteria: zero saved Connections yields the empty
     // state, and the Switcher opens in add-mode — here, focusing "+ Add
@@ -244,8 +258,9 @@ describe('The Focused Tab’s Connection', () => {
     const cta = emptyState.getByRole('button', { name: 'Select a connection' });
     await userEvent.click(cta);
 
-    const addButton = await screen.findByRole('button', { name: 'Add connection' });
-    await waitFor(() => expect(document.activeElement).toBe(addButton));
+    // Zero Connections: focus lands on the way to add one, not the empty search.
+    const manageButton = await screen.findByRole('button', { name: 'Manage connections' });
+    await waitFor(() => expect(document.activeElement).toBe(manageButton));
   });
 
   it('treats a Focused Tab whose Connection no longer exists as unrestorable — the empty state, not a crash', async () => {

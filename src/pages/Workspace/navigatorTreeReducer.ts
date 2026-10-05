@@ -1,6 +1,7 @@
 // One reducer (not four useStates) so every write gets the same unmount guard in useNavigatorTree.
 // Map keys here are user-controlled strings — reads go through ownGet, see ownProperty.ts.
 import type { CollectionInfo, DbInfo, IpcError } from '@shared/ipc';
+import type { ProbeErrorCode } from '@shared/types';
 import { ownGet } from '../../utils/ownProperty';
 
 export interface ConnectionCache {
@@ -19,9 +20,14 @@ export const emptyCache = (): ConnectionCache => ({
   collsLoading: {},
 });
 
+export interface ConnectErrorInfo {
+  message: string;
+  code?: ProbeErrorCode;
+}
+
 export interface NavigatorTreeState {
   caches: Record<string, ConnectionCache>;
-  connectErrors: Record<string, string>;
+  connectErrors: Record<string, ConnectErrorInfo>;
   // Accordion: at most one root expanded; null = all collapsed.
   expandedConnId: string | null;
   // Per-connection, not flat: two servers can both have an `admin` db.
@@ -43,10 +49,10 @@ export type NavigatorTreeAction =
   | { type: 'collsLoadSuccess'; id: string; dbName: string; colls: CollectionInfo[] }
   | { type: 'collsLoadError'; id: string; dbName: string }
   | { type: 'cacheReset'; id: string }
-  | { type: 'connectErrorSet'; id: string; message: string }
+  | { type: 'connectErrorSet'; id: string; message: string; code?: ProbeErrorCode }
   | { type: 'connectErrorClear'; id: string }
   // Fills a gap only — never overwrites a message the live status stream already delivered.
-  | { type: 'connectErrorBackfill'; id: string; message: string }
+  | { type: 'connectErrorBackfill'; id: string; message: string; code?: ProbeErrorCode }
   | { type: 'expandedConnSet'; id: string | null }
   | { type: 'expandedConnSetIfNull'; id: string }
   | { type: 'dbExpandedSet'; connectionId: string; dbName: string; value: boolean };
@@ -129,7 +135,10 @@ export function navigatorTreeReducer(
     case 'connectErrorSet':
       return {
         ...state,
-        connectErrors: { ...state.connectErrors, [action.id]: action.message },
+        connectErrors: {
+          ...state.connectErrors,
+          [action.id]: { message: action.message, code: action.code },
+        },
       };
     case 'connectErrorClear': {
       if (ownGet(state.connectErrors, action.id) === undefined) return state;
@@ -138,10 +147,13 @@ export function navigatorTreeReducer(
       return { ...state, connectErrors: next };
     }
     case 'connectErrorBackfill': {
-      if (ownGet(state.connectErrors, action.id)) return state;
+      if (ownGet(state.connectErrors, action.id)?.message) return state;
       return {
         ...state,
-        connectErrors: { ...state.connectErrors, [action.id]: action.message },
+        connectErrors: {
+          ...state.connectErrors,
+          [action.id]: { message: action.message, code: action.code },
+        },
       };
     }
     case 'expandedConnSet':

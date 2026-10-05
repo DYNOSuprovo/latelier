@@ -1,3 +1,4 @@
+import type React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, within, fireEvent, act, waitFor, navigatorRoot } from '../helpers/render';
 import {
@@ -33,7 +34,10 @@ const colls = (...names: string[]): CollectionInfo[] =>
     capped: false,
   }));
 
-function mount(props: Partial<DbCollectionNavigatorProps> = {}) {
+function mount(
+  props: Partial<DbCollectionNavigatorProps> & { wrap?: (n: React.ReactElement) => React.ReactElement } = {},
+) {
+  const { wrap = (n) => n, ...navProps } = props;
   const baseProps: DbCollectionNavigatorProps = {
     connectionsWithTabs: new Set(),
     connections: [PROD, STAGING],
@@ -42,9 +46,9 @@ function mount(props: Partial<DbCollectionNavigatorProps> = {}) {
     activeCollection: null,
     onOpenCollection: vi.fn(),
     onOpenAggregation: vi.fn(),
-    ...props,
+    ...navProps,
   };
-  return render(<DbCollectionNavigator {...baseProps} />);
+  return render(wrap(<DbCollectionNavigator {...baseProps} />));
 }
 
 const root = navigatorRoot;
@@ -235,6 +239,51 @@ describe('DbCollectionNavigator — a failure surfaces where it happened (X16 §
     expect(status).toHaveBeenCalledWith('c2');
     // Prod is connected, so nothing was read for it.
     expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  describe('Re-enter password (#396)', () => {
+    const unreadable = {
+      id: 'c2',
+      status: 'error' as const,
+      errorCode: 'SECRET_UNREADABLE' as const,
+      errorMessage: "This connection's saved password can't be read on this install. Re-enter it.",
+    };
+
+    it('an unreadable saved password offers Re-enter password, which opens the edit form focused on it', async () => {
+      const stream = statusStream();
+      installAtelierMock({ mongo: { onStatus: stream.onStatus } });
+      const onEditConnection = vi.fn();
+      const parentClick = vi.fn();
+      mount({ connections: [PROD, { ...STAGING, status: 'error' }], onEditConnection, wrap: (n) => <div onClick={parentClick}>{n}</div> });
+      await stream.ready();
+      await stream.emit(unreadable);
+
+      const button = screen.getByRole('button', { name: 'Re-enter password for Staging' });
+      fireEvent.click(button);
+
+      expect(onEditConnection).toHaveBeenCalledTimes(1);
+      expect(onEditConnection).toHaveBeenCalledWith('c2', button, { focus: 'password' });
+      expect(parentClick).not.toHaveBeenCalled();
+    });
+
+    it('the code survives the launch-time backfill read too', async () => {
+      const status = vi.fn(async () => unreadable);
+      installAtelierMock({ mongo: { status } });
+      mount({ connections: [PROD, { ...STAGING, status: 'error' }], onEditConnection: vi.fn() });
+
+      expect(await screen.findByRole('button', { name: 'Re-enter password for Staging' })).toBeTruthy();
+    });
+
+    it('an ordinary AUTH failure offers no such button', async () => {
+      const stream = statusStream();
+      installAtelierMock({ mongo: { onStatus: stream.onStatus } });
+      mount({ connections: [PROD, { ...STAGING, status: 'error' }], onEditConnection: vi.fn() });
+      await stream.ready();
+      await stream.emit({ id: 'c2', status: 'error', errorCode: 'AUTH', errorMessage: 'Authentication failed.' });
+
+      expect(screen.getByRole('button', { name: 'Retry connecting to Staging' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Re-enter password/ })).toBeNull();
+    });
   });
 
   it('Retry re-attempts the connect for the Connection the error is shown on', async () => {

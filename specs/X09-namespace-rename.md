@@ -29,6 +29,7 @@ Finish the L'Atelier rebrand in code, after [X08](./X08-brand-identity.md) shipp
   - Linux: `~/.config/mongolab/` → `~/.config/L'Atelier/`
 - E2E coverage: launch with old userData dir present → assert data preserved post-migration.
 - Moving Connections between machines or installs is not part of this phase; that is [C13](./C13-connection-export-import.md).
+- **Warning in the last unsigned release.** On macOS, at launch, with at least one saved Connection: a one-time dialog, "Export your connections before the next update", saying the next version won't be able to read the passwords this one saved. Its main button opens the C13 export with passwords already included. It also mentions, in small print, that the next version is signed and updates itself. "Export connections" and "Don't show again" both stop it (`ui.notices.preSigningDismissed`); closing it only defers it to the next launch. Other platforms keep their passwords across the switch, so they never see it. The signed release removes it.
 
 ### Out (also deferred)
 - Spec body rewrites in `specs/F*`, `specs/C*`, `specs/W*`, `specs/A*`, `specs/X*` that reference "MongoLab" in prose. These are historical design docs; updating them is documentation hygiene, not blocking.
