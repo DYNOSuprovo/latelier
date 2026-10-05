@@ -22,6 +22,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-05
+
+This is the last unsigned release. The next one is signed by Apple and has a
+new app identity, so on macOS it cannot read passwords saved by this one. A
+startup notice explains this. **Export your connections, including their
+passwords, before you update.**
+
+### Added
+
+- **Connection export and import (C13).** Export a checklist of connections to
+  a readable JSON file written owner-only. Passwords are optional; when
+  included they are encrypted with scrypt + AES-256-GCM under an export
+  passphrase of at least 12 characters. Import shows a preview first: the name
+  each connection will be saved under (clashes become `Prod (2)`), which
+  credential files need re-picking, and whether it carries passwords. Import
+  only ever creates new connections, never accepts credential file paths from
+  the file, lets you retry a wrong passphrase, and can always proceed without
+  passwords. Reachable from the command palette, the File menu, and the empty
+  first-launch screen.
+- **A saved password that can't be decrypted says so.** Connecting fails with
+  "This connection's saved password can't be read on this install. Re-enter
+  it." instead of an unknown error, and the navigator offers **Re-enter
+  password**.
+- **Document Editor.** One modal for inserting and editing documents, saved as
+  a diff of the fields you changed. It replaces the edit drawer.
+- **Data export and import** for a collection: JSON, JSONL and CSV, with
+  progress, cancel, and undo for an import.
+- **Update many, with an audit log and undo.** Bulk writes are recorded in an
+  operation log and can be undone, and confirm dialogs say whether a change can
+  be undone.
+- **Indexes from the collection you're querying,** and an explain plan that
+  shows a collection scan offers to create the index that fixes it.
+- **Filter value suggestions** from the last run's results and from values you
+  have recently filtered on.
+- **Cancel a running find.**
+- **⌘↵ runs the query from anywhere in the Documents view,** not only from the
+  query bar. A refused run says why under the query bar (for example `Not run:
+  Invalid sort`). Run now sits beside the builder: `Save · History · Run ▾`.
+- **One Fields control** replaces Preview fields, Columns and the projection.
+- First-run guidance in the Documents view, and fewer chrome strips above the
+  first document.
+- A plain click means the same thing in every result view, and Edit/Delete are
+  reachable from a Table row without right-clicking.
+
+### Security
+
+- **Scripts and the shell run in a separate child process,** killed on
+  timeout, and reach the database over an RPC bridge. Read-only is enforced in
+  the main process, and the child never holds connection credentials.
+- **Electron hardening:** fuses flipped on the packaged app and verified in the
+  release build; permissions denied by default; every webContents guarded; no
+  DevTools in a packaged build; external links limited to an https allowlist.
+- **Data at rest:** the user-data directory, database and logs are owner-only
+  (0700/0600), as are exports and the diagnostic bundle. Deleted data is erased
+  on disk (`secure_delete`, WAL truncation, a one-time `VACUUM` after upgrade).
+  Query, aggregation and script results are no longer saved with tab state.
+  Undo pre-images stay in memory only, and recent filter values expire after
+  30 days.
+- **Connections:** a warning when TLS verification is off or a remote host is
+  reached without TLS. TLS and SSH key paths are accepted only from the file
+  picker. SSH tunnels are rejected until they exist.
+- **Logging** scrubs credentials inside URI strings and covers more secret
+  field names.
+- On Linux, the `basic_text` keyring backend is treated as no keychain.
+- The security model is documented in `SECURITY.md`.
+
+### Fixed
+
+- The suggestion popover no longer treats ⌘/Ctrl+Enter as a pick, which used
+  to pick a value and run the query at the same time.
+- Result rows no longer toggle selection or expand on ⌘↵.
+- Shell output no longer force-scrolls to the bottom while a command streams.
+- Collection document and index counts refresh after a write.
+- A script syntax error names the line it is on.
+- The duplicate Save button and saved-queries strip are gone, "Delete all
+  matching…" is no longer hidden in an overflow menu, and destructive actions
+  share one confirmation convention.
+
+### Changed
+
+- Dependency updates: `@codemirror/search` 6.7.2, `react-window` 2.3.3,
+  `react-resizable-panels` 4.14.1.
+
 ## [0.15.0] — 2026-09-23
 
 ### Added
