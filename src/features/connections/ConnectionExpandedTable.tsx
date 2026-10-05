@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Group, Modal, Table, Text, TextInput, VisuallyHidden } from '@mantine/core';
+import { Button, Checkbox, Group, Modal, Table, Text, TextInput, VisuallyHidden } from '@mantine/core';
 import { themeVars } from '../../theme/themeVars';
 import { I } from '../../icons';
 import { api } from '../../api/atelier';
@@ -8,6 +8,9 @@ import { relativeTime } from '../../utils/relativeTime';
 import { useRovingHighlight } from '../../hooks/useRovingHighlight';
 import { STATUS_PRESENTATION, matchesConnectionQuery } from './connectionStatus';
 import { RowActionIcon } from './RowActionIcon';
+import { ConnectionAddDialog } from './ConnectionAddDialog';
+import { ConnectionExportDialog } from './ConnectionExportDialog';
+import { ConnectionDeleteDialog } from './ConnectionDeleteDialog';
 import type { Connection, ConnectionSummary } from '@shared/types';
 
 // the header row is built from this list (rather than each `Table.Th`
@@ -21,10 +24,11 @@ const COLUMN_HEADERS = ['Name', 'Host', 'Status', 'Last used', 'Actions'] as con
 // row is selected — see the comment on that `Table.Td` for why a shrink-to-
 // fit width caused a table-wide reflow on selection.
 const ACTIONS_COLUMN_WIDTH = 190;
+const CHECK_COLUMN_WIDTH = 32;
 
 export interface ConnectionExpandedTableProps {
   connections: ConnectionSummary[];
-  /** The Switcher's search text at the moment `⌘E` / Expand was pressed. */
+  /** The Switcher's search text at the moment `⌘E` / "Manage connections" was pressed. */
   initialQuery: string;
   /**
    * The Switcher trigger that opened this table — the TitleBar's compact
@@ -47,9 +51,18 @@ export interface ConnectionExpandedTableProps {
   onManage: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  /** The empty state's escape hatch when there are no saved Connections at all. Closes the table. */
+  /** The full single-Connection form, from "+ New". Closes the table. */
   onAdd: () => void;
+  /** The file Import dialog, from "Import". Closes the table. */
+  onImport: () => void;
+  /** Open tabs across these Connections, for the batch delete's copy; `null` while unknown. */
+  tabCountFor: (ids: string[]) => number | null;
+  /** The checked rows' batch delete, after its confirmation. The table stays open. */
+  onDeleteMany: (ids: string[]) => Promise<void>;
 }
+
+/** What is stacked on the table; the table keeps its own Escape only when nothing is. */
+type Stacked = 'add' | 'export' | { deleting: string[]; tabCount: number } | null;
 
 function formatConnectionType(t: ConnectionSummary['connectionType']): string {
   return t === 'srv' ? 'SRV' : 'Standard';
@@ -200,12 +213,12 @@ function ConnectionDetailRow({
  * `ConnectionSwitcher` does it for the popover: without it, closing lands a
  * keyboard user at `<body>`, the top of the Data View's tab order. Mantine
  * `Modal`'s own `returnFocus` can't help — by the time this mounts, the
- * popover's "Expand" button that would have been its target is already gone
+ * popover's "Manage connections" button that would have been its target is already gone
  * (closing the popover is what opened this, per ADR 0001).
  *
  * This is wired to `Modal`'s own `onClose`, not a plain unmount effect,
- * because several actions here (Manage/Edit/Delete on a row, "+ Add
- * connection" in the footer) also unmount this table — straight into another
+ * because several actions here (Manage/Edit/Delete on a row, the footer's
+ * Add / Import / Export) also unmount this table — straight into another
  * modal or a navigation, in the same commit. An unmount-keyed effect would
  * fire there too and race that other surface's own focus claim (its
  * `FocusTrap`, if it's a modal) for a coin-flip winner; `onClose` only ever
@@ -222,12 +235,20 @@ export function ConnectionExpandedTable({
   onEdit,
   onDelete,
   onAdd,
+  onImport,
+  tabCountFor,
+  onDeleteMany,
 }: ConnectionExpandedTableProps) {
   const T = themeVars;
   const baseId = React.useId();
   const rowId = (connectionId: string) => `${baseId}-row-${connectionId}`;
   const [query, setQuery] = React.useState(initialQuery);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  // C13 §8 — "checked" (batch actions) is a separate thing from "selected"
+  // (the row whose detail is open).
+  const [checked, setChecked] = React.useState<ReadonlySet<string>>(new Set());
+  const [stacked, setStacked] = React.useState<Stacked>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
   const [detailCache, setDetailCache] = React.useState<Record<string, Connection>>({});
   const cacheDetail = React.useCallback((connectionId: string, detail: Connection) => {
     setDetailCache((prev) => (prev[connectionId] ? prev : { ...prev, [connectionId]: detail }));
@@ -242,6 +263,31 @@ export function ConnectionExpandedTable({
   const { index: highlightIndex, setIndex: setHighlightIndex, move: moveHighlight } =
     useRovingHighlight(filtered.length, query);
   const highlightedId = filtered[highlightIndex]?.id;
+  // Only rows on screen: a search never leaves a hidden row checked (see the
+  // search field), and a Connection deleted elsewhere simply drops out.
+  const checkedIds = filtered.filter((c) => checked.has(c.id)).map((c) => c.id);
+  const allChecked = filtered.length > 0 && checkedIds.length === filtered.length;
+  const none = checkedIds.length === 0;
+  const toggleChecked = (id: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  const requestDeleteChecked = () => {
+    const tabCount = tabCountFor(checkedIds);
+    if (tabCount === null) return;
+    setStacked({ deleting: checkedIds, tabCount });
+  };
+  const confirmDeleteChecked = async (ids: string[]) => {
+    setStacked(null);
+    await onDeleteMany(ids);
+    // Only what was deleted: a row checked meanwhile stays checked.
+    setChecked((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+    // The bar that held focus may be gone with the checks.
+    searchRef.current?.focus();
+  };
 
   // Runs before this table unmounts (`onClose` fires synchronously from the
   // gesture; the parent's resulting state update unmounts on the next
@@ -290,6 +336,16 @@ export function ConnectionExpandedTable({
             boxShadow: isHighlighted ? `inset 3px 0 0 ${T.accent}` : undefined,
           }}
         >
+          {/* Clicks here belong to the checkbox, not to the row's own
+              open/close toggle. */}
+          <Table.Td style={{ width: CHECK_COLUMN_WIDTH }} onClick={(e) => e.stopPropagation()}>
+            <Checkbox
+              size="xs"
+              aria-label={`Check ${c.name}`}
+              checked={checked.has(c.id)}
+              onChange={() => toggleChecked(c.id)}
+            />
+          </Table.Td>
           <Table.Td>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ color: T.textGhost, display: 'flex', flexShrink: 0 }}>
@@ -378,7 +434,7 @@ export function ConnectionExpandedTable({
         </Table.Tr>
         {open && (
           <Table.Tr>
-            <Table.Td colSpan={COLUMN_HEADERS.length} style={{ background: T.surfaceRaised, paddingLeft: 38 }}>
+            <Table.Td colSpan={COLUMN_HEADERS.length + 1} style={{ background: T.surfaceRaised, paddingLeft: 38 + CHECK_COLUMN_WIDTH }}>
               <div style={{ padding: '6px 0' }}>
                 <ConnectionDetailRow
                   connectionId={c.id}
@@ -394,7 +450,16 @@ export function ConnectionExpandedTable({
   });
 
   return (
-    <Modal opened onClose={handleClose} title="Connections" size="xl" centered>
+    <Modal
+      opened
+      onClose={handleClose}
+      title="Connections"
+      size="xl"
+      centered
+      // Mantine closes every open modal on a window-level Escape, so a dialog
+      // stacked on this one would take the table down with it.
+      closeOnEscape={stacked === null}
+    >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <TextInput
@@ -406,6 +471,7 @@ export function ConnectionExpandedTable({
             // `data-autofocus`, "search-first" — the whole reason this
             // surface exists — silently breaks on open.
             data-autofocus
+            ref={searchRef}
             size="xs"
             style={{ flex: 1 }}
             aria-label="Search connections"
@@ -417,11 +483,16 @@ export function ConnectionExpandedTable({
             leftSection={I.search}
             value={query}
             onChange={(e) => {
-              setQuery(e.currentTarget.value);
+              const next = e.currentTarget.value;
+              setQuery(next);
               // A new search is a new list — a selection the search just
               // hid would leave the footer acting on a Connection nobody
-              // can see.
+              // can see. Checks the search hides are dropped for the same
+              // reason: a batch action must never reach a hidden row.
               setSelectedId(null);
+              setChecked(
+                (prev) => new Set(connections.filter((c) => prev.has(c.id) && matchesConnectionQuery(c, next)).map((c) => c.id)),
+              );
             }}
             // `stopPropagation` on every branch below: this modal sits above
             // window-level keydown listeners (AggregationTab's ⌘↵ pipeline
@@ -453,6 +524,27 @@ export function ConnectionExpandedTable({
           </Text>
         </div>
 
+        {/* Always there, so the actions are discoverable before anything is
+            checked; they stay disabled until something is. */}
+        <Group gap="xs" role="toolbar" aria-label="Checked connections">
+          <Button size="compact-xs" variant="light" disabled={none} onClick={() => setStacked('export')}>
+            Export
+          </Button>
+          <Button size="compact-xs" variant="light" color="red" disabled={none} onClick={requestDeleteChecked}>
+            Delete
+          </Button>
+          {!none && (
+            <>
+              <Text size="xs" c="dimmed">
+                {checkedIds.length} checked
+              </Text>
+              <Button size="compact-xs" variant="subtle" onClick={() => setChecked(new Set())}>
+                Clear
+              </Button>
+            </>
+          )}
+        </Group>
+
         <div style={{ maxHeight: '55vh', overflowY: 'auto' }}>
           <Table
             highlightOnHover
@@ -476,6 +568,25 @@ export function ConnectionExpandedTable({
           >
             <Table.Thead>
               <Table.Tr>
+                <Table.Th style={{ width: CHECK_COLUMN_WIDTH }}>
+                  <Checkbox
+                    size="xs"
+                    aria-label="Check all shown connections"
+                    checked={allChecked}
+                    indeterminate={checkedIds.length > 0 && !allChecked}
+                    disabled={filtered.length === 0}
+                    onChange={() =>
+                      setChecked((prev) => {
+                        const next = new Set(prev);
+                        for (const c of filtered) {
+                          if (allChecked) next.delete(c.id);
+                          else next.add(c.id);
+                        }
+                        return next;
+                      })
+                    }
+                  />
+                </Table.Th>
                 {COLUMN_HEADERS.map((label, i) => {
                   const isLast = i === COLUMN_HEADERS.length - 1;
                   return (
@@ -494,12 +605,11 @@ export function ConnectionExpandedTable({
               {filtered.length === 0 ? (
                 <Table.Tr>
                   <Table.Td
-                    colSpan={COLUMN_HEADERS.length}
+                    colSpan={COLUMN_HEADERS.length + 1}
                     style={{ textAlign: 'center', color: T.textMuted, padding: 24 }}
                   >
-                    {/* "+ Add connection" moved to a permanent
-                        footer-left button below, matching the popover's own
-                        always-pinned one — this cell just names the state. */}
+                    {/* "+ Add connection" is a permanent footer-left button
+                        below — this cell just names the state. */}
                     {connections.length === 0
                       ? 'No connections yet'
                       : <>No connections match &quot;{query}&quot;</>}
@@ -524,11 +634,37 @@ export function ConnectionExpandedTable({
           {/* Always available, not only in the zero-connections empty
               state (a first-run `⌘E` used to be a dead end otherwise: nothing
               to select, so every footer action stayed disabled). */}
-          <Button size="compact-xs" variant="subtle" onClick={onAdd}>
-            + Add connection
-          </Button>
+          <Group gap="xs">
+            <Button size="compact-xs" variant="light" onClick={onAdd}>
+              + New
+            </Button>
+            <Button size="compact-xs" variant="subtle" onClick={() => setStacked('add')}>
+              Paste URIs
+            </Button>
+            <Button size="compact-xs" variant="subtle" onClick={onImport}>
+              Import
+            </Button>
+          </Group>
         </div>
       </div>
+      {stacked === 'add' && (
+        <ConnectionAddDialog onClose={() => setStacked(null)} />
+      )}
+      {stacked === 'export' && <ConnectionExportDialog ids={checkedIds} onClose={() => setStacked(null)} />}
+      {stacked !== null && typeof stacked === 'object' && (
+        <ConnectionDeleteDialog
+          // One checked row is an ordinary delete: type its name, as anywhere else.
+          name={
+            stacked.deleting.length === 1
+              ? (connections.find((c) => c.id === stacked.deleting[0])?.name ?? '')
+              : `delete ${stacked.deleting.length}`
+          }
+          count={stacked.deleting.length}
+          tabCount={stacked.tabCount}
+          onCancel={() => setStacked(null)}
+          onConfirm={() => void confirmDeleteChecked(stacked.deleting)}
+        />
+      )}
     </Modal>
   );
 }

@@ -6,7 +6,7 @@
 //
 // `connection-switcher.spec.tsx` already mounts the full `<Workspace />` and
 // covers most of this wiring in depth:
-//   - "+ Add connection" opens create mode, closes the popover, and a save
+//   - "+ Add connection" (in the table) opens create mode, and a save
 //     connects the new Connection and refreshes the Switcher's list (its
 //     "ConnectionSwitcher — add/edit" describe block).
 //   - Confirming a per-row delete destroys the Connection, removes it from
@@ -154,7 +154,7 @@ describe('workspace connection dialogs (T3)', () => {
       const trigger = await titleBar().findByRole('button', { name: /^Connection: /i });
       await userEvent.click(trigger);
       await screen.findByRole('listbox', { name: 'Connections' });
-      await userEvent.click(screen.getByRole('button', { name: 'Expand connections table' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Manage connections' }));
       const table = await screen.findByRole('dialog', { name: 'Connections' });
 
       const row = within(table).getByText('Alpha').closest('tr');

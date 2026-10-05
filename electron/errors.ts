@@ -15,6 +15,8 @@ export type AppErrorCode =
   | 'DB_ERROR'
   | 'SECRETS_UNAVAILABLE'
   | 'SECRET_DECRYPT_FAILED'
+  // Connection Export (C13): the Export Passphrase did not decrypt the file.
+  | 'BAD_PASSPHRASE'
   | 'READ_ONLY'
   // Audit Log Undo refusals (X13 §6).
   | 'AUDIT_NOT_REVERSIBLE'
@@ -72,6 +74,14 @@ export class SystemError extends AppError {
   constructor(code: AppErrorCode, message: string, details?: unknown) {
     super(code, message, details);
     this.name = 'SystemError';
+  }
+}
+
+/** The Export Passphrase did not decrypt a Connection Export; retrying is expected. */
+export class BadPassphraseError extends AppError {
+  constructor(message: string) {
+    super('BAD_PASSPHRASE', message);
+    this.name = 'BadPassphraseError';
   }
 }
 

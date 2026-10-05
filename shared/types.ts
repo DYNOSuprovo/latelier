@@ -82,6 +82,100 @@ export interface ConnectionInput
   sshPassphrase?: string;
 }
 
+// Connection Export / Import (C13). Plaintext secrets and the derived key never
+// appear in any of these: main reads and writes the file itself.
+
+/** A credential file the user must pick again after an import (§4.3). */
+export type RepickFile = 'tlsCa' | 'tlsClientCert' | 'sshKey';
+
+export type ExportSecretField = 'password' | 'sshPassword' | 'sshPassphrase';
+
+export interface ConnectionExportInput {
+  ids: string[];
+  includeSecrets: boolean;
+  /** Export Passphrase; required with `includeSecrets`. */
+  passphrase?: string;
+}
+
+export type ConnectionExportResult =
+  | { written: number; omittedSecrets: { name: string; field: ExportSecretField }[] }
+  | { cancelled: true };
+
+export type ImportPreview =
+  | {
+      /** Single-use handle to the parsed file held in main. */
+      token: string;
+      hasSecrets: boolean;
+      entries: {
+        index: number;
+        name: string;
+        savedAs: string;
+        repick: RepickFile[];
+        hasSecrets: boolean;
+      }[];
+    }
+  | { cancelled: true };
+
+export interface ImportCommitInput {
+  token: string;
+  indices: number[];
+  passphrase?: string;
+  withoutSecrets?: boolean;
+}
+
+export interface ImportCommitResult {
+  /** `index` is the entry's position in the file, which is what the preview listed. */
+  created: { index: number; id: string; name: string }[];
+  /** Entries that could not be created; the others were still imported. */
+  failed: { index: number; name: string; reason: string }[];
+  secretsNotStored: { name: string; reason: string }[];
+}
+
+// Adding Connections from pasted connection strings (C13 §7.1). Passwords go
+// in only: the preview says whether a line has one, never what it is.
+
+/** Applied to every line of a batch. */
+export interface UriBatchDefaults {
+  readOnly: boolean;
+  directConnection: boolean;
+}
+
+/** What the user typed for one line in the credentials step. */
+export interface UriCredentials {
+  index: number;
+  /** Typed in the second step; `''` means the user cleared it: no authentication. */
+  username?: string;
+  password?: string;
+}
+
+export type UriPreviewEntry =
+  | {
+      index: number;
+      ok: true;
+      /** The name it will be saved under, after clash renaming. */
+      savedAs: string;
+      host: string;
+      port: number;
+      srv: boolean;
+      authUsername?: string;
+      hasPassword: boolean;
+      /** Missing a username or a password, so the credentials step lists it. */
+      needsCredentials: boolean;
+      repick: RepickFile[];
+      warnings: string[];
+    }
+  | { index: number; ok: false; reason: string };
+
+export interface UriPreview {
+  entries: UriPreviewEntry[];
+}
+
+export interface UriCommitInput {
+  uris: string[];
+  defaults: UriBatchDefaults;
+  credentials: UriCredentials[];
+}
+
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ConnectionRuntime {
@@ -108,6 +202,8 @@ export type ProbeErrorCode =
    */
   | 'TLS_HANDSHAKE'
   | 'UNAUTHORIZED'
+  /** The saved password exists but can't be decrypted on this install. */
+  | 'SECRET_UNREADABLE'
   | 'UNKNOWN';
 
 export interface ProbeResult {

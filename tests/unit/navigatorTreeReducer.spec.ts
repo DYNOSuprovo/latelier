@@ -174,16 +174,33 @@ describe('connectErrorSet / connectErrorClear / connectErrorBackfill', () => {
       id: 'c1',
       message: 'nope',
     });
-    expect(next.connectErrors).toEqual({ c1: 'nope' });
+    expect(next.connectErrors).toEqual({ c1: { message: 'nope', code: undefined } });
+  });
+
+  it('keeps the error code beside the message, so the row can offer a code-specific action', () => {
+    const set = navigatorTreeReducer(initialNavigatorTreeState, {
+      type: 'connectErrorSet',
+      id: 'c1',
+      message: 'unreadable',
+      code: 'SECRET_UNREADABLE',
+    });
+    expect(set.connectErrors['c1']).toEqual({ message: 'unreadable', code: 'SECRET_UNREADABLE' });
+    const filled = navigatorTreeReducer(initialNavigatorTreeState, {
+      type: 'connectErrorBackfill',
+      id: 'c1',
+      message: 'unreadable',
+      code: 'SECRET_UNREADABLE',
+    });
+    expect(filled.connectErrors['c1']).toEqual({ message: 'unreadable', code: 'SECRET_UNREADABLE' });
   });
 
   it('clears an id that has a message', () => {
     const start: NavigatorTreeState = {
       ...initialNavigatorTreeState,
-      connectErrors: { c1: 'nope', c2: 'also nope' },
+      connectErrors: { c1: { message: 'nope' }, c2: { message: 'also nope' } },
     };
     const next = navigatorTreeReducer(start, { type: 'connectErrorClear', id: 'c1' });
-    expect(next.connectErrors).toEqual({ c2: 'also nope' });
+    expect(next.connectErrors).toEqual({ c2: { message: 'also nope' } });
   });
 
   it('clearing an id with no message is a no-op — same state reference back', () => {
@@ -198,7 +215,7 @@ describe('connectErrorSet / connectErrorClear / connectErrorBackfill', () => {
       id: 'c1',
       message: 'backfilled',
     });
-    expect(next.connectErrors).toEqual({ c1: 'backfilled' });
+    expect(next.connectErrors).toEqual({ c1: { message: 'backfilled', code: undefined } });
   });
 
   // The invariant this pins: the live status stream always wins over a
@@ -206,7 +223,7 @@ describe('connectErrorSet / connectErrorClear / connectErrorBackfill', () => {
   it('backfill never overwrites a message already set — same state reference back', () => {
     const start: NavigatorTreeState = {
       ...initialNavigatorTreeState,
-      connectErrors: { c1: 'live-stream message' },
+      connectErrors: { c1: { message: 'live-stream message' } },
     };
     const next = navigatorTreeReducer(start, {
       type: 'connectErrorBackfill',

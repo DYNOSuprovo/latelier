@@ -15,7 +15,14 @@ import type {
   CollectionTab,
   CollectionTabState,
   Connection,
+  ConnectionExportInput,
+  ConnectionExportResult,
   ConnectionInput,
+  ImportCommitInput,
+  ImportCommitResult,
+  UriCommitInput,
+  UriPreview,
+  ImportPreview,
   ConnectionRuntime,
   ConnectionSummary,
   ConnectionUpdate,
@@ -62,6 +69,9 @@ import type {
   WorkspaceTab,
 } from './types.ts';
 
+/** A native menu item that opens a renderer dialog. */
+export type MenuCommand = 'connections.export' | 'connections.import';
+
 export type IpcErrorCode =
   | 'VALIDATION'
   | 'NOT_FOUND'
@@ -73,6 +83,7 @@ export type IpcErrorCode =
   | 'DB_ERROR'
   | 'SECRETS_UNAVAILABLE'
   | 'SECRET_DECRYPT_FAILED'
+  | 'BAD_PASSPHRASE'
   | 'READ_ONLY'
   | 'AUDIT_NOT_REVERSIBLE'
   | 'AUDIT_UNDO_EXPIRED'
@@ -161,6 +172,14 @@ export interface IpcApi {
     touchUsed: (id: string) => Promise<{ id: string }>;
     parseUri: (uri: string) => Promise<ParsedUri>;
     test: (input: ConnectionInput) => Promise<ProbeResult>;
+    /** Main shows the save dialog and writes the file; secrets never come back. */
+    export: (input: ConnectionExportInput) => Promise<ConnectionExportResult>;
+    /** Main shows the open dialog and parses the file; the result holds a token, not the contents. */
+    importPreview: () => Promise<ImportPreview>;
+    importCommit: (input: ImportCommitInput) => Promise<ImportCommitResult>;
+    /** Parses pasted connection strings and plans their names; passwords never come back. */
+    previewUris: (uris: string[]) => Promise<UriPreview>;
+    createFromUris: (input: UriCommitInput) => Promise<ImportCommitResult>;
   };
 
   app: {
@@ -173,6 +192,8 @@ export interface IpcApi {
      * location. Returns the chosen path, or `null` on user cancel.
      */
     diagnosticBundle: () => Promise<{ path: string | null }>;
+    /** Native File-menu commands pushed from main; returns the unsubscribe. */
+    onMenuCommand: (cb: (command: MenuCommand) => void) => () => void;
   };
 
   /** Refuses any URL that does not start with https://www.mongodb.com/docs/. */
@@ -425,8 +446,14 @@ export const IPC_CHANNELS = {
   connTouchUsed: 'conn:touchUsed',
   connParseUri:  'conn:parseUri',  // SECRET_INPUT
   connTest:      'conn:test',      // SECRET_INPUT
+  connExport:        'conn:export',        // SECRET_INPUT
+  connImportPreview: 'conn:importPreview',
+  connImportCommit:  'conn:importCommit',  // SECRET_INPUT
+  connPreviewUris:    'conn:previewUris',    // SECRET_INPUT
+  connCreateFromUris: 'conn:createFromUris', // SECRET_INPUT
 
   // App-level utilities -----------------------------------------
+  appMenuCommandEvent: 'app:menu-command-event',
   appPickFile:     'app:pickFile',
   appOpenExternal: 'app:openExternal',
   appSaveFile:     'app:saveFile',

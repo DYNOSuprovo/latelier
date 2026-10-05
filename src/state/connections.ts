@@ -47,6 +47,14 @@ export function isDormant(conn: ConnectionSummary | null | undefined): boolean {
   );
 }
 
+// Connections can change outside any component that owns a `useConnections`
+// (an import run from an App-level dialog), so every instance listens here.
+const connectionsChanged = new EventTarget();
+
+export function notifyConnectionsChanged(): void {
+  connectionsChanged.dispatchEvent(new Event('changed'));
+}
+
 export interface ConnectionsState {
   connections: ConnectionSummary[];
   loading: boolean;
@@ -81,7 +89,11 @@ export function useConnections(): ConnectionsState {
   useEffect(() => {
     const onFocus = () => void refresh();
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    connectionsChanged.addEventListener('changed', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      connectionsChanged.removeEventListener('changed', onFocus);
+    };
   }, [refresh]);
 
   useEffect(() => {

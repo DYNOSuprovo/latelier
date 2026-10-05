@@ -3,6 +3,7 @@ import { api, isIpcError } from '../../api/atelier';
 import { notify } from '../../theme/notifications';
 import { disconnectConnection as disconnectWithNotify } from '../../features/connections/disconnectConnection';
 import { invalidateSampleSchemaCache } from '../../features/fieldSuggestions/sources/sampleSchemaSource';
+import { useConnectionTransfer } from '../../features/connections/ConnectionTransferProvider';
 import type { ConnectionSummary } from '@shared/types';
 import type { WorkspaceTabsState } from '../../state/workspaceTabs';
 
@@ -15,7 +16,7 @@ export function useConnectionDialogs(deps: {
   openConnection: (id: string) => void;
   openConnectionScreen: (id: string) => void;
 }): {
-  connectionFormTarget: 'new' | { id: string } | null;
+  connectionFormTarget: 'new' | { id: string; focus?: 'password' } | null;
   deleteConnectionTarget: { id: string; name: string; tabCount: number } | null;
   disconnectTarget: { id: string; name: string; tabCount: number } | null;
   disconnectReturnFocus: HTMLElement | null;
@@ -25,7 +26,11 @@ export function useConnectionDialogs(deps: {
   closeDisconnectConnectionModal: () => void;
   confirmDisconnectConnection: () => void;
   openAddConnectionModal: () => void;
-  openEditConnectionModal: (id: string, returnFocusTo?: HTMLElement | null) => void;
+  openEditConnectionModal: (
+    id: string,
+    returnFocusTo?: HTMLElement | null,
+    opts?: { focus?: 'password' },
+  ) => void;
   closeConnectionFormModal: () => void;
   openDeleteConnectionModal: (id: string) => void;
   closeDeleteConnectionModal: () => void;
@@ -36,6 +41,11 @@ export function useConnectionDialogs(deps: {
   editFromExpandedTable: (id: string) => void;
   deleteFromExpandedTable: (id: string) => void;
   addFromExpandedTable: () => void;
+  importFromExpandedTable: () => void;
+  /** Open tabs across these Connections; `null` while tabs are still loading. */
+  tabCountFor: (ids: string[]) => number | null;
+  /** Deletes each in turn, the same way as one; resolves once all are done. */
+  deleteConnections: (ids: string[]) => Promise<void>;
   confirmDeleteConnection: () => Promise<void>;
   handleConnectionSaved: (id: string) => Promise<void>;
 } {
@@ -50,7 +60,7 @@ export function useConnectionDialogs(deps: {
   } = deps;
 
   const [connectionFormTarget, setConnectionFormTarget] = React.useState<
-    'new' | { id: string } | null
+    'new' | { id: string; focus?: 'password' } | null
   >(null);
   // Snapshots {id, name, tabCount} at open time so the dialog's copy stays
   // stable even if connections/tabs change while it's open.
@@ -105,9 +115,9 @@ export function useConnectionDialogs(deps: {
 
   const openAddConnectionModal = React.useCallback(() => setConnectionFormTarget('new'), []);
   const openEditConnectionModal = React.useCallback(
-    (id: string, returnFocusTo?: HTMLElement | null) => {
+    (id: string, returnFocusTo?: HTMLElement | null, opts?: { focus?: 'password' }) => {
       if (returnFocusTo) setTableReturnFocus(returnFocusTo);
-      setConnectionFormTarget({ id });
+      setConnectionFormTarget({ id, focus: opts?.focus });
     },
     [],
   );
@@ -168,31 +178,56 @@ export function useConnectionDialogs(deps: {
     () => closeTableThen(openAddConnectionModal)(),
     [closeTableThen, openAddConnectionModal],
   );
+  const { openImport } = useConnectionTransfer();
+  const importFromExpandedTable = React.useCallback(
+    () => closeTableThen(openImport)(),
+    [closeTableThen, openImport],
+  );
+
+  const tabCountFor = React.useCallback(
+    (ids: string[]) => {
+      // Same refusal as the single delete: an unloaded list is not "no tabs".
+      if (tabsRef.current.loading) return null;
+      const set = new Set(ids);
+      return tabsRef.current.tabs.filter((t) => set.has(t.connectionId)).length;
+    },
+    [tabsRef],
+  );
+
+  // One delete, shared by the single confirm and the table's batch delete.
+  // `settled` runs as soon as the IPC call returns, before tabs close.
+  const deleteOne = React.useCallback(
+    async (id: string, settled: () => void) => {
+      try {
+        await api.conn.delete(id);
+      } catch (err) {
+        settled();
+        if (isIpcError(err) && err.code === 'NOT_FOUND') {
+          void refreshConnections();
+        } else {
+          notify.error(isIpcError(err) ? err.message : String(err), { title: 'Delete failed' });
+        }
+        return;
+      }
+      invalidateSampleSchemaCache(id);
+      settled();
+      await closeTabsForConnection(id, 'Connection deleted, but its tabs could not be closed');
+      removeConnectionLocal(id);
+    },
+    [refreshConnections, removeConnectionLocal, closeTabsForConnection],
+  );
 
   const confirmDeleteConnection = React.useCallback(async () => {
     if (!deleteConnectionTarget) return;
-    const { id } = deleteConnectionTarget;
-    try {
-      await api.conn.delete(id);
-    } catch (err) {
-      setDeleteConnectionTarget(null);
-      if (isIpcError(err) && err.code === 'NOT_FOUND') {
-        void refreshConnections();
-      } else {
-        notify.error(isIpcError(err) ? err.message : String(err), { title: 'Delete failed' });
-      }
-      return;
-    }
-    invalidateSampleSchemaCache(id);
-    setDeleteConnectionTarget(null);
-    await closeTabsForConnection(id, 'Connection deleted, but its tabs could not be closed');
-    removeConnectionLocal(id);
-  }, [
-    deleteConnectionTarget,
-    refreshConnections,
-    removeConnectionLocal,
-    closeTabsForConnection,
-  ]);
+    await deleteOne(deleteConnectionTarget.id, () => setDeleteConnectionTarget(null));
+  }, [deleteConnectionTarget, deleteOne]);
+
+  const deleteConnections = React.useCallback(
+    async (ids: string[]) => {
+      for (const id of ids) await deleteOne(id, () => {});
+    },
+    [deleteOne],
+  );
 
   // useConnections() only refetches on window focus or a live status event,
   // so an explicit awaited refresh is needed here. On edit, a mongo-relevant
@@ -234,6 +269,9 @@ export function useConnectionDialogs(deps: {
     editFromExpandedTable,
     deleteFromExpandedTable,
     addFromExpandedTable,
+    importFromExpandedTable,
+    tabCountFor,
+    deleteConnections,
     confirmDeleteConnection,
     handleConnectionSaved,
   };

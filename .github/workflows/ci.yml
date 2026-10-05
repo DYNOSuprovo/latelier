@@ -106,6 +106,14 @@ jobs:
       - name: Audit IPC secret allowlist
         run: npm run audit:ipc
 
+      # `--ignore-scripts` above skipped mongodb-memory-server's own download of
+      # mongod, so without this the integration workers each find the cache
+      # empty and race to fill it; the loser fails with "Cannot unlock file
+      # .../mongodb-binaries/<version>.lock" before its first test. One download
+      # here, before any worker starts, leaves them all a cache hit.
+      - name: Download mongod
+        run: node node_modules/mongodb-memory-server/postinstall.js
+
       - name: Unit + integration + component tests
         run: npm test
 

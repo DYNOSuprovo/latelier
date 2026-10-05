@@ -309,8 +309,8 @@ function SectionDivider({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PasswordInput({ value, onChange, placeholder }: {
-  value: string; onChange: (v: string) => void; placeholder?: string;
+function PasswordInput({ value, onChange, placeholder, autoFocus }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; autoFocus?: boolean;
 }) {
   const T = themeVars;
   const [showPwd, setShowPwd] = React.useState(false);
@@ -319,6 +319,9 @@ function PasswordInput({ value, onChange, placeholder }: {
     <div style={{ position: 'relative' }}>
       <input
         {...fieldProps}
+        // `data-autofocus` is what Mantine's Modal focus trap looks for; plain autoFocus alone loses to it.
+        data-autofocus={autoFocus ? true : undefined}
+        autoFocus={autoFocus}
         type={showPwd ? 'text' : 'password'}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -558,11 +561,12 @@ function GeneralTab({
   );
 }
 
-function AuthTab({ form, set, fieldErrors, isEdit }: {
+function AuthTab({ form, set, fieldErrors, isEdit, focusPassword }: {
   form: FormState;
   set: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
   fieldErrors: Record<string, string>;
   isEdit: boolean;
+  focusPassword?: boolean;
 }) {
   const T = themeVars;
   const pwField = (
@@ -572,6 +576,7 @@ function AuthTab({ form, set, fieldErrors, isEdit }: {
       error={fieldErrors['password']}
     >
       <PasswordInput
+        autoFocus={focusPassword}
         value={form.password}
         onChange={(v) => set('password', v)}
         placeholder={
@@ -913,6 +918,8 @@ export type ConnectionFormProps = (
   onDirtyChange?: (dirty: boolean) => void;
   /** True inside ConnectionFormModal (which draws its own card) to drop this form's own chrome. */
   embedded?: boolean;
+  /** Start on the Auth tab with the password field focused (#396). */
+  initialFocus?: 'password';
 };
 
 // Keyed on connectionId so switching targets unmounts/remounts rather than
@@ -929,6 +936,7 @@ function ConnectionFormImpl({
   onCancel,
   onDirtyChange,
   embedded = false,
+  initialFocus,
 }: ConnectionFormProps) {
   const T = themeVars;
   // Driven by `mode`, not connectionId's truthiness — an empty string is
@@ -939,7 +947,7 @@ function ConnectionFormImpl({
   }
   const help = useTroubleshooting();
 
-  const [tab, setTab] = React.useState<NCTab>('General');
+  const [tab, setTab] = React.useState<NCTab>(initialFocus === 'password' ? 'Auth' : 'General');
   const formApi = useForm<FormState>({ mode: 'controlled', initialValues: INITIAL });
   const form = formApi.values;
 
@@ -1289,7 +1297,13 @@ function ConnectionFormImpl({
                     />
                   </Tabs.Panel>
                   <Tabs.Panel value="Auth">
-                    <AuthTab form={form} set={set} fieldErrors={fieldErrors} isEdit={isEdit} />
+                    <AuthTab
+                      form={form}
+                      set={set}
+                      fieldErrors={fieldErrors}
+                      isEdit={isEdit}
+                      focusPassword={initialFocus === 'password'}
+                    />
                   </Tabs.Panel>
                   <Tabs.Panel value="TLS">
                     <TLSTab form={form} set={set} fieldErrors={fieldErrors} />

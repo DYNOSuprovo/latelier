@@ -7,7 +7,9 @@ import {
   type NavigatorTreeState,
   type NavigatorTreeAction,
   type ConnectionCache,
+  type ConnectErrorInfo,
 } from '../../src/pages/Workspace/navigatorTreeReducer';
+import type { ProbeErrorCode } from '@shared/types';
 import { ownGet } from '../../src/utils/ownProperty';
 import type { CollectionInfo, DbInfo, IpcError, IpcErrorCode } from '@shared/ipc';
 
@@ -59,6 +61,7 @@ const IPC_ERROR_CODES = Object.keys({
   DB_ERROR: 0,
   SECRETS_UNAVAILABLE: 0,
   SECRET_DECRYPT_FAILED: 0,
+  BAD_PASSPHRASE: 0,
   READ_ONLY: 0,
   AUDIT_NOT_REVERSIBLE: 0,
   AUDIT_UNDO_EXPIRED: 0,
@@ -80,9 +83,15 @@ const connectionCacheArb: fc.Arbitrary<ConnectionCache> = fc.record({
   collsLoading: fc.dictionary(nameArb, fc.boolean(), { maxKeys: 3 }),
 });
 
+const codeArb = fc.constantFrom<ProbeErrorCode>('AUTH', 'SECRET_UNREADABLE');
+const connectErrorInfoArb: fc.Arbitrary<ConnectErrorInfo> = fc.record(
+  { message: fc.string({ maxLength: 20 }), code: codeArb },
+  { requiredKeys: ['message'] },
+);
+
 const stateArb: fc.Arbitrary<NavigatorTreeState> = fc.record({
   caches: fc.dictionary(nameArb, connectionCacheArb, { maxKeys: 3 }),
-  connectErrors: fc.dictionary(nameArb, fc.string({ maxLength: 20 }), { maxKeys: 3 }),
+  connectErrors: fc.dictionary(nameArb, connectErrorInfoArb, { maxKeys: 3 }),
   expandedConnId: fc.option(nameArb, { nil: null }),
   expanded: fc.dictionary(nameArb, fc.dictionary(nameArb, fc.boolean(), { maxKeys: 3 }), { maxKeys: 3 }),
 });
@@ -109,12 +118,14 @@ const actionArb: fc.Arbitrary<NavigatorTreeAction> = fc.oneof(
     type: fc.constant<'connectErrorSet'>('connectErrorSet'),
     id: nameArb,
     message: fc.string({ maxLength: 20 }),
+    code: fc.option(codeArb, { nil: undefined }),
   }),
   fc.record({ type: fc.constant<'connectErrorClear'>('connectErrorClear'), id: nameArb }),
   fc.record({
     type: fc.constant<'connectErrorBackfill'>('connectErrorBackfill'),
     id: nameArb,
     message: fc.string({ maxLength: 20 }),
+    code: fc.option(codeArb, { nil: undefined }),
   }),
   fc.record({ type: fc.constant<'expandedConnSet'>('expandedConnSet'), id: fc.option(nameArb, { nil: null }) }),
   fc.record({ type: fc.constant<'expandedConnSetIfNull'>('expandedConnSetIfNull'), id: nameArb }),
@@ -193,12 +204,14 @@ describe('navigatorTreeReducer property: connection isolation', () => {
       type: fc.constant<'connectErrorSet'>('connectErrorSet'),
       id: nameArb,
       message: fc.string({ maxLength: 20 }),
+      code: fc.option(codeArb, { nil: undefined }),
     }),
     fc.record({ type: fc.constant<'connectErrorClear'>('connectErrorClear'), id: nameArb }),
     fc.record({
       type: fc.constant<'connectErrorBackfill'>('connectErrorBackfill'),
       id: nameArb,
       message: fc.string({ maxLength: 20 }),
+      code: fc.option(codeArb, { nil: undefined }),
     }),
   );
 
@@ -209,7 +222,7 @@ describe('navigatorTreeReducer property: connection isolation', () => {
         idScopedActionArb,
         nameArb,
         connectionCacheArb,
-        fc.string({ maxLength: 20 }),
+        connectErrorInfoArb,
         (state, action, siblingId, siblingCache, siblingError) => {
           const actedOnId = 'id' in action ? action.id : undefined;
           fc.pre(siblingId !== actedOnId);
@@ -273,7 +286,7 @@ describe('navigatorTreeReducer property: no-op guards return the identical refer
       fc.property(
         stateArb,
         nameArb,
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fc.string({ minLength: 1, maxLength: 20 }).map((message) => ({ message })),
         fc.string({ maxLength: 20 }),
         (state, id, existing, incoming) => {
           const seeded: NavigatorTreeState = { ...state, connectErrors: { ...state.connectErrors, [id]: existing } };

@@ -20,7 +20,7 @@ test.afterAll(stopAllMemoryServers);
  * Mantine `Table` inside a scroll container, with a four-button footer —
  * since jsdom never measures anything.
  */
-test('expanded table: opens from the footer, searches, selects a row, and connects', async () => {
+test('expanded table: opens from Manage connections, searches, selects a row, and connects', async () => {
   const { host, port } = await startMemoryServer();
 
   await withApp(async (app) => {
@@ -129,7 +129,7 @@ test('expanded table: the column header stays visible once there are enough rows
     await expect(switcher.expandedTableRow('Connection 13')).toBeInViewport();
 
     // Regression: Mantine `Modal`'s own `returnFocus` can't restore focus to
-    // the popover's "Expand" button — it's already unmounted (closing the
+    // the popover's "Manage connections" button — it's already unmounted (closing the
     // popover is what opened this table, per ADR 0001) — so without this
     // table returning focus itself, Escape would strand a keyboard user at
     // `<body>`, the top of the Data View's tab order.

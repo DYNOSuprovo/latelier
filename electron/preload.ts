@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, type Envelope, type IpcApi } from '@shared/ipc';
+import { IPC_CHANNELS, type Envelope, type IpcApi, type MenuCommand } from '@shared/ipc';
 import type {
   AggResult,
   AggResultWire,
@@ -47,6 +47,11 @@ const api: IpcApi = {
     touchUsed: (id) => call(IPC_CHANNELS.connTouchUsed, { id }),
     parseUri: (uri) => call(IPC_CHANNELS.connParseUri, { uri }),
     test: (input) => call(IPC_CHANNELS.connTest, input),
+    export: (input) => call(IPC_CHANNELS.connExport, input),
+    importPreview: () => call(IPC_CHANNELS.connImportPreview, {}),
+    importCommit: (input) => call(IPC_CHANNELS.connImportCommit, input),
+    previewUris: (uris) => call(IPC_CHANNELS.connPreviewUris, { uris }),
+    createFromUris: (input) => call(IPC_CHANNELS.connCreateFromUris, input),
   },
 
   app: {
@@ -54,6 +59,11 @@ const api: IpcApi = {
     openExternal: (url) => call(IPC_CHANNELS.appOpenExternal, url),
     saveFile: (input) => call(IPC_CHANNELS.appSaveFile, input),
     diagnosticBundle: () => call(IPC_CHANNELS.appDiagnosticBundle, {}),
+    onMenuCommand: (cb) => {
+      const listener = (_evt: unknown, command: unknown) => cb(command as MenuCommand);
+      ipcRenderer.on(IPC_CHANNELS.appMenuCommandEvent, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.appMenuCommandEvent, listener);
+    },
   },
 
   shell: {

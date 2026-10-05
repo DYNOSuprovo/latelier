@@ -2,6 +2,10 @@ import { EventEmitter } from 'node:events';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoPool } from '../../electron/mongo/MongoPool';
+import { SECRET_UNREADABLE_MESSAGE } from '../../electron/mongo/errors';
+import { ConnectionRepo } from '../../electron/db/repositories/ConnectionRepo';
+import { ConnectionService, connectionReader } from '../../electron/mongo/ConnectionService';
+import type { ConnectionInput } from '@shared/types';
 import { SecretsVault } from '../../electron/secrets/SecretsVault';
 import { createSafeStorageMock } from '../helpers/safeStorageMock';
 import { createTempDb, type TempDb } from '../helpers/db';
@@ -13,6 +17,25 @@ import {
   makeReader,
   makeCountingReader,
 } from '../helpers/mongo';
+
+const validConnectionInput: ConnectionInput = {
+  name: 'Unreadable',
+  color: '#1A6835',
+  connectionType: 'standard',
+  readOnly: false,
+  host: '127.0.0.1',
+  port: 1,
+  authMech: 'none',
+  tls: { enabled: false, verify: true },
+  advanced: {
+    connectTimeoutMs: 1000,
+    socketTimeoutMs: 1000,
+    serverSelectionTimeoutMs: 1000,
+    readPreference: 'primary',
+    maxPoolSize: 1,
+    directConnection: true,
+  },
+};
 
 // Every fake client below carries a no-op `on` because a real MongoClient is
 // an EventEmitter and the pool now subscribes to `topologyDescriptionChanged`
@@ -137,6 +160,32 @@ describe('MongoPool', () => {
     expect(status.status).toBe('error');
     expect(status.errorCode).toBe('TIMEOUT');
     expect(status.errorMessage).toBeTruthy();
+
+    await pool.disconnectAll();
+  });
+
+  // The vault throws SECRET_DECRYPT_FAILED before any client exists (#396), so
+  // no server is needed — and it must surface as its own code, not UNKNOWN.
+  it('a saved password the vault cannot decrypt connects as SECRET_UNREADABLE', async () => {
+    tmp = createTempDb();
+    const safeStorage = createSafeStorageMock();
+    vault = new SecretsVault(tmp.db, safeStorage);
+    const repo = new ConnectionRepo(tmp.db);
+    const pool = new MongoPool({ repo: connectionReader(repo, vault), vault });
+    const created = await new ConnectionService({ repo, vault, pool }).create({
+      ...validConnectionInput,
+      authMech: 'scram256',
+      authUsername: 'u',
+      password: 'hunter2',
+    });
+    // An empty mock store makes decryptString throw, as a foreign install would.
+    safeStorage.reset();
+
+    await pool.connect(created.id);
+    const status = pool.status(created.id);
+    expect(status.status).toBe('error');
+    expect(status.errorCode).toBe('SECRET_UNREADABLE');
+    expect(status.errorMessage).toBe(SECRET_UNREADABLE_MESSAGE);
 
     await pool.disconnectAll();
   });

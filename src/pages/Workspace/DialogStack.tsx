@@ -295,6 +295,9 @@ export function DialogStack({
     editFromExpandedTable,
     deleteFromExpandedTable,
     addFromExpandedTable,
+    importFromExpandedTable,
+    tabCountFor,
+    deleteConnections,
     confirmDeleteConnection,
     handleConnectionSaved,
   } = connectionDialogs;
@@ -444,6 +447,7 @@ export function DialogStack({
           onSaved={handleConnectionSaved}
           onClose={closeConnectionFormModal}
           returnFocusTo={tableReturnFocus}
+          initialFocus={connectionFormTarget === 'new' ? undefined : connectionFormTarget.focus}
         />
       )}
 
@@ -476,6 +480,9 @@ export function DialogStack({
           onConnect={connectFromExpandedTable}
           onManage={manageFromExpandedTable}
           onAdd={addFromExpandedTable}
+          onImport={importFromExpandedTable}
+          tabCountFor={tabCountFor}
+          onDeleteMany={deleteConnections}
           onEdit={editFromExpandedTable}
           onDelete={deleteFromExpandedTable}
         />
